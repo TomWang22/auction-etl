@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import hashlib
 
-from .manager import browser
+from auction_etl.browser.manager import browser
 
 
-def fetch(url: str) -> dict:
-    page = browser.context.new_page()
+def fetch(
+    url: str,
+    profile: str = "anonymous",
+) -> dict:
+    page = browser.context(profile).new_page()
 
     try:
         response = page.goto(
