@@ -1,6 +1,6 @@
 import typer
-from rich import print
 
+from auction_etl.cli.crawl import app as crawl_app
 from auction_etl.database.health import database_health
 
 app = typer.Typer(
@@ -12,38 +12,35 @@ app = typer.Typer(
 
 @app.command()
 def version():
-    print("[green]Auction ETL[/green]")
-    print("Version: 0.1.0")
+    typer.echo("Auction ETL 0.1.0")
 
 
-@app.command()
-def db():
-    """Verify database connectivity."""
-    try:
-        database_health()
-        print("[green]✓ PostgreSQL connection successful[/green]")
-    except Exception as exc:
-        print(f"[red]Database error:[/red] {exc}")
+db_app = typer.Typer(help="Database commands")
 
 
-@app.command()
-def crawl():
-    print("Crawler coming soon.")
+@db_app.command("check")
+def check():
+    database_health()
+    typer.secho("✓ PostgreSQL connection successful", fg=typer.colors.GREEN)
+
+
+app.add_typer(db_app, name="db")
+app.add_typer(crawl_app, name="crawl")
 
 
 @app.command()
 def ingest():
-    print("Ingestion coming soon.")
+    typer.echo("Coming soon")
 
 
 @app.command()
 def classify():
-    print("Classification coming soon.")
+    typer.echo("Coming soon")
 
 
 @app.command()
 def report():
-    print("Reports coming soon.")
+    typer.echo("Coming soon")
 
 
 if __name__ == "__main__":
