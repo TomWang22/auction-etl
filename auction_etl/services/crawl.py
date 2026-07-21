@@ -5,7 +5,11 @@ from auction_etl.models.crawl import CrawlJob
 from auction_etl.models.raw import RawPage
 
 
-def crawl_url(session: Session, url: str) -> tuple[CrawlJob, RawPage]:
+def crawl_url(
+    session: Session,
+    url: str,
+    profile: str = "anonymous",
+) -> tuple[CrawlJob, RawPage]:
     job = CrawlJob(
         source="manual",
         status="running",
@@ -14,11 +18,14 @@ def crawl_url(session: Session, url: str) -> tuple[CrawlJob, RawPage]:
     session.add(job)
     session.flush()
 
-    page = fetch(url)
+    page = fetch(
+        url,
+        profile=profile,
+    )
 
     raw = RawPage(
         crawl_job_id=job.id,
-        source="manual",
+        source=profile,
         url=page["url"],
         sha256=page["sha256"],
         http_status=page["status"],

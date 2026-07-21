@@ -7,9 +7,21 @@ app = typer.Typer(help="Crawler")
 
 
 @app.command("url")
-def url(url: str):
+def url(
+    url: str,
+    profile: str = typer.Option(
+        "anonymous",
+        "--profile",
+        "-p",
+        help="Browser profile to use.",
+    ),
+):
     with SessionLocal() as session:
-        job, page = crawl_url(session, url)
+        job, page = crawl_url(
+            session,
+            url,
+            profile=profile,
+        )
 
     typer.secho(f"✓ Crawl Job : {job.id}", fg=typer.colors.GREEN)
     typer.echo(f"Page ID : {page.id}")
