@@ -26,7 +26,6 @@ class RawPage(Base):
 
     url: Mapped[str] = mapped_column(
         Text,
-        unique=True,
         nullable=False,
     )
 

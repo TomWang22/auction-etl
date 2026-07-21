@@ -4,7 +4,7 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "REPLACE_ME"
+revision: str = "0428279b6f87"
 down_revision: Union[str, Sequence[str], None] = "c4aba410158b"
 branch_labels = None
 depends_on = None
