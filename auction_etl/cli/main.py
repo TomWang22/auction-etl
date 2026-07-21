@@ -1,5 +1,6 @@
 import typer
 
+from auction_etl.cli.browser import app as browser_app
 from auction_etl.cli.crawl import app as crawl_app
 from auction_etl.database.health import database_health
 
@@ -25,6 +26,7 @@ def check():
 
 
 app.add_typer(db_app, name="db")
+app.add_typer(browser_app, name="browser")
 app.add_typer(crawl_app, name="crawl")
 
 
