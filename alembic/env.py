@@ -5,7 +5,7 @@ from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
 from auction_etl.database.base import Base
-from auction_etl.models import *
+import auction_etl.models
 
 config = context.config
 
@@ -15,21 +15,20 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
-def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
-
+def run_migrations_offline():
     context.configure(
-        url=url,
+        url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
         literal_binds=True,
         compare_type=True,
+        include_schemas=True,
     )
 
     with context.begin_transaction():
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
+def run_migrations_online():
     connectable = engine_from_config(
         config.get_section(config.config_ini_section),
         prefix="sqlalchemy.",
@@ -41,6 +40,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_schemas=True,
         )
 
         with context.begin_transaction():

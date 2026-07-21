@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import DateTime
+from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import Text
@@ -16,6 +17,10 @@ class RawPage(Base):
     __table_args__ = {"schema": "raw"}
 
     id: Mapped[int] = mapped_column(primary_key=True)
+
+    crawl_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("system.crawl_job.id")
+    )
 
     source: Mapped[str] = mapped_column(String(32))
 
