@@ -1,7 +1,8 @@
 import typer
 from rich import print
 
-from auction_etl.database.health import database_health
+from auction_etl.database.bootstrap import bootstrap_database
+from auction_etl.database.health import database_health, list_schemas
 
 app = typer.Typer(
     name="auction",
@@ -10,20 +11,32 @@ app = typer.Typer(
 )
 
 
+db_app = typer.Typer(help="Database commands")
+app.add_typer(db_app, name="db")
+
+
 @app.command()
 def version():
     print("[green]Auction ETL[/green]")
     print("Version: 0.1.0")
 
 
-@app.command()
-def db():
-    """Verify database connectivity."""
-    try:
-        database_health()
-        print("[green]✓ PostgreSQL connection successful[/green]")
-    except Exception as exc:
-        print(f"[red]Database error:[/red] {exc}")
+@db_app.command("check")
+def check():
+    database_health()
+    print("[green]✓ PostgreSQL connection successful[/green]")
+
+
+@db_app.command("init")
+def init():
+    bootstrap_database()
+    print("[green]✓ Database initialized[/green]")
+
+
+@db_app.command("schemas")
+def schemas():
+    for schema in list_schemas():
+        print(schema)
 
 
 @app.command()
