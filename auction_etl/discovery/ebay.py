@@ -1,15 +1,20 @@
-from bs4 import BeautifulSoup
+from __future__ import annotations
+
+from urllib.parse import quote
+
+from auction_etl.browser.fetch import fetch
 
 
-def extract_listing_urls(html: str) -> list[str]:
-    soup = BeautifulSoup(html, "lxml")
+def search(
+    keyword: str,
+    profile: str = "ebay",
+) -> dict:
+    url = (
+        "https://www.ebay.com/sch/i.html"
+        f"?_nkw={quote(keyword)}"
+    )
 
-    urls = []
-
-    for a in soup.select("a.s-item__link"):
-        href = a.get("href")
-
-        if href and href.startswith("https://www.ebay."):
-            urls.append(href.split("?")[0])
-
-    return sorted(set(urls))
+    return fetch(
+        url,
+        profile=profile,
+    )
