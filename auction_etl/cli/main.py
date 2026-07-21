@@ -1,6 +1,8 @@
 import typer
 from rich import print
 
+from auction_etl.database.health import database_health
+
 app = typer.Typer(
     name="auction",
     help="Terminal-first Auction ETL",
@@ -16,7 +18,12 @@ def version():
 
 @app.command()
 def db():
-    print("Database module coming soon.")
+    """Verify database connectivity."""
+    try:
+        database_health()
+        print("[green]✓ PostgreSQL connection successful[/green]")
+    except Exception as exc:
+        print(f"[red]Database error:[/red] {exc}")
 
 
 @app.command()
