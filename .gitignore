@@ -21,3 +21,7 @@ exports/
 data/raw/
 data/parsed/
 
+
+# Playwright persistent browser profiles
+profiles/*
+!profiles/.gitkeep

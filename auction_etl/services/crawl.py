@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from auction_etl.crawlers.http import fetch
+from auction_etl.browser.fetch import fetch
 from auction_etl.models.crawl import CrawlJob
 from auction_etl.models.raw import RawPage
 
