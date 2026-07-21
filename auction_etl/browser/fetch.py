@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 
 from auction_etl.browser.manager import browser
 
@@ -18,7 +19,16 @@ def fetch(
             timeout=60_000,
         )
 
-        page.wait_for_timeout(3000)
+        deadline = time.time() + 90
+
+        while "/splashui/challenge" in page.url:
+            if time.time() >= deadline:
+                break
+
+            print("Waiting for eBay browser check...")
+            page.wait_for_timeout(2000)
+
+        page.wait_for_timeout(2000)
 
         html = page.content()
 

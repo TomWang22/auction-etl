@@ -15,10 +15,6 @@ from auction_etl.browser.profiles import profile_path
 
 
 class BrowserManager:
-    """
-    Manage persistent Playwright browser contexts.
-    """
-
     def __init__(self) -> None:
         self._playwright: Playwright | None = None
         self._contexts: dict[str, BrowserContext] = {}
@@ -30,19 +26,22 @@ class BrowserManager:
         if self._playwright is None:
             self._playwright = sync_playwright().start()
 
-        context = self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_path(profile)),
-            channel=CHANNEL,
-            headless=HEADLESS,
-            viewport=VIEWPORT,
-            locale=LOCALE,
-            timezone_id=TIMEZONE,
-            color_scheme=COLOR_SCHEME,
-            user_agent=USER_AGENT,
-        )
+        kwargs = {
+            "user_data_dir": str(profile_path(profile)),
+            "channel": CHANNEL,
+            "headless": HEADLESS,
+            "viewport": VIEWPORT,
+            "locale": LOCALE,
+            "timezone_id": TIMEZONE,
+            "color_scheme": COLOR_SCHEME,
+        }
+
+        if USER_AGENT is not None:
+            kwargs["user_agent"] = USER_AGENT
+
+        context = self._playwright.chromium.launch_persistent_context(**kwargs)
 
         self._contexts[profile] = context
-
         return context
 
     def close(self) -> None:
