@@ -8,13 +8,13 @@ app = typer.Typer(help="Browser utilities")
 
 
 @app.command("login")
-def login_command(
+def browser_login(
     url: str,
     profile: str = typer.Option(
-        ...,
+        "anonymous",
         "--profile",
         "-p",
-        help="Browser profile name.",
+        help="Browser profile",
     ),
 ) -> None:
     login(
