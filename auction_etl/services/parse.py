@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from auction_etl.models.raw import RawPage
 from auction_etl.models.warehouse import Auction
+from auction_etl.classifiers import classify_media
 from auction_etl.parsers.ebay import parse_search
 
 _PRICE_RE = re.compile(r"([0-9][0-9,]*\.?[0-9]*)")
@@ -103,15 +104,22 @@ def parse_raw_page(
             auction.condition_media = condition
             auction.condition_cover = condition
 
+        auction.media_type = classify_media(
+            auction.title
+        )
+
         title = auction.title.lower()
 
-        auction.bulk_lot = any(
-            word in title
-            for word in (
-                "lot",
-                "bundle",
-                "collection",
-                "bulk",
+        auction.bulk_lot = (
+            auction.media_type is None
+            and any(
+                word in title
+                for word in (
+                    "lot",
+                    "bundle",
+                    "collection",
+                    "bulk",
+                )
             )
         )
 
