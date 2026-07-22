@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from auction_etl.browser.fetch import fetch
 from auction_etl.models.crawl import CrawlJob
 from auction_etl.models.raw import RawPage
-from auction_etl.crawlers.ebay import next_page
+from auction_etl.crawlers import next_page
 from auction_etl.services.ingest import ingest_raw_page
 
 
@@ -52,8 +52,8 @@ def crawl_url(
         )
 
         current_url = next_page(
+            "ebay",
             raw.html,
-            raw.url,
         )
 
     job.status = "finished"
