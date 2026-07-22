@@ -250,29 +250,3 @@ def parse_search(html: str) -> list[dict[str, Any]]:
         )
 
     return listings
-
-
-def next_page(html: str, current_url: str | None = None) -> str | None:
-    soup = BeautifulSoup(html, "html.parser")
-
-    selectors = (
-        'a[rel="next"]',
-        'a[aria-label="Go to next search page"]',
-        'a[aria-label="Next page"]',
-        'a.pagination__next',
-        'a[type="next"]',
-    )
-
-    for selector in selectors:
-        link = soup.select_one(selector)
-
-        if link is None:
-            continue
-
-        href = link.get("href")
-
-        if href:
-            return href
-
-    return None
-

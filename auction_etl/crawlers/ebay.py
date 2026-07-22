@@ -1,43 +1,28 @@
 from __future__ import annotations
 
-import time
-
-from auction_etl.browser.session import BrowserSession
-from auction_etl.parsers.ebay import parse_search
+from bs4 import BeautifulSoup
 
 
-def crawl(url: str):
-    session = BrowserSession()
+def next_page(html: str) -> str | None:
+    soup = BeautifulSoup(html, "html.parser")
 
-    seen_ids = set()
+    selectors = (
+        'a[rel="next"]',
+        'a[aria-label="Go to next search page"]',
+        'a[aria-label="Next page"]',
+        'a.pagination__next',
+        'a[type="next"]',
+    )
 
-    page_number = 1
+    for selector in selectors:
+        link = soup.select_one(selector)
 
-    try:
-        html = session.open(url)
+        if link is None:
+            continue
 
-        while html:
-            print(f"\n===== Page {page_number} =====")
+        href = link.get("href")
 
-            listings = parse_search(html)
+        if href:
+            return href
 
-            print(f"Listings: {len(listings)}")
-
-            for listing in listings:
-                if listing["item_id"] in seen_ids:
-                    continue
-
-                seen_ids.add(listing["item_id"])
-                yield listing
-
-            print("😴 Sleeping 2 seconds...")
-            time.sleep(2)
-
-            html = session.next()
-
-            page_number += 1
-
-    finally:
-        session.close()
-
-    print(f"\nCollected {len(seen_ids)} unique listings.")
+    return None
