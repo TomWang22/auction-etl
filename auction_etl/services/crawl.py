@@ -5,6 +5,7 @@ from auction_etl.models.crawl import CrawlJob
 from auction_etl.models.raw import RawPage
 from auction_etl.crawlers import next_page
 from auction_etl.services.ingest import ingest_raw_page
+from auction_etl.urls.router import route_url
 
 
 def crawl_url(
@@ -22,6 +23,8 @@ def crawl_url(
 
     pages: list[RawPage] = []
     visited: set[str] = set()
+
+    marketplace = route_url(url)
 
     current_url = url
 
@@ -52,7 +55,7 @@ def crawl_url(
         )
 
         current_url = next_page(
-            "ebay",
+            marketplace,
             raw.html,
         )
 
