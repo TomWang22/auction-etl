@@ -17,13 +17,30 @@ def url(
     ),
 ):
     with SessionLocal() as session:
-        job, page = crawl_url(
-            session,
-            url,
+        job, pages = crawl_url(
+            session=session,
+            url=url,
             profile=profile,
         )
 
-    typer.secho(f"✓ Crawl Job : {job.id}", fg=typer.colors.GREEN)
-    typer.echo(f"Page ID : {page.id}")
-    typer.echo(f"HTTP    : {page.http_status}")
-    typer.echo(f"SHA256  : {page.sha256}")
+    typer.secho(
+        f"✓ Crawl Job : {job.id}",
+        fg=typer.colors.GREEN,
+    )
+
+    for page in pages:
+        typer.echo("")
+        typer.echo(f"Page ID : {page.id}")
+        typer.echo(f"URL     : {page.url}")
+        typer.echo(f"HTTP    : {page.http_status}")
+        typer.echo(f"SHA256  : {page.sha256}")
+
+    typer.echo("")
+    typer.secho(
+        f"Fetched {len(pages)} page(s)",
+        fg=typer.colors.CYAN,
+    )
+
+
+if __name__ == "__main__":
+    app()
