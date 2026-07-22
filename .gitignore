@@ -25,3 +25,4 @@ data/parsed/
 # Playwright persistent browser profiles
 profiles/*
 !profiles/.gitkeep
+debug_page.html
