@@ -2,6 +2,8 @@ import typer
 
 from auction_etl.cli.browser import app as browser_app
 from auction_etl.cli.crawl import app as crawl_app
+from auction_etl.cli.ingest import app as ingest_app
+from auction_etl.cli.sync import app as sync_app
 from auction_etl.database.health import database_health
 
 app = typer.Typer(
@@ -16,28 +18,23 @@ def version():
     typer.echo("Auction ETL 0.1.0")
 
 
-db_app = typer.Typer(help="Database commands")
+db_app = typer.Typer(help="Database")
 
 
 @db_app.command("check")
 def check():
     database_health()
-    typer.secho("✓ PostgreSQL connection successful", fg=typer.colors.GREEN)
+    typer.secho(
+        "✓ PostgreSQL connection successful",
+        fg=typer.colors.GREEN,
+    )
 
 
 app.add_typer(db_app, name="db")
 app.add_typer(browser_app, name="browser")
 app.add_typer(crawl_app, name="crawl")
-
-
-@app.command()
-def ingest():
-    typer.echo("Coming soon")
-
-
-@app.command()
-def classify():
-    typer.echo("Coming soon")
+app.add_typer(ingest_app, name="ingest")
+app.add_typer(sync_app, name="sync")
 
 
 @app.command()

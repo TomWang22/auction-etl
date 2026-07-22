@@ -35,6 +35,14 @@ class RawPage(Base):
 
     html: Mapped[str] = mapped_column(Text)
 
+    listing_count: Mapped[int | None] = mapped_column(
+        Integer
+    )
+
+    parsed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
     downloaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

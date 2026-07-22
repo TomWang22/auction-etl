@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     postgres_password: str
     postgres_host: str
     postgres_port: int
+
+    auction_url: str = ""
+
     log_level: str = "INFO"
 
     model_config = SettingsConfigDict(
