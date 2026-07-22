@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from auction_etl.crawlers import ebay
+from auction_etl.crawlers import buyee, ebay
 
 
 def next_page(
@@ -11,6 +11,6 @@ def next_page(
         return ebay.next_page(html)
 
     if marketplace == "buyee":
-        return None
+        return buyee.next_page(html)
 
     raise ValueError(f"Unsupported marketplace: {marketplace}")
