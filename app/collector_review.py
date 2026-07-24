@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -280,31 +280,49 @@ def load_filter_options() -> dict[str, list[str]]:
     }
 
 
+
 def load_results(
     *,
     marketplace: str,
-    seller: str,
+    seller_exact: str,
+    seller_contains: str,
     verdict: str,
     media_type: str,
     bulk_status: str,
     purchase_status: str,
     missing_only: bool,
     search: str,
+    ended_from: date | None,
+    ended_through: date | None,
     limit: int,
+    offset: int = 0,
 ) -> pd.DataFrame:
-    """Load filtered collector rows."""
+    """Load one filtered and paginated collector result page."""
     conditions = ["1 = 1"]
     parameters: dict[str, Any] = {
         "limit": limit,
+        "offset": offset,
     }
 
     if marketplace != "all":
-        conditions.append("a.marketplace = :marketplace")
+        conditions.append(
+            "a.marketplace = :marketplace"
+        )
         parameters["marketplace"] = marketplace
 
-    if seller:
-        conditions.append("a.seller ILIKE :seller")
-        parameters["seller"] = f"%{seller}%"
+    if seller_exact:
+        conditions.append(
+            "a.seller = :seller_exact"
+        )
+        parameters["seller_exact"] = seller_exact
+
+    if seller_contains:
+        conditions.append(
+            "a.seller ILIKE :seller_contains"
+        )
+        parameters["seller_contains"] = (
+            f"%{seller_contains}%"
+        )
 
     if verdict:
         conditions.append(
@@ -358,6 +376,20 @@ def load_results(
         )
         parameters["search"] = f"%{search}%"
 
+    if ended_from is not None:
+        conditions.append(
+            "a.ended_at >= :ended_from"
+        )
+        parameters["ended_from"] = ended_from
+
+    if ended_through is not None:
+        conditions.append(
+            "a.ended_at < :ended_through"
+        )
+        parameters["ended_through"] = (
+            ended_through + timedelta(days=1)
+        )
+
     where_clause = "\nAND ".join(conditions)
 
     return query_dataframe(
@@ -393,9 +425,180 @@ def load_results(
             a.ended_at DESC NULLS LAST,
             a.id DESC
         LIMIT :limit
+        OFFSET :offset
         """,
         parameters,
     )
+
+
+
+def load_result_count(
+    *,
+    marketplace: str,
+    seller_exact: str,
+    seller_contains: str,
+    verdict: str,
+    media_type: str,
+    bulk_status: str,
+    purchase_status: str,
+    missing_only: bool,
+    search: str,
+    ended_from: date | None,
+    ended_through: date | None,
+) -> int:
+    """Count every row matching the active filters."""
+    conditions = ["1 = 1"]
+    parameters: dict[str, Any] = {}
+
+    if marketplace != "all":
+        conditions.append(
+            "a.marketplace = :marketplace"
+        )
+        parameters["marketplace"] = marketplace
+
+    if seller_exact:
+        conditions.append(
+            "a.seller = :seller_exact"
+        )
+        parameters["seller_exact"] = seller_exact
+
+    if seller_contains:
+        conditions.append(
+            "a.seller ILIKE :seller_contains"
+        )
+        parameters["seller_contains"] = (
+            f"%{seller_contains}%"
+        )
+
+    if verdict:
+        conditions.append(
+            "a.effective_verdict = :verdict"
+        )
+        parameters["verdict"] = verdict
+
+    if media_type:
+        conditions.append(
+            "a.effective_media_type = :media_type"
+        )
+        parameters["media_type"] = media_type
+
+    if bulk_status == "bulk":
+        conditions.append(
+            "COALESCE(a.effective_bulk_lot, false) = true"
+        )
+    elif bulk_status == "not_bulk":
+        conditions.append(
+            "COALESCE(a.effective_bulk_lot, false) = false"
+        )
+
+    if purchase_status:
+        conditions.append(
+            "p.purchase_status = :purchase_status"
+        )
+        parameters["purchase_status"] = purchase_status
+
+    if missing_only:
+        conditions.append(
+            """
+            (
+                a.effective_media_type IS NULL
+                OR a.effective_catalog_number IS NULL
+                OR a.effective_region IS NULL
+            )
+            """
+        )
+
+    if search:
+        conditions.append(
+            """
+            (
+                a.title ILIKE :search
+                OR a.listing_id ILIKE :search
+                OR a.seller ILIKE :search
+                OR a.effective_catalog_number ILIKE :search
+                OR a.auction_url ILIKE :search
+            )
+            """
+        )
+        parameters["search"] = f"%{search}%"
+
+    if ended_from is not None:
+        conditions.append(
+            "a.ended_at >= :ended_from"
+        )
+        parameters["ended_from"] = ended_from
+
+    if ended_through is not None:
+        conditions.append(
+            "a.ended_at < :ended_through"
+        )
+        parameters["ended_through"] = (
+            ended_through + timedelta(days=1)
+        )
+
+    where_clause = "\nAND ".join(conditions)
+
+    dataframe = query_dataframe(
+        f"""
+        SELECT COUNT(*) AS total
+        FROM warehouse.auction_collector_effective AS a
+        LEFT JOIN warehouse.auction_purchase_review AS p
+          ON p.marketplace = a.marketplace
+         AND p.listing_id = a.listing_id
+        WHERE {where_clause}
+        """,
+        parameters,
+    )
+
+    if dataframe.empty:
+        return 0
+
+    return int(dataframe.iloc[0]["total"])
+
+
+
+def load_ended_date_bounds() -> tuple[date, date]:
+    """Load the available ending-date interval."""
+    dataframe = query_dataframe(
+        """
+        SELECT
+            MIN(ended_at)::date AS earliest_date,
+            MAX(ended_at)::date AS latest_date
+        FROM warehouse.auction_collector_effective
+        WHERE ended_at IS NOT NULL
+        """
+    )
+
+    today = datetime.now(
+        timezone.utc
+    ).date()
+
+    if dataframe.empty:
+        return today, today
+
+    earliest = dataframe.iloc[0]["earliest_date"]
+    latest = dataframe.iloc[0]["latest_date"]
+
+    earliest_date = pd.to_datetime(
+        earliest,
+        errors="coerce",
+    )
+    latest_date = pd.to_datetime(
+        latest,
+        errors="coerce",
+    )
+
+    if pd.isna(earliest_date):
+        earliest_value = today
+    else:
+        earliest_value = earliest_date.date()
+
+    if pd.isna(latest_date):
+        latest_value = today
+    else:
+        latest_value = latest_date.date()
+
+    return earliest_value, latest_value
 
 
 def load_listing(
@@ -529,62 +732,250 @@ def nullable_text(value: str) -> str | None:
     return cleaned or None
 
 
-def render_summary(results: pd.DataFrame) -> None:
-    """Render compact result metrics."""
-    manual_mask = pd.Series(
-        False,
-        index=results.index,
+
+def clamp_page_number(
+    page_number: int,
+    total_pages: int,
+) -> int:
+    """Clamp a page number to the valid result range."""
+    return max(
+        1,
+        min(
+            int(page_number),
+            max(int(total_pages), 1),
+        ),
     )
 
-    columns = (
-        "effective_catalog_number",
-        "effective_region",
-        "effective_media_type",
-        "effective_disc_count",
-        "effective_verdict",
+
+def pagination_tokens(
+    page_number: int,
+    total_pages: int,
+) -> list[int | None]:
+    """Build compact eBay-style page-number tokens."""
+    page_number = clamp_page_number(
+        page_number,
+        total_pages,
+    )
+    total_pages = max(
+        int(total_pages),
+        1,
     )
 
-    for column in columns:
-        if column in results:
-            manual_mask |= results[column].notna()
+    if total_pages <= 9:
+        return list(
+            range(1, total_pages + 1)
+        )
 
+    pages = {
+        1,
+        2,
+        total_pages - 1,
+        total_pages,
+        page_number - 2,
+        page_number - 1,
+        page_number,
+        page_number + 1,
+        page_number + 2,
+    }
+
+    valid_pages = sorted(
+        page
+        for page in pages
+        if 1 <= page <= total_pages
+    )
+
+    tokens: list[int | None] = []
+
+    for page in valid_pages:
+        if (
+            tokens
+            and tokens[-1] is not None
+            and page - int(tokens[-1]) > 1
+        ):
+            tokens.append(None)
+
+        tokens.append(page)
+
+    return tokens
+
+
+def go_to_page(
+    page_number: int,
+    total_pages: int,
+) -> None:
+    """Change the active page and rerun."""
+    st.session_state[
+        "collector_page_number"
+    ] = clamp_page_number(
+        page_number,
+        total_pages,
+    )
+    st.rerun()
+
+
+def render_pagination_controls(
+    *,
+    page_number: int,
+    total_pages: int,
+    location: str,
+) -> None:
+    """Render clickable Previous, page, and Next controls."""
+    page_number = clamp_page_number(
+        page_number,
+        total_pages,
+    )
+    total_pages = max(
+        int(total_pages),
+        1,
+    )
+
+    tokens = pagination_tokens(
+        page_number,
+        total_pages,
+    )
+
+    columns = st.columns(
+        [1.35]
+        + [0.55 for _ in tokens]
+        + [1.35]
+    )
+
+    if columns[0].button(
+        "← Previous",
+        disabled=page_number <= 1,
+        key=f"collector_previous_{location}",
+        width="stretch",
+    ):
+        go_to_page(
+            page_number - 1,
+            total_pages,
+        )
+
+    for index, token in enumerate(
+        tokens,
+        start=1,
+    ):
+        if token is None:
+            columns[index].markdown(
+                "<div style='"
+                "text-align:center;"
+                "padding-top:0.45rem;"
+                "font-weight:600;"
+                "'>…</div>",
+                unsafe_allow_html=True,
+            )
+            continue
+
+        label = (
+            f"• {token} •"
+            if token == page_number
+            else str(token)
+        )
+
+        if columns[index].button(
+            label,
+            disabled=token == page_number,
+            key=(
+                f"collector_page_{location}_"
+                f"{token}"
+            ),
+            width="stretch",
+        ):
+            go_to_page(
+                token,
+                total_pages,
+            )
+
+    if columns[-1].button(
+        "Next →",
+        disabled=page_number >= total_pages,
+        key=f"collector_next_{location}",
+        width="stretch",
+    ):
+        go_to_page(
+            page_number + 1,
+            total_pages,
+        )
+
+
+def reset_page_when_filters_change(
+    signature: tuple[Any, ...],
+) -> None:
+    """Return to page one after any filter changes."""
+    previous = st.session_state.get(
+        "collector_filter_signature"
+    )
+
+    if (
+        previous is not None
+        and previous != signature
+    ):
+        st.session_state[
+            "collector_page_number"
+        ] = 1
+
+    st.session_state[
+        "collector_filter_signature"
+    ] = signature
+
+
+def render_saved_confirmation() -> None:
+    """Render a confirmation retained across a rerun."""
+    message = st.session_state.pop(
+        "collector_saved_message",
+        None,
+    )
+
+    if message:
+        st.success(
+            str(message),
+            icon="✅",
+        )
+
+
+def render_summary(
+    results: pd.DataFrame,
+    *,
+    total_count: int,
+    page_number: int,
+    total_pages: int,
+) -> None:
+    """Render result and pagination metrics."""
     metric_columns = st.columns(6)
 
     metric_columns[0].metric(
-        "Rows",
-        len(results),
+        "Total matches",
+        total_count,
     )
     metric_columns[1].metric(
-        "Sellers",
-        results["seller"].nunique(dropna=True),
+        "Visible rows",
+        len(results),
     )
     metric_columns[2].metric(
-        "Bulk lots",
+        "Page",
+        f"{page_number} / {max(total_pages, 1)}",
+    )
+    metric_columns[3].metric(
+        "Visible sellers",
+        results["seller"].nunique(
+            dropna=True
+        ),
+    )
+    metric_columns[4].metric(
+        "Visible bulk lots",
         int(
             results["effective_bulk_lot"]
             .fillna(False)
             .sum()
         ),
     )
-    metric_columns[3].metric(
-        "Missing media",
+    metric_columns[5].metric(
+        "Visible missing media",
         int(
             results["effective_media_type"]
             .isna()
             .sum()
         ),
-    )
-    metric_columns[4].metric(
-        "Purchase tracked",
-        int(
-            results["purchase_status"]
-            .notna()
-            .sum()
-        ),
-    )
-    metric_columns[5].metric(
-        "Visible",
-        len(results),
     )
 
 
@@ -1298,6 +1689,7 @@ def render_listing_editor(row: dict[str, Any]) -> None:
         )
 
 
+
 def main() -> None:
     """Run the Streamlit collector review interface."""
     st.set_page_config(
@@ -1315,7 +1707,12 @@ def main() -> None:
         "preserve automatic classifications."
     )
 
+    render_saved_confirmation()
+
     filter_options = load_filter_options()
+    earliest_date, latest_date = (
+        load_ended_date_bounds()
+    )
 
     with st.sidebar:
         st.header("Search and filters")
@@ -1332,9 +1729,41 @@ def main() -> None:
             ),
         )
 
-        seller = st.text_input(
-            "Seller contains",
+        seller_exact = st.selectbox(
+            "Seller",
+            ["", *filter_options["sellers"]],
+            help="Choose one exact seller.",
         )
+
+        seller_contains = st.text_input(
+            "Seller contains",
+            help=(
+                "Optional partial seller-name search."
+            ),
+        )
+
+        date_columns = st.columns(2)
+
+        ended_from = date_columns[0].date_input(
+            "Ended from",
+            value=earliest_date,
+            min_value=earliest_date,
+            max_value=latest_date,
+        )
+
+        ended_through = date_columns[1].date_input(
+            "Ended through",
+            value=latest_date,
+            min_value=earliest_date,
+            max_value=latest_date,
+        )
+
+        if ended_from > ended_through:
+            st.error(
+                "Ended from must not be later than "
+                "Ended through."
+            )
+            st.stop()
 
         verdict = st.selectbox(
             "Verdict",
@@ -1360,40 +1789,131 @@ def main() -> None:
             "Only rows missing core classification",
         )
 
-        limit = st.number_input(
-            "Maximum rows",
-            min_value=25,
-            max_value=5_000,
-            value=250,
-            step=25,
+        rows_per_page = st.selectbox(
+            "Rows per page",
+            options=(
+                25,
+                50,
+                100,
+                250,
+                500,
+                1000,
+            ),
+            index=3,
+            help=(
+                "Controls only the visible page. "
+                "The database remains complete."
+            ),
+            key="collector_rows_per_page",
         )
 
         st.caption(
             f"Database: {DATABASE_URL_LABEL}"
         )
 
-    results = load_results(
+    filter_signature = (
+        marketplace,
+        search,
+        seller_exact,
+        seller_contains,
+        ended_from,
+        ended_through,
+        verdict,
+        media_type,
+        bulk_status,
+        purchase_status,
+        missing_only,
+        rows_per_page,
+    )
+
+    reset_page_when_filters_change(
+        filter_signature
+    )
+
+    total_count = load_result_count(
         marketplace=marketplace,
-        seller=seller,
+        seller_exact=seller_exact,
+        seller_contains=seller_contains,
         verdict=verdict,
         media_type=media_type,
         bulk_status=bulk_status,
         purchase_status=purchase_status,
         missing_only=missing_only,
         search=search,
-        limit=int(limit),
+        ended_from=ended_from,
+        ended_through=ended_through,
     )
 
-    render_summary(results)
+    total_pages = max(
+        1,
+        (
+            total_count
+            + rows_per_page
+            - 1
+        ) // rows_per_page,
+    )
+
+    page_number = clamp_page_number(
+        st.session_state.get(
+            "collector_page_number",
+            1,
+        ),
+        total_pages,
+    )
+
+    st.session_state[
+        "collector_page_number"
+    ] = page_number
+
+    offset = (
+        page_number - 1
+    ) * rows_per_page
+
+    results = load_results(
+        marketplace=marketplace,
+        seller_exact=seller_exact,
+        seller_contains=seller_contains,
+        verdict=verdict,
+        media_type=media_type,
+        bulk_status=bulk_status,
+        purchase_status=purchase_status,
+        missing_only=missing_only,
+        search=search,
+        ended_from=ended_from,
+        ended_through=ended_through,
+        limit=rows_per_page,
+        offset=offset,
+    )
+
+    render_summary(
+        results,
+        total_count=total_count,
+        page_number=page_number,
+        total_pages=total_pages,
+    )
+
+    render_pagination_controls(
+        page_number=page_number,
+        total_pages=total_pages,
+        location="top",
+    )
 
     st.subheader("Search results")
 
     selected = render_result_table(results)
 
+    render_pagination_controls(
+        page_number=page_number,
+        total_pages=total_pages,
+        location="bottom",
+    )
+
     if selected is None:
         return
 
-    selected_marketplace, selected_listing_id = selected
+    selected_marketplace, selected_listing_id = (
+        selected
+    )
 
     selected_row = load_listing(
         selected_marketplace,
