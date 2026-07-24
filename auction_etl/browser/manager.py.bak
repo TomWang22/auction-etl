@@ -28,6 +28,7 @@ class BrowserManager:
 
         kwargs = {
             "user_data_dir": str(profile_path(profile)),
+            "channel": CHANNEL,
             "headless": HEADLESS,
             "viewport": VIEWPORT,
             "locale": LOCALE,
@@ -37,9 +38,6 @@ class BrowserManager:
 
         if USER_AGENT is not None:
             kwargs["user_agent"] = USER_AGENT
-
-        if CHANNEL is not None:
-            kwargs["channel"] = CHANNEL
 
         context = self._playwright.chromium.launch_persistent_context(**kwargs)
 

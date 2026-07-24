@@ -1,0 +1,888 @@
+from __future__ import annotations
+
+import csv
+import io
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
+
+import pandas as pd
+import streamlit as st
+from sqlalchemy import text
+
+from auction_etl.database.session import engine
+
+
+MANUAL_FIELDS = (
+    "manual_catalog_number",
+    "manual_region",
+    "manual_media_type",
+    "manual_disc_count",
+    "manual_bulk_lot",
+    "manual_obi",
+    "manual_insert_present",
+    "manual_poster_present",
+    "manual_rental",
+    "manual_sticker",
+    "manual_promo",
+    "manual_sealed",
+    "manual_reissue",
+    "manual_first_press",
+    "manual_importance_score",
+    "manual_verdict",
+    "manual_condition_media",
+    "manual_condition_cover",
+    "manual_completeness_notes",
+    "manual_collector_notes",
+)
+
+BOOLEAN_FIELDS = {
+    "manual_bulk_lot",
+    "manual_obi",
+    "manual_insert_present",
+    "manual_poster_present",
+    "manual_rental",
+    "manual_sticker",
+    "manual_promo",
+    "manual_sealed",
+    "manual_reissue",
+    "manual_first_press",
+}
+
+INTEGER_FIELDS = {
+    "manual_disc_count",
+    "manual_importance_score",
+}
+
+VERDICTS = (
+    "",
+    "STRONG_INTEREST",
+    "WATCH",
+    "REFERENCE_ONLY",
+    "PASS",
+    "BULK_REVIEW",
+    "LOW_PRIORITY_REISSUE",
+)
+
+MEDIA_TYPES = (
+    "",
+    "LP",
+    "EP_7_INCH",
+    "12_INCH_SINGLE",
+    "CD",
+    "CASSETTE",
+    "DVD",
+    "CD_BOX_SET",
+    "CD_DVD_SET",
+)
+
+TRI_STATE_VALUES = (
+    "",
+    "true",
+    "false",
+    "__CLEAR__",
+)
+
+
+def database_rows(
+    marketplace: str,
+    seller: str,
+    verdict: str,
+    media_type: str,
+    missing_only: bool,
+    bulk_mode: str,
+    search: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    parameters: dict[str, Any] = {
+        "limit": limit,
+    }
+
+    if marketplace != "all":
+        clauses.append(
+            "marketplace = :marketplace"
+        )
+        parameters[
+            "marketplace"
+        ] = marketplace
+
+    if seller:
+        clauses.append(
+            "COALESCE(seller, '') "
+            "ILIKE :seller"
+        )
+        parameters[
+            "seller"
+        ] = f"%{seller}%"
+
+    if verdict:
+        clauses.append(
+            "effective_verdict = :verdict"
+        )
+        parameters[
+            "verdict"
+        ] = verdict
+
+    if media_type:
+        clauses.append(
+            "effective_media_type "
+            "= :media_type"
+        )
+        parameters[
+            "media_type"
+        ] = media_type
+
+    if missing_only:
+        clauses.append(
+            """
+            (
+                effective_media_type IS NULL
+                OR effective_catalog_number IS NULL
+                OR effective_region IS NULL
+            )
+            """
+        )
+
+    if bulk_mode == "bulk":
+        clauses.append(
+            "effective_bulk_lot IS TRUE"
+        )
+    elif bulk_mode == "non_bulk":
+        clauses.append(
+            "COALESCE(effective_bulk_lot, FALSE) "
+            "IS FALSE"
+        )
+
+    if search:
+        clauses.append(
+            """
+            (
+                COALESCE(title, '') ILIKE :search
+                OR COALESCE(listing_id, '')
+                    ILIKE :search
+                OR COALESCE(
+                    effective_catalog_number,
+                    ''
+                ) ILIKE :search
+                OR COALESCE(seller, '')
+                    ILIKE :search
+            )
+            """
+        )
+        parameters[
+            "search"
+        ] = f"%{search}%"
+
+    where_clause = ""
+
+    if clauses:
+        where_clause = (
+            "WHERE "
+            + " AND ".join(clauses)
+        )
+
+    statement = text(
+        f"""
+        SELECT
+            marketplace,
+            listing_id,
+            ended_at,
+            seller,
+            title,
+            auction_url,
+
+            effective_catalog_number,
+            effective_region,
+            effective_media_type,
+            effective_disc_count,
+            effective_bulk_lot,
+
+            effective_obi,
+            effective_insert_present,
+            effective_poster_present,
+            effective_rental,
+            effective_sticker,
+            effective_promo,
+            effective_sealed,
+            effective_reissue,
+            effective_first_press,
+
+            start_price,
+            final_price,
+            tax_amount,
+            gross_price,
+            currency,
+            bid_count,
+
+            auction_duration_days,
+            start_to_finish_multiplier,
+            bids_per_day,
+
+            effective_importance_score,
+            effective_verdict,
+
+            manual_catalog_number,
+            manual_region,
+            manual_media_type,
+            manual_disc_count,
+            manual_bulk_lot,
+            manual_obi,
+            manual_insert_present,
+            manual_poster_present,
+            manual_rental,
+            manual_sticker,
+            manual_promo,
+            manual_sealed,
+            manual_reissue,
+            manual_first_press,
+            manual_importance_score,
+            manual_verdict,
+            manual_condition_media,
+            manual_condition_cover,
+            manual_completeness_notes,
+            manual_collector_notes
+
+        FROM warehouse.auction_collector_effective
+        {where_clause}
+        ORDER BY
+            ended_at DESC NULLS LAST,
+            id DESC
+        LIMIT :limit
+        """
+    )
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            statement,
+            parameters,
+        ).mappings().all()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+def display_value(value: Any) -> Any:
+    if value is None:
+        return ""
+
+    if isinstance(
+        value,
+        (
+            datetime,
+            date,
+        ),
+    ):
+        return value.isoformat()
+
+    if isinstance(value, Decimal):
+        return float(value)
+
+    return value
+
+
+def dataframe_for(
+    rows: list[dict[str, Any]],
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                key: display_value(value)
+                for key, value in row.items()
+            }
+            for row in rows
+        ]
+    )
+
+
+def parse_manual_value(
+    field: str,
+    value: Any,
+) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(value, float) and pd.isna(value):
+        return None
+
+    cleaned = str(value).strip()
+
+    if cleaned == "":
+        return None
+
+    if cleaned == "__CLEAR__":
+        return None
+
+    if field in BOOLEAN_FIELDS:
+        lowered = cleaned.casefold()
+
+        if lowered in {
+            "true",
+            "t",
+            "yes",
+            "y",
+            "1",
+        }:
+            return True
+
+        if lowered in {
+            "false",
+            "f",
+            "no",
+            "n",
+            "0",
+        }:
+            return False
+
+        raise ValueError(
+            f"{field} must be true, false, "
+            "blank, or __CLEAR__."
+        )
+
+    if field in INTEGER_FIELDS:
+        return int(
+            Decimal(cleaned)
+        )
+
+    return cleaned
+
+
+def save_changes(
+    original: pd.DataFrame,
+    edited: pd.DataFrame,
+) -> tuple[int, int]:
+    original_lookup = {
+        (
+            str(row["marketplace"]),
+            str(row["listing_id"]),
+        ): row
+        for _, row in original.iterrows()
+    }
+
+    update_statement = text(
+        """
+        UPDATE warehouse.auction_collector
+        SET
+            manual_catalog_number =
+                :manual_catalog_number,
+            manual_region =
+                :manual_region,
+            manual_media_type =
+                :manual_media_type,
+            manual_disc_count =
+                :manual_disc_count,
+            manual_bulk_lot =
+                :manual_bulk_lot,
+            manual_obi =
+                :manual_obi,
+            manual_insert_present =
+                :manual_insert_present,
+            manual_poster_present =
+                :manual_poster_present,
+            manual_rental =
+                :manual_rental,
+            manual_sticker =
+                :manual_sticker,
+            manual_promo =
+                :manual_promo,
+            manual_sealed =
+                :manual_sealed,
+            manual_reissue =
+                :manual_reissue,
+            manual_first_press =
+                :manual_first_press,
+            manual_importance_score =
+                :manual_importance_score,
+            manual_verdict =
+                :manual_verdict,
+            manual_condition_media =
+                :manual_condition_media,
+            manual_condition_cover =
+                :manual_condition_cover,
+            manual_completeness_notes =
+                :manual_completeness_notes,
+            manual_collector_notes =
+                :manual_collector_notes,
+            updated_at = NOW()
+        WHERE marketplace = :marketplace
+          AND listing_id = :listing_id
+        """
+    )
+
+    changed_rows = 0
+    changed_fields = 0
+
+    with engine.begin() as connection:
+        for _, edited_row in edited.iterrows():
+            key = (
+                str(
+                    edited_row[
+                        "marketplace"
+                    ]
+                ),
+                str(
+                    edited_row[
+                        "listing_id"
+                    ]
+                ),
+            )
+
+            original_row = original_lookup[
+                key
+            ]
+
+            payload: dict[str, Any] = {
+                "marketplace": key[0],
+                "listing_id": key[1],
+            }
+
+            row_changed = False
+
+            for field in MANUAL_FIELDS:
+                original_value = (
+                    original_row.get(field)
+                )
+                edited_value = (
+                    edited_row.get(field)
+                )
+
+                original_normalized = (
+                    ""
+                    if pd.isna(original_value)
+                    else str(original_value)
+                )
+                edited_normalized = (
+                    ""
+                    if pd.isna(edited_value)
+                    else str(edited_value)
+                )
+
+                if (
+                    original_normalized
+                    != edited_normalized
+                ):
+                    row_changed = True
+                    changed_fields += 1
+
+                payload[field] = (
+                    parse_manual_value(
+                        field,
+                        edited_value,
+                    )
+                )
+
+            if not row_changed:
+                continue
+
+            connection.execute(
+                update_statement,
+                payload,
+            )
+            changed_rows += 1
+
+    return (
+        changed_rows,
+        changed_fields,
+    )
+
+
+def xlsx_bytes(
+    frame: pd.DataFrame,
+) -> bytes:
+    output = io.BytesIO()
+
+    with pd.ExcelWriter(
+        output,
+        engine="openpyxl",
+    ) as writer:
+        frame.to_excel(
+            writer,
+            index=False,
+            sheet_name="Collector Review",
+        )
+
+    output.seek(0)
+    return output.read()
+
+
+st.set_page_config(
+    page_title="Auction Collector Review",
+    page_icon="💿",
+    layout="wide",
+)
+
+st.title(
+    "💿 Auction Collector Review"
+)
+st.caption(
+    "Automatic classifications remain separate from "
+    "manual overrides. Blank manual cells preserve the "
+    "automatic value. Use __CLEAR__ to remove a manual value."
+)
+
+with st.sidebar:
+    st.header("Filters")
+
+    marketplace = st.selectbox(
+        "Marketplace",
+        (
+            "all",
+            "buyee",
+            "ebay",
+        ),
+    )
+
+    seller = st.text_input(
+        "Seller contains",
+    )
+
+    verdict = st.selectbox(
+        "Verdict",
+        VERDICTS,
+    )
+
+    media_type = st.selectbox(
+        "Media type",
+        MEDIA_TYPES,
+    )
+
+    bulk_mode = st.selectbox(
+        "Bulk status",
+        (
+            "all",
+            "bulk",
+            "non_bulk",
+        ),
+    )
+
+    missing_only = st.checkbox(
+        "Only rows missing classification"
+    )
+
+    search = st.text_input(
+        "Search title, ID, catalog, seller"
+    )
+
+    limit = st.number_input(
+        "Maximum rows",
+        min_value=1,
+        max_value=5000,
+        value=500,
+        step=50,
+    )
+
+rows = database_rows(
+    marketplace=marketplace,
+    seller=seller,
+    verdict=verdict,
+    media_type=media_type,
+    missing_only=missing_only,
+    bulk_mode=bulk_mode,
+    search=search,
+    limit=int(limit),
+)
+
+frame = dataframe_for(rows)
+
+if frame.empty:
+    st.warning(
+        "No rows match the current filters."
+    )
+    st.stop()
+
+metric_columns = st.columns(5)
+
+metric_columns[0].metric(
+    "Rows",
+    len(frame),
+)
+
+metric_columns[1].metric(
+    "Sellers",
+    frame["seller"].nunique(
+        dropna=True
+    ),
+)
+
+metric_columns[2].metric(
+    "Bulk lots",
+    int(
+        frame[
+            "effective_bulk_lot"
+        ]
+        .fillna(False)
+        .astype(bool)
+        .sum()
+    ),
+)
+
+metric_columns[3].metric(
+    "Missing media",
+    int(
+        (
+            frame[
+                "effective_media_type"
+            ]
+            .fillna("")
+            == ""
+        ).sum()
+    ),
+)
+
+metric_columns[4].metric(
+    "Manual reviews",
+    int(
+        frame[
+            list(MANUAL_FIELDS)
+        ]
+        .notna()
+        .any(axis=1)
+        .sum()
+    ),
+)
+
+editable_columns = [
+    "marketplace",
+    "listing_id",
+    "ended_at",
+    "seller",
+    "title",
+    "auction_url",
+    "effective_catalog_number",
+    "effective_region",
+    "effective_media_type",
+    "effective_disc_count",
+    "effective_bulk_lot",
+    "effective_obi",
+    "effective_insert_present",
+    "effective_poster_present",
+    "start_price",
+    "final_price",
+    "tax_amount",
+    "gross_price",
+    "currency",
+    "bid_count",
+    "effective_importance_score",
+    "effective_verdict",
+    *MANUAL_FIELDS,
+]
+
+editable_frame = frame[
+    [
+        column
+        for column in editable_columns
+        if column in frame.columns
+    ]
+].copy()
+
+disabled_columns = [
+    column
+    for column in editable_frame.columns
+    if column not in MANUAL_FIELDS
+]
+
+column_config: dict[str, Any] = {
+    "auction_url": st.column_config.LinkColumn(
+        "Auction URL"
+    ),
+    "manual_verdict": st.column_config.SelectboxColumn(
+        "Manual verdict",
+        options=list(VERDICTS),
+    ),
+    "manual_media_type": st.column_config.SelectboxColumn(
+        "Manual media",
+        options=list(MEDIA_TYPES),
+    ),
+}
+
+for field in BOOLEAN_FIELDS:
+    column_config[field] = (
+        st.column_config.SelectboxColumn(
+            field,
+            options=list(
+                TRI_STATE_VALUES
+            ),
+        )
+    )
+
+st.subheader("Editable collector table")
+
+edited_frame = st.data_editor(
+    editable_frame,
+    use_container_width=True,
+    hide_index=True,
+    disabled=disabled_columns,
+    column_config=column_config,
+    num_rows="fixed",
+    height=650,
+    key="collector_editor",
+)
+
+action_columns = st.columns(
+    (
+        1,
+        1,
+        3,
+    )
+)
+
+with action_columns[0]:
+    save_clicked = st.button(
+        "Save manual changes",
+        type="primary",
+        use_container_width=True,
+    )
+
+with action_columns[1]:
+    refresh_clicked = st.button(
+        "Refresh",
+        use_container_width=True,
+    )
+
+if save_clicked:
+    try:
+        changed_rows, changed_fields = (
+            save_changes(
+                editable_frame,
+                edited_frame,
+            )
+        )
+    except (
+        ValueError,
+        TypeError,
+    ) as exc:
+        st.error(str(exc))
+    else:
+        st.success(
+            f"Saved {changed_fields} field change(s) "
+            f"across {changed_rows} row(s)."
+        )
+        st.cache_data.clear()
+        st.rerun()
+
+if refresh_clicked:
+    st.cache_data.clear()
+    st.rerun()
+
+download_columns = st.columns(2)
+
+csv_payload = edited_frame.to_csv(
+    index=False,
+    encoding="utf-8-sig",
+).encode("utf-8-sig")
+
+with download_columns[0]:
+    st.download_button(
+        "Download filtered CSV",
+        data=csv_payload,
+        file_name=(
+            "collector_review_filtered.csv"
+        ),
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+with download_columns[1]:
+    st.download_button(
+        "Download filtered XLSX",
+        data=xlsx_bytes(
+            edited_frame
+        ),
+        file_name=(
+            "collector_review_filtered.xlsx"
+        ),
+        mime=(
+            "application/vnd.openxmlformats-"
+            "officedocument.spreadsheetml.sheet"
+        ),
+        use_container_width=True,
+    )
+
+st.subheader("Selected record details")
+
+selected_key = st.selectbox(
+    "Record",
+    options=[
+        (
+            f"{row['marketplace']} | "
+            f"{row['listing_id']} | "
+            f"{str(row.get('title') or '')[:90]}"
+        )
+        for row in rows
+    ],
+)
+
+selected_index = [
+    (
+        f"{row['marketplace']} | "
+        f"{row['listing_id']} | "
+        f"{str(row.get('title') or '')[:90]}"
+    )
+    for row in rows
+].index(selected_key)
+
+selected_row = rows[
+    selected_index
+]
+
+detail_columns = st.columns(2)
+
+with detail_columns[0]:
+    st.markdown(
+        f"**Marketplace:** "
+        f"{selected_row['marketplace']}"
+    )
+    st.markdown(
+        f"**Listing ID:** "
+        f"{selected_row['listing_id']}"
+    )
+    st.markdown(
+        f"**Seller:** "
+        f"{selected_row.get('seller') or ''}"
+    )
+    st.markdown(
+        f"**Ended:** "
+        f"{selected_row.get('ended_at') or ''}"
+    )
+    st.markdown(
+        f"**Effective media:** "
+        f"{selected_row.get('effective_media_type') or ''}"
+    )
+    st.markdown(
+        f"**Effective catalog:** "
+        f"{selected_row.get('effective_catalog_number') or ''}"
+    )
+
+with detail_columns[1]:
+    st.markdown(
+        f"**Region:** "
+        f"{selected_row.get('effective_region') or ''}"
+    )
+    st.markdown(
+        f"**Disc count:** "
+        f"{selected_row.get('effective_disc_count') or ''}"
+    )
+    st.markdown(
+        f"**Bulk:** "
+        f"{selected_row.get('effective_bulk_lot')}"
+    )
+    st.markdown(
+        f"**Score:** "
+        f"{selected_row.get('effective_importance_score') or ''}"
+    )
+    st.markdown(
+        f"**Verdict:** "
+        f"{selected_row.get('effective_verdict') or ''}"
+    )
+
+st.markdown(
+    f"**Title:** {selected_row.get('title') or ''}"
+)
+
+if selected_row.get("auction_url"):
+    st.link_button(
+        "Open auction page",
+        selected_row["auction_url"],
+    )

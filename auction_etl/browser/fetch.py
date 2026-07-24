@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import time
-
-from bs4 import BeautifulSoup
 
 from auction_etl.browser.manager import browser
 
@@ -21,48 +18,15 @@ def fetch(
             timeout=60_000,
         )
 
-        print(f"Opened: {page.url}")
-
-        deadline = time.time() + 180
-
-        last_count = -1
-        stable = 0
-
-        while time.time() < deadline:
-            current_url = page.url
-
-            if "/splashui/challenge" in current_url:
-                print("⏳ Waiting for browser check...")
-                page.wait_for_timeout(2000)
-                continue
-
-            cards = page.locator("div.s-card[data-listingid]").count()
-
-            print(f"Listings detected: {cards}")
-
-            if cards == last_count and cards > 0:
-                stable += 1
-            else:
-                stable = 0
-
-            last_count = cards
-
-            if stable >= 3:
-                print(f"✅ Listings stabilized at {cards}")
-                break
-
-            page.wait_for_timeout(1000)
-        else:
-            print("⚠ Timed out waiting for listings.")
-
-        page.wait_for_timeout(1500)
+        try:
+            page.wait_for_load_state(
+                "networkidle",
+                timeout=10_000,
+            )
+        except Exception:
+            page.wait_for_timeout(2000)
 
         html = page.content()
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        print(f"Captured HTML: {len(html):,} bytes")
-        print(f"Cards in HTML: {len(soup.select('div.s-card[data-listingid]'))}")
 
         return {
             "url": page.url,

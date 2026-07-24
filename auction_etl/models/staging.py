@@ -126,6 +126,10 @@ class Listing(Base):
         String(128)
     )
 
+    disc_count: Mapped[int | None] = mapped_column(
+        Integer
+    )
+
     edition: Mapped[str | None] = mapped_column(
         String(128)
     )

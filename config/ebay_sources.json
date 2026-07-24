@@ -1,0 +1,16 @@
+[
+  {
+    "name": "facerecords",
+    "seller": "facerecords",
+    "url": "https://www.ebay.com/sch/i.html?_dkr=1&iconV2Request=true&_blrs=recall_filtering&_ssn=facerecords&store_cat=0&store_name=facerecords&_oac=1&_nkw=teresa+teng&rt=nc&LH_Complete=1",
+    "enabled": true,
+    "max_pages": 1,
+    "exclude_bulk": true,
+    "completed_only": true,
+    "apply_tax": true,
+    "tax_rate": 0.0625,
+    "profile": "anonymous",
+    "wait_seconds": 20.0,
+    "min_items": 1
+  }
+]

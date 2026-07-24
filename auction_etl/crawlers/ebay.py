@@ -2,27 +2,39 @@ from __future__ import annotations
 
 from bs4 import BeautifulSoup
 
+from auction_etl.browser.fetch import fetch
 
-def next_page(html: str) -> str | None:
+
+NEXT_SELECTORS = (
+    "a[rel='next']",
+    "a.pagination__next",
+    "a[aria-label='Next page']",
+)
+
+
+def _next_url(html: str) -> str | None:
     soup = BeautifulSoup(html, "html.parser")
 
-    selectors = (
-        'a[rel="next"]',
-        'a[aria-label="Go to next search page"]',
-        'a[aria-label="Next page"]',
-        'a.pagination__next',
-        'a[type="next"]',
-    )
-
-    for selector in selectors:
+    for selector in NEXT_SELECTORS:
         link = soup.select_one(selector)
-
-        if link is None:
-            continue
-
-        href = link.get("href")
-
-        if href:
-            return href
+        if link and link.get("href"):
+            return link["href"]
 
     return None
+
+
+def crawl(
+    url: str,
+    profile: str = "anonymous",
+):
+    current = url
+
+    while current:
+        page = fetch(
+            url=current,
+            profile=profile,
+        )
+
+        yield page
+
+        current = _next_url(page["html"])

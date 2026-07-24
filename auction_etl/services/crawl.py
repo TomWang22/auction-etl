@@ -1,9 +1,8 @@
 from sqlalchemy.orm import Session
 
-from auction_etl.browser.fetch import fetch
+from auction_etl.crawlers import crawl
 from auction_etl.models.crawl import CrawlJob
 from auction_etl.models.raw import RawPage
-from auction_etl.crawlers import next_page
 from auction_etl.services.ingest import ingest_raw_page
 from auction_etl.urls.router import route_url
 
@@ -21,28 +20,22 @@ def crawl_url(
     session.add(job)
     session.flush()
 
-    pages: list[RawPage] = []
-    visited: set[str] = set()
-
     marketplace = route_url(url)
 
-    current_url = url
+    pages: list[RawPage] = []
 
-    while current_url and current_url not in visited:
-        visited.add(current_url)
-
-        print(f"Fetching: {current_url}")
-
-        page = fetch(
-            url=current_url,
-            profile=profile,
-        )
+    for page in crawl(
+        marketplace=marketplace,
+        url=url,
+        profile=profile,
+    ):
+        print(f"Fetching: {page['url']}")
 
         raw = ingest_raw_page(
             session=session,
             job=job,
             page=page,
-            source=profile,
+            source=marketplace,
         )
 
         session.flush()
@@ -50,13 +43,7 @@ def crawl_url(
         pages.append(raw)
 
         print(
-            f"Stored page {raw.id}: "
-            f"{raw.url}"
-        )
-
-        current_url = next_page(
-            marketplace,
-            raw.html,
+            f"Stored page {raw.id}: {raw.url}"
         )
 
     job.status = "finished"

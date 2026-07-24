@@ -8,7 +8,7 @@ VIEWPORT = {
 USER_AGENT = None
 
 HEADLESS = False
-CHANNEL = "chrome"
+CHANNEL = None
 LOCALE = "en-US"
 TIMEZONE = "America/New_York"
 COLOR_SCHEME = "light"

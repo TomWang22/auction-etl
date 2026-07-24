@@ -3,10 +3,15 @@ import typer
 from auction_etl.cli.audit import app as audit_app
 from auction_etl.cli.doctor import app as doctor_app
 from auction_etl.cli.review import app as review_app
+from auction_etl.cli.report import app as report_app
+from auction_etl.cli.rebuild import app as rebuild_app
 from auction_etl.cli.stats import app as stats_app
 from auction_etl.cli.browser import app as browser_app
 from auction_etl.cli.crawl import app as crawl_app
 from auction_etl.cli.ingest import app as ingest_app
+from auction_etl.cli.normalize import app as normalize_app
+from auction_etl.cli.export import app as export_app
+from auction_etl.cli.parse import app as parse_app
 from auction_etl.cli.sync import app as sync_app
 from auction_etl.database.health import database_health
 
@@ -38,8 +43,13 @@ app.add_typer(db_app, name="db")
 app.add_typer(browser_app, name="browser")
 app.add_typer(crawl_app, name="crawl")
 app.add_typer(ingest_app, name="ingest")
+app.add_typer(normalize_app, name="normalize")
+app.add_typer(export_app, name="export")
+app.add_typer(parse_app, name="parse")
 app.add_typer(sync_app, name="sync")
 app.add_typer(review_app, name="review")
+app.add_typer(report_app, name="report")
+app.add_typer(rebuild_app, name="rebuild")
 app.add_typer(stats_app, name="stats")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(audit_app, name="audit")

@@ -3,14 +3,25 @@ from __future__ import annotations
 from auction_etl.crawlers import buyee, ebay
 
 
-def next_page(
+def crawl(
     marketplace: str,
-    html: str,
-) -> str | None:
+    url: str,
+    profile: str,
+):
     if marketplace == "ebay":
-        return ebay.next_page(html)
+        yield from ebay.crawl(
+            url=url,
+            profile=profile,
+        )
+        return
 
     if marketplace == "buyee":
-        return buyee.next_page(html)
+        yield from buyee.crawl(
+            url=url,
+            profile=profile,
+        )
+        return
 
-    raise ValueError(f"Unsupported marketplace: {marketplace}")
+    raise ValueError(
+        f"Unsupported marketplace: {marketplace}"
+    )
