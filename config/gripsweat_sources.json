@@ -1,0 +1,22 @@
+[
+  {
+    "name": "teresa-teng",
+    "artist": "Teresa Teng",
+    "query": "teresa teng",
+    "url_template": "https://gripsweat.com/search/?query={query}&page={page}&sort_by=date",
+    "enabled": true,
+    "max_pages": 100,
+    "delay_seconds": 3.0,
+    "sort_by": "date"
+  },
+  {
+    "name": "anita-mui",
+    "artist": "Anita Mui",
+    "query": "anita mui",
+    "url_template": "https://gripsweat.com/search/?query={query}&page={page}&sort_by=date",
+    "enabled": true,
+    "max_pages": 100,
+    "delay_seconds": 3.0,
+    "sort_by": "date"
+  }
+]
