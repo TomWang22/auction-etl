@@ -32,3 +32,13 @@ debug_page.html
 profiles/
 reports/
 review/
+# Private database recovery and operational artifacts
+backups/private/
+backups/recovery/*.dump
+backups/recovery/*.dump.contents.txt
+backups/recovery/*.contents.txt
+recovery-input/
+logs/collector-ui/
+logs/reconstruction/
+scripts/*.backup.*
+app/*.backup.*

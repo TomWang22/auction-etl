@@ -1,1927 +1,1859 @@
-"""Human-in-the-loop auction collector review UI."""
+"""Interactive review UI for Auction ETL collector records."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+import math
+import os
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
-from auction_etl.database.session import engine
 
-
-DATABASE_URL_LABEL = "auction_warehouse"
-
-VERDICTS = (
-    "",
-    "STRONG_INTEREST",
-    "WATCH",
-    "REFERENCE_ONLY",
-    "PASS",
-    "BULK_REVIEW",
-    "LOW_PRIORITY_REISSUE",
+DEFAULT_DATABASE_URL = (
+    "postgresql+psycopg://"
+    "auction:auction@localhost:5444/auction_warehouse"
 )
-
+PAGE_SIZE_OPTIONS = (50, 100, 250)
+TRI_STATE_OPTIONS = (
+    "Automatic / unset",
+    "Yes",
+    "No",
+)
+PRESSING_TYPES = (
+    "Automatic / unset",
+    "STANDARD",
+    "FIRST_PRESSING",
+    "PROMO_SAMPLE",
+    "REISSUE",
+)
+AUCTION_FORMATS = (
+    "Automatic / derived",
+    "AUCTION",
+    "AUCTION_WITH_BUYOUT",
+    "FIXED_PRICE",
+    "BEST_OFFER",
+    "UNKNOWN",
+)
 MEDIA_TYPES = (
-    "",
+    "Automatic / unset",
     "LP",
-    "2LP",
-    "3LP",
-    "4LP",
-    "5LP",
-    "6LP",
-    "7LP",
-    "8LP",
-    "10LP",
-    "12LP",
     "EP_7_INCH",
     "12_INCH_SINGLE",
     "CD",
-    "2CD",
-    "3CD",
-    "4CD",
-    "5CD",
     "CD_BOX_SET",
-    "CD_DVD_SET",
     "CASSETTE",
-    "CASSETTE_BOX_SET",
     "DVD",
     "VHS",
-    "LASERDISC",
-    "REEL_TO_REEL",
-    "BOOK",
-    "MEMORABILIA",
-    "MIXED_MEDIA",
     "OTHER",
 )
-
 REGIONS = (
-    "",
+    "Automatic / unset",
     "Japan",
     "Hong Kong",
     "Taiwan",
-    "Korea",
-    "Malaysia",
     "Singapore",
+    "Malaysia",
     "China",
+    "Korea",
     "United States",
-    "United Kingdom",
     "Europe",
     "Other",
 )
-
-TRI_STATE_OPTIONS = {
-    "Automatic / unset": None,
-    "Yes": True,
-    "No": False,
-}
-
-PURCHASE_STATUSES = (
-    "",
-    "WATCHING",
-    "CONSIDERING",
-    "BID_PLANNED",
-    "PURCHASED",
-    "PASSED",
-    "MISSED",
+VERDICTS = (
+    "Automatic / unset",
+    "PASS",
+    "WATCH",
+    "REFERENCE_ONLY",
+    "REJECT",
+)
+CONDITIONS = (
+    "Automatic / unset",
+    "M",
+    "NM",
+    "EX",
+    "VG+",
+    "VG",
+    "G+",
+    "G",
+    "P",
+    "UNKNOWN",
 )
 
 
-def initialize_schema() -> None:
-    """Create purchase tracking storage without changing collector tables."""
-    statements = (
-        """
-        CREATE TABLE IF NOT EXISTS warehouse.auction_purchase_review (
-            marketplace text NOT NULL,
-            listing_id text NOT NULL,
-            purchase_status text,
-            target_price numeric(14, 2),
-            purchase_price numeric(14, 2),
-            purchase_currency text,
-            purchased_at timestamptz,
-            purchase_notes text,
-            created_at timestamptz NOT NULL DEFAULT now(),
-            updated_at timestamptz NOT NULL DEFAULT now(),
-            PRIMARY KEY (marketplace, listing_id)
+def normalize_database_url(database_url: str) -> str:
+    """Return a Psycopg 3 SQLAlchemy URL."""
+    cleaned = database_url.strip()
+
+    if cleaned.startswith("postgresql+psycopg://"):
+        return cleaned
+
+    if cleaned.startswith("postgresql://"):
+        return cleaned.replace(
+            "postgresql://",
+            "postgresql+psycopg://",
+            1,
         )
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS
-            ix_auction_purchase_review_status
-        ON warehouse.auction_purchase_review (
-            purchase_status
-        )
-        """,
+
+    raise ValueError(
+        "DATABASE_URL must use PostgreSQL."
     )
 
-    with engine.begin() as connection:
-        for statement in statements:
-            connection.execute(text(statement))
+
+@st.cache_resource
+def get_engine() -> Engine:
+    """Create the shared SQLAlchemy engine."""
+    return create_engine(
+        normalize_database_url(
+            os.getenv(
+                "DATABASE_URL",
+                DEFAULT_DATABASE_URL,
+            )
+        ),
+        pool_pre_ping=True,
+    )
 
 
-def query_dataframe(
-    statement: str,
+def read_dataframe(
+    sql: str,
     parameters: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
-    """Run a query and return a dataframe."""
-    with engine.connect() as connection:
+    """Read one query into a dataframe."""
+    with get_engine().connect() as connection:
         return pd.read_sql_query(
-            text(statement),
+            text(sql),
             connection,
             params=parameters or {},
         )
 
 
 def execute_statement(
-    statement: str,
+    sql: str,
     parameters: dict[str, Any],
 ) -> None:
     """Execute one transactional statement."""
-    with engine.begin() as connection:
+    with get_engine().begin() as connection:
         connection.execute(
-            text(statement),
+            text(sql),
             parameters,
         )
 
 
-def display_value(value: Any) -> str:
-    """Return a consistent string for Streamlit and PyArrow."""
+def optional_text(value: Any) -> str | None:
+    """Normalize an optional text input."""
     if value is None:
-        return ""
-
-    try:
-        if pd.isna(value):
-            return ""
-    except (TypeError, ValueError):
-        pass
-
-    if isinstance(value, bool):
-        return "Yes" if value else "No"
-
-    if isinstance(value, datetime):
-        return value.isoformat()
-
-    if isinstance(value, date):
-        return value.isoformat()
-
-    if isinstance(value, Decimal):
-        return format(value, "f")
-
-    return str(value)
-
-
-def normalize_text(value: Any) -> str:
-    """Return a safe editable string."""
-    if value is None or pd.isna(value):
-        return ""
-
-    return str(value)
-
-
-def normalize_integer(value: Any) -> int | None:
-    """Return a safe integer."""
-    if value is None or pd.isna(value) or value == "":
         return None
 
-    return int(value)
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
-def normalize_decimal(value: Any) -> Decimal | None:
-    """Return a safe decimal."""
-    if value is None or pd.isna(value) or value == "":
+def optional_choice(
+    value: str,
+    automatic_label: str,
+) -> str | None:
+    """Convert an automatic choice to NULL."""
+    if value == automatic_label:
         return None
 
-    return Decimal(str(value))
+    return value
 
 
-def normalize_boolean(value: Any) -> bool | None:
-    """Return a nullable boolean."""
-    if value is None or pd.isna(value):
-        return None
+def tri_state_to_value(value: str) -> bool | None:
+    """Convert a tri-state label to a database value."""
+    if value == "Yes":
+        return True
 
-    return bool(value)
+    if value == "No":
+        return False
+
+    return None
 
 
-def select_index(
-    options: tuple[str, ...],
+def tri_state_index(value: Any) -> int:
+    """Return the selectbox index for a nullable boolean."""
+    if value is True:
+        return 1
+
+    if value is False:
+        return 2
+
+    return 0
+
+
+def choice_index(
+    choices: tuple[str, ...],
     value: Any,
 ) -> int:
     """Return a safe selectbox index."""
-    normalized = normalize_text(value)
+    if value is None:
+        return 0
+
+    normalized = str(value)
 
     try:
-        return options.index(normalized)
+        return choices.index(normalized)
     except ValueError:
         return 0
 
 
-def tri_state_label(value: Any) -> str:
-    """Convert a nullable boolean to its UI label."""
-    normalized = normalize_boolean(value)
+def money_display(
+    local_value: Any,
+    usd_value: Any,
+    currency: Any,
+) -> str:
+    """Format local and converted USD values together."""
+    if pd.isna(local_value):
+        return "—"
 
-    if normalized is True:
-        return "Yes"
+    local = Decimal(str(local_value))
+    currency_code = str(
+        currency or ""
+    ).upper()
 
-    if normalized is False:
-        return "No"
-
-    return "Automatic / unset"
-
-
-def parse_purchase_date(value: Any) -> date:
-    """Return a date suitable for Streamlit."""
-    if value is None or pd.isna(value):
-        return date.today()
-
-    if isinstance(value, pd.Timestamp):
-        return value.date()
-
-    if isinstance(value, datetime):
-        return value.date()
-
-    return date.today()
-
-
-def load_filter_options() -> dict[str, list[str]]:
-    """Load distinct filter choices."""
-    dataframe = query_dataframe(
-        """
-        SELECT
-            marketplace,
-            seller,
-            effective_media_type,
-            effective_verdict
-        FROM warehouse.auction_collector_effective
-        """
-    )
-
-    def values(column: str) -> list[str]:
-        series = (
-            dataframe[column]
-            .dropna()
-            .astype(str)
-            .str.strip()
-        )
-
-        return sorted(
-            value
-            for value in series.unique()
-            if value
-        )
-
-    return {
-        "marketplaces": values("marketplace"),
-        "sellers": values("seller"),
-        "media_types": values("effective_media_type"),
-        "verdicts": values("effective_verdict"),
-    }
-
-
-
-def load_results(
-    *,
-    marketplace: str,
-    seller_exact: str,
-    seller_contains: str,
-    verdict: str,
-    media_type: str,
-    bulk_status: str,
-    purchase_status: str,
-    missing_only: bool,
-    search: str,
-    ended_from: date | None,
-    ended_through: date | None,
-    limit: int,
-    offset: int = 0,
-) -> pd.DataFrame:
-    """Load one filtered and paginated collector result page."""
-    conditions = ["1 = 1"]
-    parameters: dict[str, Any] = {
-        "limit": limit,
-        "offset": offset,
-    }
-
-    if marketplace != "all":
-        conditions.append(
-            "a.marketplace = :marketplace"
-        )
-        parameters["marketplace"] = marketplace
-
-    if seller_exact:
-        conditions.append(
-            "a.seller = :seller_exact"
-        )
-        parameters["seller_exact"] = seller_exact
-
-    if seller_contains:
-        conditions.append(
-            "a.seller ILIKE :seller_contains"
-        )
-        parameters["seller_contains"] = (
-            f"%{seller_contains}%"
-        )
-
-    if verdict:
-        conditions.append(
-            "a.effective_verdict = :verdict"
-        )
-        parameters["verdict"] = verdict
-
-    if media_type:
-        conditions.append(
-            "a.effective_media_type = :media_type"
-        )
-        parameters["media_type"] = media_type
-
-    if bulk_status == "bulk":
-        conditions.append(
-            "COALESCE(a.effective_bulk_lot, false) = true"
-        )
-    elif bulk_status == "not_bulk":
-        conditions.append(
-            "COALESCE(a.effective_bulk_lot, false) = false"
-        )
-
-    if purchase_status:
-        conditions.append(
-            "p.purchase_status = :purchase_status"
-        )
-        parameters["purchase_status"] = purchase_status
-
-    if missing_only:
-        conditions.append(
-            """
-            (
-                a.effective_media_type IS NULL
-                OR a.effective_catalog_number IS NULL
-                OR a.effective_region IS NULL
-            )
-            """
-        )
-
-    if search:
-        conditions.append(
-            """
-            (
-                a.title ILIKE :search
-                OR a.listing_id ILIKE :search
-                OR a.seller ILIKE :search
-                OR a.effective_catalog_number ILIKE :search
-                OR a.auction_url ILIKE :search
-            )
-            """
-        )
-        parameters["search"] = f"%{search}%"
-
-    if ended_from is not None:
-        conditions.append(
-            "a.ended_at >= :ended_from"
-        )
-        parameters["ended_from"] = ended_from
-
-    if ended_through is not None:
-        conditions.append(
-            "a.ended_at < :ended_through"
-        )
-        parameters["ended_through"] = (
-            ended_through + timedelta(days=1)
-        )
-
-    where_clause = "\nAND ".join(conditions)
-
-    return query_dataframe(
-        f"""
-        SELECT
-            a.marketplace,
-            a.listing_id,
-            a.ended_at,
-            a.seller,
-            a.title,
-            a.auction_url,
-            a.effective_catalog_number,
-            a.effective_region,
-            a.effective_media_type,
-            a.effective_disc_count,
-            a.effective_bulk_lot,
-            a.effective_obi,
-            a.effective_insert_present,
-            a.effective_poster_present,
-            a.effective_importance_score,
-            a.effective_verdict,
-            a.gross_price,
-            a.currency,
-            p.purchase_status,
-            p.target_price,
-            p.purchase_price
-        FROM warehouse.auction_collector_effective AS a
-        LEFT JOIN warehouse.auction_purchase_review AS p
-          ON p.marketplace = a.marketplace
-         AND p.listing_id = a.listing_id
-        WHERE {where_clause}
-        ORDER BY
-            a.ended_at DESC NULLS LAST,
-            a.id DESC
-        LIMIT :limit
-        OFFSET :offset
-        """,
-        parameters,
-    )
-
-
-
-def load_result_count(
-    *,
-    marketplace: str,
-    seller_exact: str,
-    seller_contains: str,
-    verdict: str,
-    media_type: str,
-    bulk_status: str,
-    purchase_status: str,
-    missing_only: bool,
-    search: str,
-    ended_from: date | None,
-    ended_through: date | None,
-) -> int:
-    """Count every row matching the active filters."""
-    conditions = ["1 = 1"]
-    parameters: dict[str, Any] = {}
-
-    if marketplace != "all":
-        conditions.append(
-            "a.marketplace = :marketplace"
-        )
-        parameters["marketplace"] = marketplace
-
-    if seller_exact:
-        conditions.append(
-            "a.seller = :seller_exact"
-        )
-        parameters["seller_exact"] = seller_exact
-
-    if seller_contains:
-        conditions.append(
-            "a.seller ILIKE :seller_contains"
-        )
-        parameters["seller_contains"] = (
-            f"%{seller_contains}%"
-        )
-
-    if verdict:
-        conditions.append(
-            "a.effective_verdict = :verdict"
-        )
-        parameters["verdict"] = verdict
-
-    if media_type:
-        conditions.append(
-            "a.effective_media_type = :media_type"
-        )
-        parameters["media_type"] = media_type
-
-    if bulk_status == "bulk":
-        conditions.append(
-            "COALESCE(a.effective_bulk_lot, false) = true"
-        )
-    elif bulk_status == "not_bulk":
-        conditions.append(
-            "COALESCE(a.effective_bulk_lot, false) = false"
-        )
-
-    if purchase_status:
-        conditions.append(
-            "p.purchase_status = :purchase_status"
-        )
-        parameters["purchase_status"] = purchase_status
-
-    if missing_only:
-        conditions.append(
-            """
-            (
-                a.effective_media_type IS NULL
-                OR a.effective_catalog_number IS NULL
-                OR a.effective_region IS NULL
-            )
-            """
-        )
-
-    if search:
-        conditions.append(
-            """
-            (
-                a.title ILIKE :search
-                OR a.listing_id ILIKE :search
-                OR a.seller ILIKE :search
-                OR a.effective_catalog_number ILIKE :search
-                OR a.auction_url ILIKE :search
-            )
-            """
-        )
-        parameters["search"] = f"%{search}%"
-
-    if ended_from is not None:
-        conditions.append(
-            "a.ended_at >= :ended_from"
-        )
-        parameters["ended_from"] = ended_from
-
-    if ended_through is not None:
-        conditions.append(
-            "a.ended_at < :ended_through"
-        )
-        parameters["ended_through"] = (
-            ended_through + timedelta(days=1)
-        )
-
-    where_clause = "\nAND ".join(conditions)
-
-    dataframe = query_dataframe(
-        f"""
-        SELECT COUNT(*) AS total
-        FROM warehouse.auction_collector_effective AS a
-        LEFT JOIN warehouse.auction_purchase_review AS p
-          ON p.marketplace = a.marketplace
-         AND p.listing_id = a.listing_id
-        WHERE {where_clause}
-        """,
-        parameters,
-    )
-
-    if dataframe.empty:
-        return 0
-
-    return int(dataframe.iloc[0]["total"])
-
-
-
-def load_ended_date_bounds() -> tuple[date, date]:
-    """Load the available ending-date interval."""
-    dataframe = query_dataframe(
-        """
-        SELECT
-            MIN(ended_at)::date AS earliest_date,
-            MAX(ended_at)::date AS latest_date
-        FROM warehouse.auction_collector_effective
-        WHERE ended_at IS NOT NULL
-        """
-    )
-
-    today = datetime.now(
-        timezone.utc
-    ).date()
-
-    if dataframe.empty:
-        return today, today
-
-    earliest = dataframe.iloc[0]["earliest_date"]
-    latest = dataframe.iloc[0]["latest_date"]
-
-    earliest_date = pd.to_datetime(
-        earliest,
-        errors="coerce",
-    )
-    latest_date = pd.to_datetime(
-        latest,
-        errors="coerce",
-    )
-
-    if pd.isna(earliest_date):
-        earliest_value = today
+    if currency_code == "JPY":
+        local_text = f"¥{local:,.0f}"
+    elif currency_code == "USD":
+        local_text = f"${local:,.2f}"
     else:
-        earliest_value = earliest_date.date()
-
-    if pd.isna(latest_date):
-        latest_value = today
-    else:
-        latest_value = latest_date.date()
-
-    return earliest_value, latest_value
-
-
-def load_listing(
-    marketplace: str,
-    listing_id: str,
-) -> dict[str, Any]:
-    """Load one complete listing for review."""
-    dataframe = query_dataframe(
-        """
-        SELECT
-            a.*,
-            p.purchase_status,
-            p.target_price,
-            p.purchase_price,
-            p.purchase_currency,
-            p.purchased_at,
-            p.purchase_notes
-        FROM warehouse.auction_collector_effective AS a
-        LEFT JOIN warehouse.auction_purchase_review AS p
-          ON p.marketplace = a.marketplace
-         AND p.listing_id = a.listing_id
-        WHERE a.marketplace = :marketplace
-          AND a.listing_id = :listing_id
-        LIMIT 1
-        """,
-        {
-            "marketplace": marketplace,
-            "listing_id": listing_id,
-        },
-    )
-
-    if dataframe.empty:
-        raise ValueError(
-            f"Listing not found: {marketplace}/{listing_id}"
+        local_text = (
+            f"{local:,.2f} {currency_code}".strip()
         )
-
-    return dataframe.iloc[0].to_dict()
-
-
-def save_manual_review(
-    marketplace: str,
-    listing_id: str,
-    values: dict[str, Any],
-) -> None:
-    """Persist manual collector overrides."""
-    execute_statement(
-        """
-        UPDATE warehouse.auction_collector
-        SET
-            manual_catalog_number = :manual_catalog_number,
-            manual_region = :manual_region,
-            manual_media_type = :manual_media_type,
-            manual_disc_count = :manual_disc_count,
-            manual_bulk_lot = :manual_bulk_lot,
-            manual_obi = :manual_obi,
-            manual_insert_present = :manual_insert_present,
-            manual_poster_present = :manual_poster_present,
-            manual_rental = :manual_rental,
-            manual_sticker = :manual_sticker,
-            manual_promo = :manual_promo,
-            manual_sealed = :manual_sealed,
-            manual_reissue = :manual_reissue,
-            manual_first_press = :manual_first_press,
-            manual_importance_score = :manual_importance_score,
-            manual_verdict = :manual_verdict,
-            manual_condition_media = :manual_condition_media,
-            manual_condition_cover = :manual_condition_cover,
-            manual_completeness_notes = :manual_completeness_notes,
-            manual_collector_notes = :manual_collector_notes,
-            updated_at = now()
-        WHERE marketplace = :marketplace
-          AND listing_id = :listing_id
-        """,
-        {
-            "marketplace": marketplace,
-            "listing_id": listing_id,
-            **values,
-        },
-    )
-
-
-def save_purchase_review(
-    marketplace: str,
-    listing_id: str,
-    values: dict[str, Any],
-) -> None:
-    """Persist purchase planning information."""
-    execute_statement(
-        """
-        INSERT INTO warehouse.auction_purchase_review (
-            marketplace,
-            listing_id,
-            purchase_status,
-            target_price,
-            purchase_price,
-            purchase_currency,
-            purchased_at,
-            purchase_notes
-        )
-        VALUES (
-            :marketplace,
-            :listing_id,
-            :purchase_status,
-            :target_price,
-            :purchase_price,
-            :purchase_currency,
-            :purchased_at,
-            :purchase_notes
-        )
-        ON CONFLICT (marketplace, listing_id)
-        DO UPDATE SET
-            purchase_status = EXCLUDED.purchase_status,
-            target_price = EXCLUDED.target_price,
-            purchase_price = EXCLUDED.purchase_price,
-            purchase_currency = EXCLUDED.purchase_currency,
-            purchased_at = EXCLUDED.purchased_at,
-            purchase_notes = EXCLUDED.purchase_notes,
-            updated_at = now()
-        """,
-        {
-            "marketplace": marketplace,
-            "listing_id": listing_id,
-            **values,
-        },
-    )
-
-
-def nullable_text(value: str) -> str | None:
-    """Convert blank text to NULL."""
-    cleaned = value.strip()
-    return cleaned or None
-
-
-
-def clamp_page_number(
-    page_number: int,
-    total_pages: int,
-) -> int:
-    """Clamp a page number to the valid result range."""
-    return max(
-        1,
-        min(
-            int(page_number),
-            max(int(total_pages), 1),
-        ),
-    )
-
-
-def pagination_tokens(
-    page_number: int,
-    total_pages: int,
-) -> list[int | None]:
-    """Build compact eBay-style page-number tokens."""
-    page_number = clamp_page_number(
-        page_number,
-        total_pages,
-    )
-    total_pages = max(
-        int(total_pages),
-        1,
-    )
-
-    if total_pages <= 9:
-        return list(
-            range(1, total_pages + 1)
-        )
-
-    pages = {
-        1,
-        2,
-        total_pages - 1,
-        total_pages,
-        page_number - 2,
-        page_number - 1,
-        page_number,
-        page_number + 1,
-        page_number + 2,
-    }
-
-    valid_pages = sorted(
-        page
-        for page in pages
-        if 1 <= page <= total_pages
-    )
-
-    tokens: list[int | None] = []
-
-    for page in valid_pages:
-        if (
-            tokens
-            and tokens[-1] is not None
-            and page - int(tokens[-1]) > 1
-        ):
-            tokens.append(None)
-
-        tokens.append(page)
-
-    return tokens
-
-
-def go_to_page(
-    page_number: int,
-    total_pages: int,
-) -> None:
-    """Change the active page and rerun."""
-    st.session_state[
-        "collector_page_number"
-    ] = clamp_page_number(
-        page_number,
-        total_pages,
-    )
-    st.rerun()
-
-
-def render_pagination_controls(
-    *,
-    page_number: int,
-    total_pages: int,
-    location: str,
-) -> None:
-    """Render clickable Previous, page, and Next controls."""
-    page_number = clamp_page_number(
-        page_number,
-        total_pages,
-    )
-    total_pages = max(
-        int(total_pages),
-        1,
-    )
-
-    tokens = pagination_tokens(
-        page_number,
-        total_pages,
-    )
-
-    columns = st.columns(
-        [1.35]
-        + [0.55 for _ in tokens]
-        + [1.35]
-    )
-
-    if columns[0].button(
-        "← Previous",
-        disabled=page_number <= 1,
-        key=f"collector_previous_{location}",
-        width="stretch",
-    ):
-        go_to_page(
-            page_number - 1,
-            total_pages,
-        )
-
-    for index, token in enumerate(
-        tokens,
-        start=1,
-    ):
-        if token is None:
-            columns[index].markdown(
-                "<div style='"
-                "text-align:center;"
-                "padding-top:0.45rem;"
-                "font-weight:600;"
-                "'>…</div>",
-                unsafe_allow_html=True,
-            )
-            continue
-
-        label = (
-            f"• {token} •"
-            if token == page_number
-            else str(token)
-        )
-
-        if columns[index].button(
-            label,
-            disabled=token == page_number,
-            key=(
-                f"collector_page_{location}_"
-                f"{token}"
-            ),
-            width="stretch",
-        ):
-            go_to_page(
-                token,
-                total_pages,
-            )
-
-    if columns[-1].button(
-        "Next →",
-        disabled=page_number >= total_pages,
-        key=f"collector_next_{location}",
-        width="stretch",
-    ):
-        go_to_page(
-            page_number + 1,
-            total_pages,
-        )
-
-
-def reset_page_when_filters_change(
-    signature: tuple[Any, ...],
-) -> None:
-    """Return to page one after any filter changes."""
-    previous = st.session_state.get(
-        "collector_filter_signature"
-    )
 
     if (
-        previous is not None
-        and previous != signature
+        currency_code != "USD"
+        and not pd.isna(usd_value)
     ):
-        st.session_state[
-            "collector_page_number"
-        ] = 1
+        usd = Decimal(str(usd_value))
+        return (
+            f"{local_text} / ${usd:,.2f}"
+        )
 
-    st.session_state[
-        "collector_filter_signature"
-    ] = signature
+    return local_text
 
 
-def render_saved_confirmation() -> None:
-    """Render a confirmation retained across a rerun."""
-    message = st.session_state.pop(
-        "collector_saved_message",
-        None,
+def date_display(value: Any) -> str:
+    """Format one date or timestamp."""
+    if value is None or pd.isna(value):
+        return "—"
+
+    parsed = pd.Timestamp(value)
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.tz_convert("UTC")
+
+    return parsed.strftime(
+        "%Y-%m-%d %H:%M"
     )
 
-    if message:
-        st.success(
-            str(message),
-            icon="✅",
+
+def bool_display(value: Any) -> str:
+    """Return a human-readable boolean."""
+    return "Yes" if bool(value) else "No"
+
+
+def derive_filter_sql() -> tuple[str, dict[str, Any]]:
+    """Build the current sidebar filtering expression."""
+    clauses: list[str] = []
+    parameters: dict[str, Any] = {}
+
+    marketplace = st.session_state.marketplace_filter
+
+    if marketplace != "all":
+        clauses.append(
+            "a.marketplace = :marketplace"
+        )
+        parameters["marketplace"] = marketplace
+
+    search_text = (
+        st.session_state.search_filter.strip()
+    )
+
+    if search_text:
+        clauses.append(
+            """
+            (
+                a.title ILIKE :search_text
+                OR a.listing_id ILIKE :search_text
+                OR COALESCE(a.catalog_number, '')
+                    ILIKE :search_text
+                OR COALESCE(a.seller, '')
+                    ILIKE :search_text
+                OR COALESCE(a.artist, '')
+                    ILIKE :search_text
+            )
+            """
+        )
+        parameters["search_text"] = (
+            f"%{search_text}%"
+        )
+
+    seller_contains = (
+        st.session_state.seller_filter.strip()
+    )
+
+    if seller_contains:
+        clauses.append(
+            "COALESCE(a.seller, '') "
+            "ILIKE :seller_contains"
+        )
+        parameters["seller_contains"] = (
+            f"%{seller_contains}%"
+        )
+
+    if st.session_state.enable_date_filter:
+        date_clause = (
+            "COALESCE(a.closing_at, a.ended_at)"
+        )
+
+        if st.session_state.include_unknown_dates:
+            clauses.append(
+                f"""
+                (
+                    {date_clause} IS NULL
+                    OR {date_clause}::date
+                        BETWEEN :ended_from
+                            AND :ended_through
+                )
+                """
+            )
+        else:
+            clauses.append(
+                f"""
+                {date_clause}::date
+                    BETWEEN :ended_from
+                        AND :ended_through
+                """
+            )
+
+        parameters["ended_from"] = (
+            st.session_state.ended_from_filter
+        )
+        parameters["ended_through"] = (
+            st.session_state.ended_through_filter
+        )
+
+    verdict = st.session_state.verdict_filter
+
+    if verdict != "all":
+        clauses.append(
+            """
+            COALESCE(
+                c.manual_verdict,
+                c.auto_verdict
+            ) = :verdict
+            """
+        )
+        parameters["verdict"] = verdict
+
+    media_type = (
+        st.session_state.media_filter
+    )
+
+    if media_type != "all":
+        clauses.append(
+            """
+            COALESCE(
+                c.manual_media_type,
+                c.auto_media_type,
+                a.media_type
+            ) = :media_type
+            """
+        )
+        parameters["media_type"] = media_type
+
+    purchase = (
+        st.session_state.purchase_filter
+    )
+
+    if purchase == "Purchased":
+        clauses.append(
+            "COALESCE(c.manual_purchased, false)"
+        )
+    elif purchase == "Not purchased":
+        clauses.append(
+            "NOT COALESCE("
+            "c.manual_purchased, false)"
+        )
+
+    auction_format = (
+        st.session_state.auction_format_filter
+    )
+
+    if auction_format != "all":
+        clauses.append(
+            """
+            COALESCE(
+                c.manual_auction_format,
+                a.auction_format,
+                CASE
+                    WHEN a.buyout_price_gross
+                            IS NOT NULL
+                     AND COALESCE(
+                            a.bid_count,
+                            0
+                         ) > 0
+                        THEN 'AUCTION_WITH_BUYOUT'
+
+                    WHEN a.buyout_price_gross
+                            IS NOT NULL
+                        THEN 'FIXED_PRICE'
+
+                    WHEN COALESCE(
+                            a.bid_count,
+                            0
+                         ) > 0
+                      OR a.start_price IS NOT NULL
+                        THEN 'AUCTION'
+
+                    ELSE 'UNKNOWN'
+                END
+            ) = :auction_format
+            """
+        )
+        parameters[
+            "auction_format"
+        ] = auction_format
+
+    if not clauses:
+        return "TRUE", parameters
+
+    return (
+        "\nAND ".join(clauses),
+        parameters,
+    )
+
+
+FROM_SQL = """
+FROM warehouse.auction AS a
+
+LEFT JOIN warehouse.auction_collector AS c
+  ON c.marketplace = a.marketplace
+ AND c.listing_id = a.listing_id
+
+LEFT JOIN warehouse.auction_detail AS d
+  ON d.marketplace = a.marketplace
+ AND d.listing_id = a.listing_id
+"""
+
+
+SELECT_SQL = """
+SELECT
+    a.id,
+    a.marketplace,
+    a.listing_id,
+    a.auction_url,
+    a.seller,
+    a.artist,
+    a.title,
+    a.currency,
+
+    a.opening_at,
+    COALESCE(
+        a.closing_at,
+        a.ended_at
+    ) AS closing_at,
+
+    a.start_price,
+    a.start_price_usd,
+
+    a.final_price,
+    a.final_price_usd,
+
+    a.tax_amount,
+    a.tax_usd,
+
+    a.gross_price,
+    a.gross_price_usd,
+
+    a.shipping_price,
+    a.shipping_price_usd,
+
+    a.current_price_gross,
+    a.current_price_usd,
+
+    a.buyout_price_gross,
+    a.buyout_price_usd,
+
+    a.bid_count,
+    a.fx_rate_to_usd,
+    a.fx_rate_date,
+
+    COALESCE(
+        c.manual_media_type,
+        c.auto_media_type,
+        a.media_type
+    ) AS effective_media_type,
+
+    COALESCE(
+        c.manual_catalog_number,
+        c.auto_catalog_number,
+        a.catalog_number
+    ) AS effective_catalog_number,
+
+    COALESCE(
+        c.manual_region,
+        c.auto_region
+    ) AS effective_region,
+
+    COALESCE(
+        c.manual_disc_count,
+        c.auto_disc_count,
+        a.disc_count
+    ) AS effective_disc_count,
+
+    COALESCE(
+        c.manual_bulk_lot,
+        c.auto_bulk_lot,
+        a.bulk_lot,
+        false
+    ) AS effective_bulk_lot,
+
+    COALESCE(
+        c.manual_verdict,
+        c.auto_verdict
+    ) AS effective_verdict,
+
+    COALESCE(
+        c.manual_pressing_type,
+        c.auto_pressing_type,
+        CASE
+            WHEN COALESCE(
+                c.manual_promo,
+                c.auto_promo,
+                false
+            )
+                THEN 'PROMO_SAMPLE'
+
+            WHEN COALESCE(
+                c.manual_first_press,
+                c.auto_first_press,
+                false
+            )
+                THEN 'FIRST_PRESSING'
+
+            WHEN COALESCE(
+                c.manual_reissue,
+                c.auto_reissue,
+                false
+            )
+                THEN 'REISSUE'
+
+            ELSE 'STANDARD'
+        END
+    ) AS effective_pressing_type,
+
+    COALESCE(
+        c.manual_auction_format,
+        a.auction_format,
+        CASE
+            WHEN a.buyout_price_gross IS NOT NULL
+             AND COALESCE(a.bid_count, 0) > 0
+                THEN 'AUCTION_WITH_BUYOUT'
+
+            WHEN a.buyout_price_gross IS NOT NULL
+                THEN 'FIXED_PRICE'
+
+            WHEN COALESCE(a.bid_count, 0) > 0
+              OR a.start_price IS NOT NULL
+                THEN 'AUCTION'
+
+            ELSE 'UNKNOWN'
+        END
+    ) AS effective_auction_format,
+
+    COALESCE(
+        c.manual_purchased,
+        false
+    ) AS purchased,
+
+    c.manual_purchase_date,
+    c.manual_purchase_price,
+    c.manual_purchase_currency,
+    c.manual_purchase_notes,
+
+    c.manual_catalog_number,
+    c.manual_region,
+    c.manual_media_type,
+    c.manual_disc_count,
+    c.manual_bulk_lot,
+    c.manual_obi,
+    c.manual_insert_present,
+    c.manual_poster_present,
+    c.manual_rental,
+    c.manual_sticker,
+    c.manual_sealed,
+    c.manual_pressing_type,
+    c.manual_auction_format,
+    c.manual_importance_score,
+    c.manual_verdict,
+    c.manual_condition_media,
+    c.manual_condition_cover,
+    c.manual_completeness_notes,
+    c.manual_collector_notes,
+
+    d.auction_status,
+    d.condition_text,
+    d.detail_status,
+    d.fetched_at AS detail_fetched_at
+"""
+
+
+def render_navigation(
+    page: int,
+    page_count: int,
+    prefix: str,
+) -> None:
+    """Render previous and next controls."""
+    previous_column, page_column, next_column = (
+        st.columns(
+            [3, 1.5, 3]
+        )
+    )
+
+    with previous_column:
+        if st.button(
+            "← Previous",
+            disabled=page <= 1,
+            use_container_width=True,
+            key=f"{prefix}_previous",
+        ):
+            st.session_state.page_number = (
+                max(1, page - 1)
+            )
+            st.rerun()
+
+    with page_column:
+        st.button(
+            f"• {page} / {page_count} •",
+            disabled=True,
+            use_container_width=True,
+            key=f"{prefix}_page",
+        )
+
+    with next_column:
+        if st.button(
+            "Next →",
+            disabled=page >= page_count,
+            use_container_width=True,
+            key=f"{prefix}_next",
+        ):
+            st.session_state.page_number = (
+                min(page_count, page + 1)
+            )
+            st.rerun()
+
+
+def initialize_state() -> None:
+    """Initialize stable widget and pagination state."""
+    defaults = {
+        "marketplace_filter": "all",
+        "search_filter": "",
+        "seller_filter": "",
+        "enable_date_filter": False,
+        "include_unknown_dates": True,
+        "ended_from_filter": date(2025, 1, 1),
+        "ended_through_filter": date.today(),
+        "verdict_filter": "all",
+        "media_filter": "all",
+        "purchase_filter": "all",
+        "auction_format_filter": "all",
+        "page_size": 250,
+        "page_number": 1,
+        "filter_signature": None,
+    }
+
+    for key, value in defaults.items():
+        st.session_state.setdefault(
+            key,
+            value,
         )
 
 
-def render_summary(
-    results: pd.DataFrame,
-    *,
-    total_count: int,
-    page_number: int,
-    total_pages: int,
-) -> None:
-    """Render result and pagination metrics."""
-    metric_columns = st.columns(6)
+st.set_page_config(
+    page_title="Auction Collector Review",
+    page_icon="💿",
+    layout="wide",
+)
 
-    metric_columns[0].metric(
-        "Total matches",
-        total_count,
+initialize_state()
+
+st.title("💿 Auction Collector Review")
+st.caption(
+    "Search, compare local and USD prices, review live auction "
+    "facts, and track collection purchases. Blank manual fields "
+    "preserve automatic classifications."
+)
+
+marketplaces = read_dataframe(
+    """
+    SELECT DISTINCT marketplace
+    FROM warehouse.auction
+    ORDER BY marketplace
+    """
+)["marketplace"].dropna().astype(str).tolist()
+
+verdicts = read_dataframe(
+    """
+    SELECT DISTINCT
+        COALESCE(
+            manual_verdict,
+            auto_verdict
+        ) AS verdict
+    FROM warehouse.auction_collector
+    WHERE COALESCE(
+        manual_verdict,
+        auto_verdict
+    ) IS NOT NULL
+    ORDER BY verdict
+    """
+)["verdict"].dropna().astype(str).tolist()
+
+media_types = read_dataframe(
+    """
+    SELECT DISTINCT
+        COALESCE(
+            c.manual_media_type,
+            c.auto_media_type,
+            a.media_type
+        ) AS media_type
+    FROM warehouse.auction AS a
+    LEFT JOIN warehouse.auction_collector AS c
+      ON c.marketplace = a.marketplace
+     AND c.listing_id = a.listing_id
+    WHERE COALESCE(
+        c.manual_media_type,
+        c.auto_media_type,
+        a.media_type
+    ) IS NOT NULL
+    ORDER BY media_type
+    """
+)["media_type"].dropna().astype(str).tolist()
+
+with st.sidebar:
+    st.header("Search and filters")
+
+    st.selectbox(
+        "Marketplace",
+        ["all", *marketplaces],
+        key="marketplace_filter",
     )
-    metric_columns[1].metric(
-        "Visible rows",
-        len(results),
-    )
-    metric_columns[2].metric(
-        "Page",
-        f"{page_number} / {max(total_pages, 1)}",
-    )
-    metric_columns[3].metric(
-        "Visible sellers",
-        results["seller"].nunique(
-            dropna=True
+
+    st.text_input(
+        "Search",
+        placeholder=(
+            "Title, listing ID, catalog number, seller"
         ),
-    )
-    metric_columns[4].metric(
-        "Visible bulk lots",
-        int(
-            results["effective_bulk_lot"]
-            .fillna(False)
-            .sum()
-        ),
-    )
-    metric_columns[5].metric(
-        "Visible missing media",
-        int(
-            results["effective_media_type"]
-            .isna()
-            .sum()
-        ),
+        key="search_filter",
     )
 
-
-def render_result_table(
-    results: pd.DataFrame,
-) -> tuple[str, str] | None:
-    """Render searchable results and return the selected key."""
-    if results.empty:
-        st.warning("No listings match the current filters.")
-        return None
-
-    table = results.copy()
-
-    table["ended"] = pd.to_datetime(
-        table["ended_at"],
-        errors="coerce",
-        utc=True,
-    ).dt.strftime("%Y-%m-%d")
-
-    table["price"] = table.apply(
-        lambda row: (
-            f"{row['gross_price']} {row['currency']}"
-            if pd.notna(row["gross_price"])
-            else ""
-        ),
-        axis=1,
+    st.text_input(
+        "Seller contains",
+        key="seller_filter",
     )
 
-    display_columns = [
-        "marketplace",
-        "listing_id",
-        "ended",
-        "seller",
-        "title",
-        "effective_media_type",
-        "effective_catalog_number",
-        "effective_region",
-        "effective_disc_count",
-        "effective_bulk_lot",
-        "effective_verdict",
-        "purchase_status",
-        "price",
-    ]
+    st.checkbox(
+        "Filter by closing date",
+        key="enable_date_filter",
+    )
+
+    if st.session_state.enable_date_filter:
+        date_left, date_right = st.columns(2)
+
+        with date_left:
+            st.date_input(
+                "Closed from",
+                key="ended_from_filter",
+            )
+
+        with date_right:
+            st.date_input(
+                "Closed through",
+                key="ended_through_filter",
+            )
+
+        st.checkbox(
+            "Include unknown closing dates",
+            key="include_unknown_dates",
+        )
+
+    st.selectbox(
+        "Verdict",
+        ["all", *verdicts],
+        key="verdict_filter",
+    )
+
+    st.selectbox(
+        "Media type",
+        ["all", *media_types],
+        key="media_filter",
+    )
+
+    st.selectbox(
+        "Purchase",
+        [
+            "all",
+            "Purchased",
+            "Not purchased",
+        ],
+        key="purchase_filter",
+    )
+
+    st.selectbox(
+        "Auction type",
+        [
+            "all",
+            "AUCTION",
+            "AUCTION_WITH_BUYOUT",
+            "FIXED_PRICE",
+            "BEST_OFFER",
+            "UNKNOWN",
+        ],
+        key="auction_format_filter",
+    )
+
+    st.selectbox(
+        "Rows per page",
+        PAGE_SIZE_OPTIONS,
+        key="page_size",
+    )
+
+filter_signature = (
+    st.session_state.marketplace_filter,
+    st.session_state.search_filter,
+    st.session_state.seller_filter,
+    st.session_state.enable_date_filter,
+    st.session_state.include_unknown_dates,
+    st.session_state.ended_from_filter,
+    st.session_state.ended_through_filter,
+    st.session_state.verdict_filter,
+    st.session_state.media_filter,
+    st.session_state.purchase_filter,
+    st.session_state.auction_format_filter,
+    st.session_state.page_size,
+)
+
+if (
+    st.session_state.filter_signature
+    != filter_signature
+):
+    st.session_state.filter_signature = (
+        filter_signature
+    )
+    st.session_state.page_number = 1
+
+where_sql, query_parameters = (
+    derive_filter_sql()
+)
+
+summary = read_dataframe(
+    f"""
+    SELECT
+        COUNT(*) AS total_matches,
+        COUNT(DISTINCT a.seller)
+            AS visible_sellers,
+
+        COUNT(*) FILTER (
+            WHERE COALESCE(
+                c.manual_bulk_lot,
+                c.auto_bulk_lot,
+                a.bulk_lot,
+                false
+            )
+        ) AS bulk_lots,
+
+        COUNT(*) FILTER (
+            WHERE COALESCE(
+                c.manual_media_type,
+                c.auto_media_type,
+                a.media_type
+            ) IS NULL
+        ) AS missing_media
+
+    {FROM_SQL}
+    WHERE {where_sql}
+    """,
+    query_parameters,
+).iloc[0]
+
+total_matches = int(
+    summary["total_matches"]
+)
+page_size = int(
+    st.session_state.page_size
+)
+page_count = max(
+    1,
+    math.ceil(
+        total_matches / page_size
+    ),
+)
+page_number = min(
+    int(
+        st.session_state.page_number
+    ),
+    page_count,
+)
+st.session_state.page_number = page_number
+
+offset = (
+    page_number - 1
+) * page_size
+
+page_parameters = dict(
+    query_parameters
+)
+page_parameters.update(
+    {
+        "limit": page_size,
+        "offset": offset,
+    }
+)
+
+records = read_dataframe(
+    f"""
+    {SELECT_SQL}
+    {FROM_SQL}
+    WHERE {where_sql}
+    ORDER BY
+        COALESCE(
+            a.closing_at,
+            a.ended_at
+        ) DESC NULLS LAST,
+        a.id DESC
+    LIMIT :limit
+    OFFSET :offset
+    """,
+    page_parameters,
+)
+
+metrics = st.columns(6)
+
+metrics[0].metric(
+    "Total matches",
+    total_matches,
+)
+metrics[1].metric(
+    "Visible rows",
+    len(records),
+)
+metrics[2].metric(
+    "Page",
+    f"{page_number} / {page_count}",
+)
+metrics[3].metric(
+    "Visible sellers",
+    int(summary["visible_sellers"]),
+)
+metrics[4].metric(
+    "Visible bulk lots",
+    int(summary["bulk_lots"]),
+)
+metrics[5].metric(
+    "Visible missing media",
+    int(summary["missing_media"]),
+)
+
+render_navigation(
+    page_number,
+    page_count,
+    "top",
+)
+
+st.subheader("Search results")
+
+if records.empty:
+    st.warning(
+        "No listings match the current filters."
+    )
+else:
+    display = pd.DataFrame(
+        {
+            "Marketplace": records[
+                "marketplace"
+            ],
+            "Listing ID": records[
+                "listing_id"
+            ],
+            "Seller": records[
+                "seller"
+            ].fillna("—"),
+            "Title": records[
+                "title"
+            ],
+            "Media": records[
+                "effective_media_type"
+            ].fillna("—"),
+            "Catalog": records[
+                "effective_catalog_number"
+            ].fillna("—"),
+            "Region": records[
+                "effective_region"
+            ].fillna("—"),
+            "Pressing": records[
+                "effective_pressing_type"
+            ].fillna("STANDARD"),
+            "Auction type": records[
+                "effective_auction_format"
+            ].fillna("UNKNOWN"),
+            "Opened": records[
+                "opening_at"
+            ].map(date_display),
+            "Closed": records[
+                "closing_at"
+            ].map(date_display),
+            "Starting bid": [
+                money_display(
+                    local_value,
+                    usd_value,
+                    currency,
+                )
+                for local_value, usd_value, currency
+                in zip(
+                    records["start_price"],
+                    records["start_price_usd"],
+                    records["currency"],
+                    strict=False,
+                )
+            ],
+            "Hammer before tax": [
+                money_display(
+                    local_value,
+                    usd_value,
+                    currency,
+                )
+                for local_value, usd_value, currency
+                in zip(
+                    records["final_price"],
+                    records["final_price_usd"],
+                    records["currency"],
+                    strict=False,
+                )
+            ],
+            "Tax": [
+                money_display(
+                    local_value,
+                    usd_value,
+                    currency,
+                )
+                for local_value, usd_value, currency
+                in zip(
+                    records["tax_amount"],
+                    records["tax_usd"],
+                    records["currency"],
+                    strict=False,
+                )
+            ],
+            "Total with tax": [
+                money_display(
+                    local_value,
+                    usd_value,
+                    currency,
+                )
+                for local_value, usd_value, currency
+                in zip(
+                    records["gross_price"],
+                    records["gross_price_usd"],
+                    records["currency"],
+                    strict=False,
+                )
+            ],
+            "Buyout": [
+                money_display(
+                    local_value,
+                    usd_value,
+                    currency,
+                )
+                for local_value, usd_value, currency
+                in zip(
+                    records[
+                        "buyout_price_gross"
+                    ],
+                    records[
+                        "buyout_price_usd"
+                    ],
+                    records["currency"],
+                    strict=False,
+                )
+            ],
+            "Bids": records[
+                "bid_count"
+            ].fillna(0).astype(int),
+            "Purchased": records[
+                "purchased"
+            ].map(bool_display),
+            "Verdict": records[
+                "effective_verdict"
+            ].fillna("—"),
+            "Detail status": records[
+                "detail_status"
+            ].fillna("—"),
+            "URL": records[
+                "auction_url"
+            ],
+        }
+    )
 
     st.dataframe(
-        table[display_columns],
-        width="stretch",
+        display,
+        use_container_width=True,
         hide_index=True,
+        height=540,
         column_config={
-            "listing_id": st.column_config.TextColumn(
-                "Listing ID",
-                width="medium",
+            "URL": st.column_config.LinkColumn(
+                "Listing",
+                display_text="Open ↗",
             ),
-            "title": st.column_config.TextColumn(
-                "Title",
-                width="large",
-            ),
-            "effective_media_type": st.column_config.TextColumn(
-                "Media",
-            ),
-            "effective_catalog_number": st.column_config.TextColumn(
-                "Catalog",
-            ),
-            "effective_bulk_lot": st.column_config.CheckboxColumn(
-                "Bulk",
-            ),
-            "purchase_status": st.column_config.TextColumn(
-                "Purchase",
+            "Purchased": st.column_config.TextColumn(
+                "In collection",
             ),
         },
     )
 
-    options: list[tuple[str, str]] = [
-        (
-            str(row.marketplace),
-            str(row.listing_id),
-        )
-        for row in results.itertuples()
-    ]
+render_navigation(
+    page_number,
+    page_count,
+    "bottom",
+)
 
-    labels = {
-        key: (
-            f"{key[0]} · {key[1]} · "
-            f"{normalize_text(row.seller)} · "
-            f"{normalize_text(row.title)[:100]}"
-        )
-        for key, row in zip(
-            options,
-            results.itertuples(),
-            strict=True,
+if not records.empty:
+    option_rows = {
+        (
+            f"{row.marketplace} · "
+            f"{row.listing_id} · "
+            f"{row.seller or 'unknown seller'} · "
+            f"{row.title}"
+        ): row
+        for row in records.itertuples(
+            index=False
         )
     }
 
-    selected = st.selectbox(
+    selected_label = st.selectbox(
         "Select a listing to edit",
-        options=options,
-        format_func=lambda key: labels[key],
-        key="selected_listing_key",
+        options=list(option_rows),
     )
 
-    return selected
-
-
-def render_automatic_values(row: dict[str, Any]) -> None:
-    """Display automatic and effective classification values."""
-    with st.expander(
-        "Automatic and effective classification",
-        expanded=False,
-    ):
-        automatic = {
-            "Automatic catalog": row.get("auto_catalog_number"),
-            "Automatic region": row.get("auto_region"),
-            "Automatic media": row.get("auto_media_type"),
-            "Automatic disc count": row.get("auto_disc_count"),
-            "Automatic bulk": row.get("auto_bulk_lot"),
-            "Automatic obi": row.get("auto_obi"),
-            "Automatic insert": row.get("auto_insert_present"),
-            "Automatic poster": row.get("auto_poster_present"),
-            "Automatic score": row.get("auto_importance_score"),
-            "Automatic verdict": row.get("auto_verdict"),
-            "Effective catalog": row.get(
-                "effective_catalog_number"
-            ),
-            "Effective region": row.get("effective_region"),
-            "Effective media": row.get("effective_media_type"),
-            "Effective disc count": row.get(
-                "effective_disc_count"
-            ),
-            "Effective score": row.get(
-                "effective_importance_score"
-            ),
-            "Effective verdict": row.get("effective_verdict"),
-        }
-
-        automatic_rows = [
-            {
-                "Field": field,
-                "Value": display_value(value),
-            }
-            for field, value in automatic.items()
-        ]
-
-        st.dataframe(
-            pd.DataFrame(
-                automatic_rows,
-                columns=["Field", "Value"],
-            ),
-            hide_index=True,
-            width="stretch",
-        )
-
-
-def render_listing_editor(row: dict[str, Any]) -> None:
-    """Render the selected listing editor."""
-    marketplace = str(row["marketplace"])
-    listing_id = str(row["listing_id"])
+    selected = option_rows[
+        selected_label
+    ]
 
     st.divider()
 
-    title = normalize_text(row.get("title"))
-
-    st.subheader(title or listing_id)
-
-    identity_columns = st.columns([1, 1, 1, 2])
-
-    identity_columns[0].caption("Marketplace")
-    identity_columns[0].write(marketplace)
-
-    identity_columns[1].caption("Listing ID")
-    identity_columns[1].write(listing_id)
-
-    identity_columns[2].caption("Seller")
-    identity_columns[2].write(
-        normalize_text(row.get("seller")) or "—"
+    header_left, header_right = st.columns(
+        [5, 1]
     )
 
-    identity_columns[3].caption("Ended")
-    identity_columns[3].write(
-        normalize_text(row.get("ended_at")) or "—"
-    )
+    with header_left:
+        st.subheader(selected.title)
+        st.caption(
+            f"{selected.marketplace} · "
+            f"{selected.listing_id} · "
+            f"{selected.seller or 'unknown seller'}"
+        )
 
-    auction_url = normalize_text(row.get("auction_url"))
-
-    if auction_url:
+    with header_right:
         st.link_button(
-            "Open original auction",
-            auction_url,
+            "Open listing ↗",
+            selected.auction_url,
+            use_container_width=True,
         )
 
-    render_automatic_values(row)
+    price_columns = st.columns(5)
 
-    classification_tab, purchase_tab, raw_tab = st.tabs(
-        (
-            "Classification",
-            "Purchase tracking",
-            "Auction data",
-        )
+    price_columns[0].metric(
+        "Starting bid",
+        money_display(
+            selected.start_price,
+            selected.start_price_usd,
+            selected.currency,
+        ),
+    )
+    price_columns[1].metric(
+        "Hammer before tax",
+        money_display(
+            selected.final_price,
+            selected.final_price_usd,
+            selected.currency,
+        ),
+    )
+    price_columns[2].metric(
+        "Tax",
+        money_display(
+            selected.tax_amount,
+            selected.tax_usd,
+            selected.currency,
+        ),
+    )
+    price_columns[3].metric(
+        "Total with tax",
+        money_display(
+            selected.gross_price,
+            selected.gross_price_usd,
+            selected.currency,
+        ),
+    )
+    price_columns[4].metric(
+        "Bids",
+        int(selected.bid_count or 0),
     )
 
-    with classification_tab:
-        with st.form(
-            f"classification_{marketplace}_{listing_id}"
-        ):
-            st.markdown("#### Core classification")
+    st.caption(
+        f"Opened: {date_display(selected.opening_at)} · "
+        f"Closed: {date_display(selected.closing_at)} · "
+        f"FX date: "
+        f"{selected.fx_rate_date or 'not available'} · "
+        f"Live detail: "
+        f"{selected.detail_status or 'not available'}"
+    )
 
-            core_columns = st.columns(4)
+    with st.form(
+        "collector_editor",
+        clear_on_submit=False,
+    ):
+        st.subheader("Core classification")
 
-            manual_media_type = core_columns[0].selectbox(
+        core_columns = st.columns(5)
+
+        with core_columns[0]:
+            manual_media_type = st.selectbox(
                 "Manual media type",
                 MEDIA_TYPES,
-                index=select_index(
+                index=choice_index(
                     MEDIA_TYPES,
-                    row.get("manual_media_type"),
-                ),
-                help=(
-                    "Blank preserves the automatic media type."
+                    selected.manual_media_type,
                 ),
             )
 
-            manual_catalog_number = core_columns[1].text_input(
+        with core_columns[1]:
+            manual_catalog_number = st.text_input(
                 "Manual catalog / pressing number",
-                value=normalize_text(
-                    row.get("manual_catalog_number")
+                value=(
+                    selected.manual_catalog_number
+                    or ""
                 ),
-                placeholder="MR3166, 28TR-2062, 817 556-1",
             )
 
-            manual_region = core_columns[2].selectbox(
+        with core_columns[2]:
+            manual_region = st.selectbox(
                 "Manual region",
                 REGIONS,
-                index=select_index(
+                index=choice_index(
                     REGIONS,
-                    row.get("manual_region"),
+                    selected.manual_region,
                 ),
             )
 
-            disc_count_value = normalize_integer(
-                row.get("manual_disc_count")
-            )
-
-            manual_disc_count = core_columns[3].number_input(
+        with core_columns[3]:
+            manual_disc_count = st.number_input(
                 "Manual disc count",
                 min_value=0,
-                max_value=999,
-                value=disc_count_value or 0,
-                step=1,
-                help="Use 0 to preserve the automatic value.",
-            )
-
-            st.markdown("#### Completeness and edition")
-
-            completeness_columns = st.columns(5)
-
-            manual_bulk_lot_label = completeness_columns[
-                0
-            ].selectbox(
-                "Bulk lot",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_bulk_lot")
-                    )
-                ),
-            )
-
-            manual_obi_label = completeness_columns[
-                1
-            ].selectbox(
-                "Obi",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_obi")
-                    )
-                ),
-            )
-
-            manual_insert_label = completeness_columns[
-                2
-            ].selectbox(
-                "Insert",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_insert_present")
-                    )
-                ),
-            )
-
-            manual_poster_label = completeness_columns[
-                3
-            ].selectbox(
-                "Poster",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_poster_present")
-                    )
-                ),
-            )
-
-            manual_rental_label = completeness_columns[
-                4
-            ].selectbox(
-                "Rental",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_rental")
-                    )
-                ),
-            )
-
-            edition_columns = st.columns(5)
-
-            manual_sticker_label = edition_columns[0].selectbox(
-                "Sticker",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_sticker")
-                    )
-                ),
-            )
-
-            manual_promo_label = edition_columns[1].selectbox(
-                "Promo / sample",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_promo")
-                    )
-                ),
-            )
-
-            manual_sealed_label = edition_columns[
-                2
-            ].selectbox(
-                "Sealed",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_sealed")
-                    )
-                ),
-            )
-
-            manual_reissue_label = edition_columns[
-                3
-            ].selectbox(
-                "Reissue",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_reissue")
-                    )
-                ),
-            )
-
-            manual_first_press_label = edition_columns[
-                4
-            ].selectbox(
-                "First pressing",
-                tuple(TRI_STATE_OPTIONS),
-                index=tuple(TRI_STATE_OPTIONS).index(
-                    tri_state_label(
-                        row.get("manual_first_press")
-                    )
-                ),
-            )
-
-            st.markdown("#### Condition and collector verdict")
-
-            verdict_columns = st.columns(4)
-
-            manual_condition_media = verdict_columns[
-                0
-            ].text_input(
-                "Media condition",
-                value=normalize_text(
-                    row.get("manual_condition_media")
-                ),
-                placeholder="M, NM, E, VG+, VG",
-            )
-
-            manual_condition_cover = verdict_columns[
-                1
-            ].text_input(
-                "Cover condition",
-                value=normalize_text(
-                    row.get("manual_condition_cover")
-                ),
-                placeholder="M, NM, E, VG+, VG",
-            )
-
-            existing_score = normalize_integer(
-                row.get("manual_importance_score")
-            )
-
-            manual_importance_score = verdict_columns[
-                2
-            ].number_input(
-                "Importance score",
-                min_value=0,
                 max_value=100,
-                value=existing_score or 0,
+                value=int(
+                    selected.manual_disc_count
+                    or 0
+                ),
                 step=1,
-                help="Use 0 to preserve the automatic score.",
+                help="Zero preserves the automatic value.",
             )
 
-            manual_verdict = verdict_columns[3].selectbox(
+        with core_columns[4]:
+            manual_pressing_type = st.selectbox(
+                "Pressing type",
+                PRESSING_TYPES,
+                index=choice_index(
+                    PRESSING_TYPES,
+                    selected.manual_pressing_type,
+                ),
+                help=(
+                    "One mutually exclusive choice: standard, "
+                    "first pressing, promo/sample, or reissue."
+                ),
+            )
+
+        st.subheader("Sale format and collection")
+
+        sale_columns = st.columns(5)
+
+        with sale_columns[0]:
+            manual_auction_format = st.selectbox(
+                "Sale type",
+                AUCTION_FORMATS,
+                index=choice_index(
+                    AUCTION_FORMATS,
+                    selected.manual_auction_format,
+                ),
+            )
+
+        with sale_columns[1]:
+            purchased = st.checkbox(
+                "In collection / purchased",
+                value=bool(
+                    selected.purchased
+                ),
+            )
+
+        purchase_date_value = (
+            selected.manual_purchase_date
+            if selected.manual_purchase_date
+            else date.today()
+        )
+
+        with sale_columns[2]:
+            purchase_date = st.date_input(
+                "Purchase date",
+                value=purchase_date_value,
+                disabled=not purchased,
+            )
+
+        with sale_columns[3]:
+            purchase_price = st.number_input(
+                "Purchase price",
+                min_value=0.0,
+                value=float(
+                    selected.manual_purchase_price
+                    or 0
+                ),
+                step=1.0,
+                disabled=not purchased,
+            )
+
+        with sale_columns[4]:
+            purchase_currency = st.selectbox(
+                "Purchase currency",
+                (
+                    "USD",
+                    "JPY",
+                    "HKD",
+                    "TWD",
+                    "Other",
+                ),
+                index=(
+                    (
+                        "USD",
+                        "JPY",
+                        "HKD",
+                        "TWD",
+                        "Other",
+                    ).index(
+                        selected.manual_purchase_currency
+                    )
+                    if selected.manual_purchase_currency
+                    in (
+                        "USD",
+                        "JPY",
+                        "HKD",
+                        "TWD",
+                        "Other",
+                    )
+                    else 0
+                ),
+                disabled=not purchased,
+            )
+
+        st.subheader("Completeness and edition")
+
+        flag_columns_one = st.columns(5)
+
+        with flag_columns_one[0]:
+            manual_bulk_lot = st.selectbox(
+                "Bulk lot",
+                TRI_STATE_OPTIONS,
+                index=tri_state_index(
+                    selected.manual_bulk_lot
+                ),
+            )
+
+        with flag_columns_one[1]:
+            manual_obi = st.selectbox(
+                "Obi",
+                TRI_STATE_OPTIONS,
+                index=tri_state_index(
+                    selected.manual_obi
+                ),
+            )
+
+        with flag_columns_one[2]:
+            manual_insert_present = st.selectbox(
+                "Insert",
+                TRI_STATE_OPTIONS,
+                index=tri_state_index(
+                    selected.manual_insert_present
+                ),
+            )
+
+        with flag_columns_one[3]:
+            manual_poster_present = st.selectbox(
+                "Poster",
+                TRI_STATE_OPTIONS,
+                index=tri_state_index(
+                    selected.manual_poster_present
+                ),
+            )
+
+        with flag_columns_one[4]:
+            manual_rental = st.selectbox(
+                "Rental",
+                TRI_STATE_OPTIONS,
+                index=tri_state_index(
+                    selected.manual_rental
+                ),
+            )
+
+        flag_columns_two = st.columns(3)
+
+        with flag_columns_two[0]:
+            manual_sticker = st.selectbox(
+                "Sticker",
+                TRI_STATE_OPTIONS,
+                index=tri_state_index(
+                    selected.manual_sticker
+                ),
+            )
+
+        with flag_columns_two[1]:
+            manual_sealed = st.selectbox(
+                "Sealed",
+                TRI_STATE_OPTIONS,
+                index=tri_state_index(
+                    selected.manual_sealed
+                ),
+            )
+
+        with flag_columns_two[2]:
+            st.text_input(
+                "Live condition",
+                value=(
+                    selected.condition_text
+                    or "Not available"
+                ),
+                disabled=True,
+            )
+
+        st.subheader(
+            "Condition and collector verdict"
+        )
+
+        condition_columns = st.columns(4)
+
+        with condition_columns[0]:
+            manual_condition_media = st.selectbox(
+                "Media condition",
+                CONDITIONS,
+                index=choice_index(
+                    CONDITIONS,
+                    selected.manual_condition_media,
+                ),
+            )
+
+        with condition_columns[1]:
+            manual_condition_cover = st.selectbox(
+                "Cover condition",
+                CONDITIONS,
+                index=choice_index(
+                    CONDITIONS,
+                    selected.manual_condition_cover,
+                ),
+            )
+
+        with condition_columns[2]:
+            manual_importance_score = (
+                st.number_input(
+                    "Importance score",
+                    min_value=0,
+                    max_value=100,
+                    value=int(
+                        selected.manual_importance_score
+                        or 0
+                    ),
+                    step=1,
+                )
+            )
+
+        with condition_columns[3]:
+            manual_verdict = st.selectbox(
                 "Manual verdict",
                 VERDICTS,
-                index=select_index(
+                index=choice_index(
                     VERDICTS,
-                    row.get("manual_verdict"),
+                    selected.manual_verdict,
                 ),
             )
 
-            manual_completeness_notes = st.text_area(
+        manual_completeness_notes = (
+            st.text_area(
                 "Completeness / pressing notes",
-                value=normalize_text(
-                    row.get("manual_completeness_notes")
+                value=(
+                    selected.manual_completeness_notes
+                    or ""
                 ),
                 placeholder=(
                     "Complete with obi, insert and poster; "
                     "rental sticker on rear sleeve..."
                 ),
-                height=100,
             )
+        )
 
-            manual_collector_notes = st.text_area(
-                "Collector notes",
-                value=normalize_text(
-                    row.get("manual_collector_notes")
-                ),
-                placeholder=(
-                    "Why this pressing matters, comparable sales, "
-                    "condition concerns, desired ceiling..."
-                ),
-                height=140,
-            )
-
-            save_classification = st.form_submit_button(
-                "Save classification",
-                type="primary",
-                width="stretch",
-            )
-
-        if save_classification:
-            save_manual_review(
-                marketplace,
-                listing_id,
-                {
-                    "manual_catalog_number": nullable_text(
-                        manual_catalog_number
-                    ),
-                    "manual_region": nullable_text(
-                        manual_region
-                    ),
-                    "manual_media_type": nullable_text(
-                        manual_media_type
-                    ),
-                    "manual_disc_count": (
-                        manual_disc_count
-                        if manual_disc_count > 0
-                        else None
-                    ),
-                    "manual_bulk_lot": TRI_STATE_OPTIONS[
-                        manual_bulk_lot_label
-                    ],
-                    "manual_obi": TRI_STATE_OPTIONS[
-                        manual_obi_label
-                    ],
-                    "manual_insert_present": TRI_STATE_OPTIONS[
-                        manual_insert_label
-                    ],
-                    "manual_poster_present": TRI_STATE_OPTIONS[
-                        manual_poster_label
-                    ],
-                    "manual_rental": TRI_STATE_OPTIONS[
-                        manual_rental_label
-                    ],
-                    "manual_sticker": TRI_STATE_OPTIONS[
-                        manual_sticker_label
-                    ],
-                    "manual_promo": TRI_STATE_OPTIONS[
-                        manual_promo_label
-                    ],
-                    "manual_sealed": TRI_STATE_OPTIONS[
-                        manual_sealed_label
-                    ],
-                    "manual_reissue": TRI_STATE_OPTIONS[
-                        manual_reissue_label
-                    ],
-                    "manual_first_press": TRI_STATE_OPTIONS[
-                        manual_first_press_label
-                    ],
-                    "manual_importance_score": (
-                        manual_importance_score
-                        if manual_importance_score > 0
-                        else None
-                    ),
-                    "manual_verdict": nullable_text(
-                        manual_verdict
-                    ),
-                    "manual_condition_media": nullable_text(
-                        manual_condition_media
-                    ),
-                    "manual_condition_cover": nullable_text(
-                        manual_condition_cover
-                    ),
-                    "manual_completeness_notes": nullable_text(
-                        manual_completeness_notes
-                    ),
-                    "manual_collector_notes": nullable_text(
-                        manual_collector_notes
-                    ),
-                },
-            )
-
-            st.success(
-                f"Saved classification for {listing_id}."
-            )
-            st.rerun()
-
-    with purchase_tab:
-        with st.form(
-            f"purchase_{marketplace}_{listing_id}"
-        ):
-            st.markdown("#### Purchase decision")
-
-            purchase_columns = st.columns(4)
-
-            purchase_status = purchase_columns[0].selectbox(
-                "Purchase status",
-                PURCHASE_STATUSES,
-                index=select_index(
-                    PURCHASE_STATUSES,
-                    row.get("purchase_status"),
-                ),
-            )
-
-            target_price = purchase_columns[1].number_input(
-                "Target / maximum price",
-                min_value=0.0,
-                value=float(
-                    normalize_decimal(
-                        row.get("target_price")
-                    )
-                    or Decimal("0")
-                ),
-                step=1.0,
-            )
-
-            purchase_price = purchase_columns[2].number_input(
-                "Actual purchase price",
-                min_value=0.0,
-                value=float(
-                    normalize_decimal(
-                        row.get("purchase_price")
-                    )
-                    or Decimal("0")
-                ),
-                step=1.0,
-            )
-
-            default_currency = (
-                normalize_text(
-                    row.get("purchase_currency")
-                )
-                or normalize_text(row.get("currency"))
-                or "USD"
-            )
-
-            purchase_currency = purchase_columns[
-                3
-            ].text_input(
-                "Purchase currency",
-                value=default_currency,
-            )
-
-            purchase_date = st.date_input(
-                "Purchase date",
-                value=parse_purchase_date(
-                    row.get("purchased_at")
-                ),
-            )
-
-            purchase_notes = st.text_area(
-                "Purchase notes",
-                value=normalize_text(
-                    row.get("purchase_notes")
-                ),
-                placeholder=(
-                    "Bought through Buyee, proxy fees excluded; "
-                    "waiting on warehouse arrival..."
-                ),
-                height=140,
-            )
-
-            save_purchase = st.form_submit_button(
-                "Save purchase tracking",
-                type="primary",
-                width="stretch",
-            )
-
-        if save_purchase:
-            purchased_at = None
-
-            if purchase_status == "PURCHASED":
-                purchased_at = datetime.combine(
-                    purchase_date,
-                    time.min,
-                    tzinfo=timezone.utc,
-                )
-
-            save_purchase_review(
-                marketplace,
-                listing_id,
-                {
-                    "purchase_status": nullable_text(
-                        purchase_status
-                    ),
-                    "target_price": (
-                        Decimal(str(target_price))
-                        if target_price > 0
-                        else None
-                    ),
-                    "purchase_price": (
-                        Decimal(str(purchase_price))
-                        if purchase_price > 0
-                        else None
-                    ),
-                    "purchase_currency": nullable_text(
-                        purchase_currency
-                    ),
-                    "purchased_at": purchased_at,
-                    "purchase_notes": nullable_text(
-                        purchase_notes
-                    ),
-                },
-            )
-
-            st.success(
-                f"Saved purchase tracking for {listing_id}."
-            )
-            st.rerun()
-
-    with raw_tab:
-        detail_columns = st.columns(3)
-
-        detail_columns[0].metric(
-            "Gross price",
-            (
-                f"{row.get('gross_price')} "
-                f"{normalize_text(row.get('currency'))}"
-                if row.get("gross_price") is not None
-                else "—"
+        manual_collector_notes = st.text_area(
+            "Collector notes",
+            value=(
+                selected.manual_collector_notes
+                or ""
             ),
-        )
-        detail_columns[1].metric(
-            "Bids",
-            normalize_text(row.get("bid_count")) or "—",
-        )
-        detail_columns[2].metric(
-            "Seller sales",
-            (
-                normalize_text(
-                    row.get("seller_total_sales")
-                )
-                or "—"
-            ),
-        )
-
-        raw_fields = (
-            "start_price",
-            "final_price",
-            "tax_amount",
-            "gross_price",
-            "currency",
-            "bid_count",
-            "auction_duration_days",
-            "start_to_finish_multiplier",
-            "bids_per_day",
-            "condition_text",
-            "condition_media",
-            "condition_cover",
-            "seller_first_sale_at",
-            "seller_last_sale_at",
-            "seller_average_gross_price",
-        )
-
-        raw_rows = [
-            {
-                "Field": field,
-                "Value": display_value(
-                    row.get(field)
-                ),
-            }
-            for field in raw_fields
-        ]
-
-        st.dataframe(
-            pd.DataFrame(
-                raw_rows,
-                columns=["Field", "Value"],
-            ),
-            hide_index=True,
-            width="stretch",
-        )
-
-
-
-def main() -> None:
-    """Run the Streamlit collector review interface."""
-    st.set_page_config(
-        page_title="Auction Collector Review",
-        page_icon="💿",
-        layout="wide",
-    )
-
-    initialize_schema()
-
-    st.title("💿 Auction Collector Review")
-    st.caption(
-        "Search first, select one listing, then edit manual "
-        "classification or purchase tracking. Blank manual fields "
-        "preserve automatic classifications."
-    )
-
-    render_saved_confirmation()
-
-    filter_options = load_filter_options()
-    earliest_date, latest_date = (
-        load_ended_date_bounds()
-    )
-
-    with st.sidebar:
-        st.header("Search and filters")
-
-        marketplace = st.selectbox(
-            "Marketplace",
-            ["all", *filter_options["marketplaces"]],
-        )
-
-        search = st.text_input(
-            "Search",
             placeholder=(
-                "Title, listing ID, catalog number, seller"
+                "Why this pressing matters, comparable sales, "
+                "condition concerns, desired ceiling..."
             ),
         )
 
-        seller_exact = st.selectbox(
-            "Seller",
-            ["", *filter_options["sellers"]],
-            help="Choose one exact seller.",
-        )
-
-        seller_contains = st.text_input(
-            "Seller contains",
-            help=(
-                "Optional partial seller-name search."
+        purchase_notes = st.text_area(
+            "Purchase notes",
+            value=(
+                selected.manual_purchase_notes
+                or ""
+            ),
+            disabled=not purchased,
+            placeholder=(
+                "Source, shipping, fees, shelf location, "
+                "or acquisition details..."
             ),
         )
 
-        date_columns = st.columns(2)
-
-        ended_from = date_columns[0].date_input(
-            "Ended from",
-            value=earliest_date,
-            min_value=earliest_date,
-            max_value=latest_date,
+        save_submitted = st.form_submit_button(
+            "Save collector record",
+            type="primary",
+            use_container_width=True,
         )
 
-        ended_through = date_columns[1].date_input(
-            "Ended through",
-            value=latest_date,
-            min_value=earliest_date,
-            max_value=latest_date,
+    if save_submitted:
+        pressing_type_value = optional_choice(
+            manual_pressing_type,
+            "Automatic / unset",
         )
 
-        if ended_from > ended_through:
-            st.error(
-                "Ended from must not be later than "
-                "Ended through."
+        manual_promo = None
+        manual_first_press = None
+        manual_reissue = None
+
+        if pressing_type_value == "STANDARD":
+            manual_promo = False
+            manual_first_press = False
+            manual_reissue = False
+        elif pressing_type_value == "PROMO_SAMPLE":
+            manual_promo = True
+            manual_first_press = False
+            manual_reissue = False
+        elif pressing_type_value == "FIRST_PRESSING":
+            manual_promo = False
+            manual_first_press = True
+            manual_reissue = False
+        elif pressing_type_value == "REISSUE":
+            manual_promo = False
+            manual_first_press = False
+            manual_reissue = True
+
+        save_parameters = {
+            "marketplace": selected.marketplace,
+            "listing_id": selected.listing_id,
+            "manual_media_type": optional_choice(
+                manual_media_type,
+                "Automatic / unset",
+            ),
+            "manual_catalog_number": optional_text(
+                manual_catalog_number
+            ),
+            "manual_region": optional_choice(
+                manual_region,
+                "Automatic / unset",
+            ),
+            "manual_disc_count": (
+                int(manual_disc_count)
+                if manual_disc_count > 0
+                else None
+            ),
+            "manual_pressing_type": (
+                pressing_type_value
+            ),
+            "manual_promo": manual_promo,
+            "manual_first_press": (
+                manual_first_press
+            ),
+            "manual_reissue": manual_reissue,
+            "manual_auction_format": optional_choice(
+                manual_auction_format,
+                "Automatic / derived",
+            ),
+            "manual_bulk_lot": tri_state_to_value(
+                manual_bulk_lot
+            ),
+            "manual_obi": tri_state_to_value(
+                manual_obi
+            ),
+            "manual_insert_present": (
+                tri_state_to_value(
+                    manual_insert_present
+                )
+            ),
+            "manual_poster_present": (
+                tri_state_to_value(
+                    manual_poster_present
+                )
+            ),
+            "manual_rental": tri_state_to_value(
+                manual_rental
+            ),
+            "manual_sticker": tri_state_to_value(
+                manual_sticker
+            ),
+            "manual_sealed": tri_state_to_value(
+                manual_sealed
+            ),
+            "manual_condition_media": optional_choice(
+                manual_condition_media,
+                "Automatic / unset",
+            ),
+            "manual_condition_cover": optional_choice(
+                manual_condition_cover,
+                "Automatic / unset",
+            ),
+            "manual_importance_score": (
+                int(manual_importance_score)
+                if manual_importance_score > 0
+                else None
+            ),
+            "manual_verdict": optional_choice(
+                manual_verdict,
+                "Automatic / unset",
+            ),
+            "manual_completeness_notes": optional_text(
+                manual_completeness_notes
+            ),
+            "manual_collector_notes": optional_text(
+                manual_collector_notes
+            ),
+            "manual_purchased": purchased,
+            "manual_purchase_date": (
+                purchase_date
+                if purchased
+                else None
+            ),
+            "manual_purchase_price": (
+                Decimal(str(purchase_price))
+                if purchased
+                and purchase_price > 0
+                else None
+            ),
+            "manual_purchase_currency": (
+                purchase_currency
+                if purchased
+                else None
+            ),
+            "manual_purchase_notes": (
+                optional_text(purchase_notes)
+                if purchased
+                else None
+            ),
+        }
+
+        execute_statement(
+            """
+            INSERT INTO warehouse.auction_collector (
+                marketplace,
+                listing_id,
+                updated_at
             )
-            st.stop()
-
-        verdict = st.selectbox(
-            "Verdict",
-            ["", *filter_options["verdicts"]],
+            VALUES (
+                :marketplace,
+                :listing_id,
+                NOW()
+            )
+            ON CONFLICT (
+                marketplace,
+                listing_id
+            )
+            DO NOTHING
+            """,
+            save_parameters,
         )
 
-        media_type = st.selectbox(
-            "Media type",
-            ["", *filter_options["media_types"]],
+        execute_statement(
+            """
+            UPDATE warehouse.auction_collector
+            SET
+                manual_media_type =
+                    :manual_media_type,
+                manual_catalog_number =
+                    :manual_catalog_number,
+                manual_region =
+                    :manual_region,
+                manual_disc_count =
+                    :manual_disc_count,
+
+                manual_pressing_type =
+                    :manual_pressing_type,
+                manual_promo =
+                    :manual_promo,
+                manual_first_press =
+                    :manual_first_press,
+                manual_reissue =
+                    :manual_reissue,
+
+                manual_auction_format =
+                    :manual_auction_format,
+
+                manual_bulk_lot =
+                    :manual_bulk_lot,
+                manual_obi =
+                    :manual_obi,
+                manual_insert_present =
+                    :manual_insert_present,
+                manual_poster_present =
+                    :manual_poster_present,
+                manual_rental =
+                    :manual_rental,
+                manual_sticker =
+                    :manual_sticker,
+                manual_sealed =
+                    :manual_sealed,
+
+                manual_condition_media =
+                    :manual_condition_media,
+                manual_condition_cover =
+                    :manual_condition_cover,
+                manual_importance_score =
+                    :manual_importance_score,
+                manual_verdict =
+                    :manual_verdict,
+                manual_completeness_notes =
+                    :manual_completeness_notes,
+                manual_collector_notes =
+                    :manual_collector_notes,
+
+                manual_purchased =
+                    :manual_purchased,
+                manual_purchase_date =
+                    :manual_purchase_date,
+                manual_purchase_price =
+                    :manual_purchase_price,
+                manual_purchase_currency =
+                    :manual_purchase_currency,
+                manual_purchase_notes =
+                    :manual_purchase_notes,
+                purchase_updated_at = NOW(),
+                updated_at = NOW()
+
+            WHERE marketplace = :marketplace
+              AND listing_id = :listing_id
+            """,
+            save_parameters,
         )
 
-        bulk_status = st.selectbox(
-            "Bulk status",
-            ("all", "bulk", "not_bulk"),
+        st.toast(
+            "Collector record updated successfully.",
+            icon="✅",
         )
-
-        purchase_status = st.selectbox(
-            "Purchase status",
-            PURCHASE_STATUSES,
+        st.success(
+            "Saved. Purchase status, classification, "
+            "pressing type, and notes were updated."
         )
+        st.cache_data.clear()
+        st.rerun()
 
-        missing_only = st.checkbox(
-            "Only rows missing core classification",
-        )
+st.divider()
 
-        rows_per_page = st.selectbox(
-            "Rows per page",
-            options=(
-                25,
-                50,
-                100,
-                250,
-                500,
-                1000,
-            ),
-            index=3,
-            help=(
-                "Controls only the visible page. "
-                "The database remains complete."
-            ),
-            key="collector_rows_per_page",
-        )
+st.subheader("Data quality and update telemetry")
 
-        st.caption(
-            f"Database: {DATABASE_URL_LABEL}"
-        )
+telemetry = read_dataframe(
+    f"""
+    SELECT
+        COUNT(*) AS rows,
 
-    filter_signature = (
-        marketplace,
-        search,
-        seller_exact,
-        seller_contains,
-        ended_from,
-        ended_through,
-        verdict,
-        media_type,
-        bulk_status,
-        purchase_status,
-        missing_only,
-        rows_per_page,
-    )
+        COUNT(*) FILTER (
+            WHERE a.opening_at IS NULL
+        ) AS missing_opening,
 
-    reset_page_when_filters_change(
-        filter_signature
-    )
+        COUNT(*) FILTER (
+            WHERE COALESCE(
+                a.closing_at,
+                a.ended_at
+            ) IS NULL
+        ) AS missing_closing,
 
-    total_count = load_result_count(
-        marketplace=marketplace,
-        seller_exact=seller_exact,
-        seller_contains=seller_contains,
-        verdict=verdict,
-        media_type=media_type,
-        bulk_status=bulk_status,
-        purchase_status=purchase_status,
-        missing_only=missing_only,
-        search=search,
-        ended_from=ended_from,
-        ended_through=ended_through,
-    )
+        COUNT(*) FILTER (
+            WHERE a.start_price IS NULL
+        ) AS missing_starting_bid,
 
-    total_pages = max(
-        1,
-        (
-            total_count
-            + rows_per_page
-            - 1
-        ) // rows_per_page,
-    )
+        COUNT(*) FILTER (
+            WHERE a.final_price IS NULL
+        ) AS missing_hammer,
 
-    page_number = clamp_page_number(
-        st.session_state.get(
-            "collector_page_number",
-            1,
-        ),
-        total_pages,
-    )
+        COUNT(*) FILTER (
+            WHERE a.gross_price IS NULL
+        ) AS missing_total,
 
-    st.session_state[
-        "collector_page_number"
-    ] = page_number
+        COUNT(*) FILTER (
+            WHERE a.fx_rate_to_usd IS NULL
+        ) AS missing_fx,
 
-    offset = (
-        page_number - 1
-    ) * rows_per_page
+        COUNT(*) FILTER (
+            WHERE COALESCE(
+                c.manual_purchased,
+                false
+            )
+        ) AS purchased_rows,
 
-    results = load_results(
-        marketplace=marketplace,
-        seller_exact=seller_exact,
-        seller_contains=seller_contains,
-        verdict=verdict,
-        media_type=media_type,
-        bulk_status=bulk_status,
-        purchase_status=purchase_status,
-        missing_only=missing_only,
-        search=search,
-        ended_from=ended_from,
-        ended_through=ended_through,
-        limit=rows_per_page,
-        offset=offset,
-    )
+        MAX(d.fetched_at)
+            AS latest_detail_fetch,
 
-    render_summary(
-        results,
-        total_count=total_count,
-        page_number=page_number,
-        total_pages=total_pages,
-    )
+        MAX(c.updated_at)
+            AS latest_collector_update
 
-    render_pagination_controls(
-        page_number=page_number,
-        total_pages=total_pages,
-        location="top",
-    )
+    {FROM_SQL}
+    WHERE {where_sql}
+    """,
+    query_parameters,
+).iloc[0]
 
-    st.subheader("Search results")
+telemetry_columns = st.columns(6)
 
-    selected = render_result_table(results)
+telemetry_columns[0].metric(
+    "Rows",
+    int(telemetry["rows"]),
+)
+telemetry_columns[1].metric(
+    "Missing opening date",
+    int(telemetry["missing_opening"]),
+)
+telemetry_columns[2].metric(
+    "Missing closing date",
+    int(telemetry["missing_closing"]),
+)
+telemetry_columns[3].metric(
+    "Missing starting bid",
+    int(
+        telemetry[
+            "missing_starting_bid"
+        ]
+    ),
+)
+telemetry_columns[4].metric(
+    "Missing hammer",
+    int(telemetry["missing_hammer"]),
+)
+telemetry_columns[5].metric(
+    "In collection",
+    int(telemetry["purchased_rows"]),
+)
 
-    render_pagination_controls(
-        page_number=page_number,
-        total_pages=total_pages,
-        location="bottom",
-    )
-
-    if selected is None:
-        return
-
-    selected_marketplace, selected_listing_id = (
-        selected
-    )
-
-    selected_row = load_listing(
-        selected_marketplace,
-        selected_listing_id,
-    )
-
-    render_listing_editor(selected_row)
-
-
-if __name__ == "__main__":
-    main()
+st.caption(
+    "Latest live-detail fetch: "
+    f"{date_display(telemetry['latest_detail_fetch'])} · "
+    "Latest collector update: "
+    f"{date_display(telemetry['latest_collector_update'])} · "
+    f"Missing totals: {int(telemetry['missing_total'])} · "
+    f"Missing FX rates: {int(telemetry['missing_fx'])}"
+)
