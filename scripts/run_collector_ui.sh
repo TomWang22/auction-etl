@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
 
-PROJECT_DIR="${HOME}/auction-etl"
+set +e
+set +u
+set +o pipefail 2>/dev/null || true
 
-cd "${PROJECT_DIR}"
+cd "$HOME/auction-etl" || exit 1
+source .venv/bin/activate 2>/dev/null || true
 
-if [[ ! -x ".venv/bin/python" ]]; then
-    echo "Missing project virtual environment."
-    echo "Run: uv sync"
-    exit 1
-fi
+export DATABASE_URL="${DATABASE_URL:-postgresql://auction:auction@localhost:5444/auction_warehouse}"
 
-source .venv/bin/activate
-
-exec python -m streamlit run \
+exec streamlit run \
     app/collector_review.py \
     --server.address 127.0.0.1 \
     --server.port 8501 \
-    --browser.gatherUsageStats false
+    --server.headless true
