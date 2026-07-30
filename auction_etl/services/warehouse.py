@@ -280,26 +280,25 @@ def _prune_obsolete(
     session: Session,
     marketplace: str | None,
 ) -> int:
+    """Prune only a complete, explicitly scoped marketplace snapshot."""
+    if marketplace is None:
+        raise RuntimeError(
+            "Global warehouse pruning is disabled. "
+            "Specify one marketplace explicitly."
+        )
+
     staging_statement = select(
         Listing.marketplace,
         Listing.listing_id,
+    ).where(
+        Listing.marketplace == marketplace
     )
 
-    warehouse_statement = select(Auction)
-
-    if marketplace:
-        staging_statement = (
-            staging_statement.where(
-                Listing.marketplace
-                == marketplace
-            )
-        )
-        warehouse_statement = (
-            warehouse_statement.where(
-                Auction.marketplace
-                == marketplace
-            )
-        )
+    warehouse_statement = select(
+        Auction
+    ).where(
+        Auction.marketplace == marketplace
+    )
 
     staging_keys = set(
         session.execute(
@@ -307,11 +306,28 @@ def _prune_obsolete(
         ).all()
     )
 
+    warehouse_rows = list(
+        session.scalars(
+            warehouse_statement
+        )
+    )
+
+    if warehouse_rows and not staging_keys:
+        raise RuntimeError(
+            "Refusing to prune because staging contains no "
+            f"{marketplace} rows."
+        )
+
+    if len(staging_keys) < len(warehouse_rows):
+        raise RuntimeError(
+            "Refusing to prune an incomplete marketplace snapshot: "
+            f"staging has {len(staging_keys)} unique keys while "
+            f"warehouse has {len(warehouse_rows)} {marketplace} rows."
+        )
+
     pruned = 0
 
-    for auction in session.scalars(
-        warehouse_statement
-    ):
+    for auction in warehouse_rows:
         key = (
             auction.marketplace,
             auction.listing_id,
@@ -330,7 +346,7 @@ def sync_staging_to_warehouse(
     session: Session,
     *,
     marketplace: str | None = None,
-    prune: bool = True,
+    prune: bool = False,
 ) -> WarehouseStats:
     statement = select(Listing).order_by(
         Listing.id

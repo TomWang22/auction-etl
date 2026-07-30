@@ -23,9 +23,12 @@ def warehouse(
         help="Limit synchronization to ebay or buyee.",
     ),
     prune: bool = typer.Option(
-        True,
+        False,
         "--prune/--no-prune",
-        help="Remove warehouse rows absent from staging.",
+        help=(
+            "Explicitly remove marketplace rows absent from a "
+            "complete staging snapshot."
+        ),
     ),
 ) -> None:
     if marketplace not in {
@@ -35,6 +38,12 @@ def warehouse(
     }:
         raise typer.BadParameter(
             "Marketplace must be ebay or buyee."
+        )
+
+    if prune and marketplace is None:
+        raise typer.BadParameter(
+            "--prune requires --marketplace. "
+            "Global warehouse pruning is disabled."
         )
 
     with Session(engine) as session:

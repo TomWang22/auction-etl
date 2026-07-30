@@ -1,0 +1,15 @@
+{
+  "allowed_media_types": [
+    "LP",
+    "EP_7_INCH",
+    "CD",
+    "CD_BOX_SET",
+    "CASSETTE",
+    "DVD",
+    "SACD",
+    "BLU_RAY",
+    "BOX_SET",
+    "OTHER",
+    "UNKNOWN"
+  ]
+}

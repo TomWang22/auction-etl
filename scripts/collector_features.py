@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 
 from auction_etl.database.session import engine
+from auction_etl.database.collector_views import install_collector_views
 
 
 CLEAR_VALUE = "__CLEAR__"
@@ -555,8 +556,8 @@ def verdict_for_score(
 
 
 def create_schema() -> None:
-    statements = (
-        """
+    """Create collector storage and both managed views."""
+    statement = """
         CREATE TABLE IF NOT EXISTS warehouse.auction_collector (
             marketplace VARCHAR(32) NOT NULL,
             listing_id VARCHAR(128) NOT NULL,
@@ -630,149 +631,12 @@ def create_schema() -> None:
 
             PRIMARY KEY (marketplace, listing_id)
         )
-        """,
-        """
-        CREATE OR REPLACE VIEW warehouse.auction_collector_effective AS
-        SELECT
-            a.*,
-
-            c.manual_catalog_number,
-            c.manual_region,
-            c.manual_media_type,
-            c.manual_disc_count,
-            c.manual_bulk_lot,
-            c.manual_obi,
-            c.manual_insert_present,
-            c.manual_poster_present,
-            c.manual_rental,
-            c.manual_sticker,
-            c.manual_promo,
-            c.manual_sealed,
-            c.manual_reissue,
-            c.manual_first_press,
-            c.manual_importance_score,
-            c.manual_verdict,
-            c.manual_condition_media,
-            c.manual_condition_cover,
-            c.manual_completeness_notes,
-            c.manual_collector_notes,
-
-            COALESCE(
-                c.manual_catalog_number,
-                c.auto_catalog_number,
-                a.catalog_number
-            ) AS effective_catalog_number,
-
-            COALESCE(
-                c.manual_region,
-                c.auto_region
-            ) AS effective_region,
-
-            COALESCE(
-                c.manual_media_type,
-                c.auto_media_type,
-                a.media_type
-            ) AS effective_media_type,
-
-            COALESCE(
-                c.manual_disc_count,
-                c.auto_disc_count,
-                a.disc_count
-            ) AS effective_disc_count,
-
-            COALESCE(
-                c.manual_bulk_lot,
-                c.auto_bulk_lot,
-                a.bulk_lot
-            ) AS effective_bulk_lot,
-
-            COALESCE(
-                c.manual_obi,
-                c.auto_obi
-            ) AS effective_obi,
-
-            COALESCE(
-                c.manual_insert_present,
-                c.auto_insert_present
-            ) AS effective_insert_present,
-
-            COALESCE(
-                c.manual_poster_present,
-                c.auto_poster_present
-            ) AS effective_poster_present,
-
-            COALESCE(
-                c.manual_rental,
-                c.auto_rental
-            ) AS effective_rental,
-
-            COALESCE(
-                c.manual_sticker,
-                c.auto_sticker
-            ) AS effective_sticker,
-
-            COALESCE(
-                c.manual_promo,
-                c.auto_promo
-            ) AS effective_promo,
-
-            COALESCE(
-                c.manual_sealed,
-                c.auto_sealed
-            ) AS effective_sealed,
-
-            COALESCE(
-                c.manual_reissue,
-                c.auto_reissue
-            ) AS effective_reissue,
-
-            COALESCE(
-                c.manual_first_press,
-                c.auto_first_press
-            ) AS effective_first_press,
-
-            c.seller_total_sales,
-            c.seller_first_sale_at,
-            c.seller_last_sale_at,
-            c.seller_average_gross_price,
-            c.repeat_seller,
-
-            c.auction_duration_days,
-            c.start_to_finish_multiplier,
-            c.bids_per_day,
-
-            COALESCE(
-                c.manual_importance_score,
-                c.auto_importance_score
-            ) AS effective_importance_score,
-
-            COALESCE(
-                c.manual_verdict,
-                c.auto_verdict
-            ) AS effective_verdict,
-
-            COALESCE(
-                c.manual_condition_media,
-                a.condition_media
-            ) AS effective_condition_media,
-
-            COALESCE(
-                c.manual_condition_cover,
-                a.condition_cover
-            ) AS effective_condition_cover,
-
-            c.updated_at AS collector_updated_at
-
-        FROM warehouse.auction AS a
-        LEFT JOIN warehouse.auction_collector AS c
-          ON c.marketplace = a.marketplace
-         AND c.listing_id = a.listing_id
-        """,
-    )
+    """
 
     with engine.begin() as connection:
-        for statement in statements:
-            connection.execute(text(statement))
+        connection.execute(text(statement))
+        install_collector_views(connection)
+
 
 
 def load_seller_stats() -> dict[tuple[str, str], SellerStats]:
