@@ -349,7 +349,7 @@ with refresh_tab:
     if control_columns[0].button(
         "Inspect recent ingestion",
         type="secondary",
-        use_container_width=True,
+        width="stretch",
     ):
         launch_job(
             inspect_only=True,
@@ -371,7 +371,7 @@ with refresh_tab:
         "Run Buyee, eBay, and Gripsweat",
         type="primary",
         disabled=not refresh_enabled,
-        use_container_width=True,
+        width="stretch",
     ):
         launch_job(
             inspect_only=False,
@@ -632,7 +632,7 @@ with report_tab:
     if st.button(
         "Load report",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
         rows = load_report(
             DATABASE_URL,
@@ -720,7 +720,7 @@ with report_tab:
 
         st.dataframe(
             frame,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -753,7 +753,7 @@ with report_tab:
 
             breakdown_columns[0].dataframe(
                 breakdown,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
             breakdown_columns[1].bar_chart(
@@ -868,7 +868,7 @@ with report_tab:
                 if extension == "tsv"
                 else "text/csv"
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
         with st.expander(
@@ -956,7 +956,7 @@ with history_tab:
             pd.DataFrame(
                 history_rows[:100]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:

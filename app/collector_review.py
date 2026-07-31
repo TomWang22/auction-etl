@@ -1817,7 +1817,7 @@ def render_listing_editor(
             st.link_button(
                 "Open listing ↗",
                 selected["auction_url"],
-                use_container_width=True,
+                width="stretch",
             )
 
     summary_columns = st.columns(6)
@@ -2358,7 +2358,7 @@ def render_listing_editor(
         submitted = st.form_submit_button(
             "Save collector record",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
 
     if not submitted:
@@ -2646,7 +2646,7 @@ def render_pressing_groups(
             ]
         ],
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         height=470,
     )
 
@@ -2875,7 +2875,7 @@ def render_update_status(
             coverage_rows
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
     st.subheader(
@@ -2910,7 +2910,7 @@ def render_update_status(
     st.dataframe(
         detail_status,
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
     updated_column = next(
@@ -2998,7 +2998,7 @@ def render_update_status(
             st.dataframe(
                 recent_display,
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
 
