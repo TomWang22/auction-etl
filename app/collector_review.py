@@ -22,6 +22,12 @@ from app.collector_review_support import (
     safe_float,
     safe_int,
 )
+from auction_etl.reporting.main_review_integration import (
+    integrate_recent_activity,
+    load_gripsweat_records,
+)
+
+from auction_etl.reporting.main_review_integration import _concat_unique_columns
 
 
 DATABASE_URL = os.environ.get(
@@ -300,7 +306,7 @@ def collector_value(
     show_spinner=False,
 )
 def load_records() -> pd.DataFrame:
-    """Load review rows and collector overrides."""
+    """Load native review rows plus Gripsweat-only archived sales."""
     relation = review_relation()
 
     collector_columns = relation_columns(
@@ -345,14 +351,31 @@ def load_records() -> pd.DataFrame:
     )
 
     with get_engine().connect() as connection:
-        dataframe = pd.read_sql_query(
+        native_records = pd.read_sql_query(
             query,
             connection,
         )
 
-    return prepare_records(
-        dataframe
+    gripsweat_records = load_gripsweat_records(
+        database_url=DATABASE_URL,
     )
+
+    if gripsweat_records.empty:
+        combined = native_records
+    else:
+        combined = _concat_unique_columns(
+            [
+                native_records,
+                gripsweat_records,
+            ],
+            ignore_index=True,
+            sort=False,
+        )
+
+    return prepare_records(
+        combined
+    )
+
 
 
 def prepare_records(
@@ -893,6 +916,60 @@ def save_collector_record(
         return result.rowcount
 
 
+FILTER_WIDGET_KEYS = {
+    "marketplace": "collector_filter_marketplace",
+    "search": "collector_filter_search",
+    "seller": "collector_filter_seller",
+    "recent_only": "collector_filter_recent_only",
+    "filter_dates": "collector_filter_dates",
+    "activity_from": "collector_filter_activity_from",
+    "activity_through": "collector_filter_activity_through",
+    "verdict": "collector_filter_verdict",
+    "media_type": "collector_filter_media_type",
+    "purchase": "collector_filter_purchase",
+    "sale_type": "collector_filter_sale_type",
+    "enable_price": "collector_filter_enable_price",
+    "price_basis": "collector_filter_price_basis",
+    "minimum_price": "collector_filter_minimum_price",
+    "maximum_price": "collector_filter_maximum_price",
+    "page_size": "collector_filter_page_size",
+}
+
+
+def _reset_listing_results() -> None:
+    """Reset pagination and table/editor identity after filter changes."""
+    st.session_state["_listing_page"] = 1
+    st.session_state["_reset_listing_selector"] = True
+    st.session_state["_filter_revision"] = (
+        int(
+            st.session_state.get(
+                "_filter_revision",
+                0,
+            )
+        )
+        + 1
+    )
+
+
+def _marketplace_changed() -> None:
+    """Reset marketplace-dependent controls and rerender immediately."""
+    for key_name in (
+        "activity_from",
+        "activity_through",
+        "verdict",
+        "media_type",
+        "sale_type",
+        "minimum_price",
+        "maximum_price",
+    ):
+        st.session_state.pop(
+            FILTER_WIDGET_KEYS[key_name],
+            None,
+        )
+
+    _reset_listing_results()
+
+
 def apply_filters(
     dataframe: pd.DataFrame,
 ) -> tuple[pd.DataFrame, str]:
@@ -916,30 +993,69 @@ def apply_filters(
         marketplace = st.selectbox(
             "Marketplace",
             marketplaces,
+            key=FILTER_WIDGET_KEYS[
+                "marketplace"
+            ],
+            on_change=_marketplace_changed,
         )
+
+        marketplace_rows = dataframe
+
+        if marketplace != "all":
+            marketplace_rows = dataframe[
+                dataframe["marketplace"]
+                == marketplace
+            ]
 
         search_text = st.text_input(
             "Search",
             placeholder=(
                 "Title, ID, matrix, seller, artist"
             ),
+            key=FILTER_WIDGET_KEYS[
+                "search"
+            ],
+            on_change=_reset_listing_results,
         )
 
         seller_contains = st.text_input(
             "Seller contains",
+            key=FILTER_WIDGET_KEYS[
+                "seller"
+            ],
+            on_change=_reset_listing_results,
+        )
+
+        recent_only = st.checkbox(
+            "Recent additions only",
+            key=FILTER_WIDGET_KEYS[
+                "recent_only"
+            ],
+            on_change=_reset_listing_results,
         )
 
         filter_dates = st.checkbox(
-            "Filter by closing date",
+            "Filter by activity date",
+            key=FILTER_WIDGET_KEYS[
+                "filter_dates"
+            ],
+            on_change=_reset_listing_results,
         )
 
         date_from = None
         date_through = None
 
         if filter_dates:
-            valid_dates = dataframe[
-                "closing_display"
-            ].dropna()
+            valid_dates = (
+                pd.to_datetime(
+                    marketplace_rows[
+                        "_activity_sort"
+                    ],
+                    errors="coerce",
+                    utc=True,
+                )
+                .dropna()
+            )
 
             default_from = (
                 valid_dates.min().date()
@@ -957,21 +1073,29 @@ def apply_filters(
 
             with date_columns[0]:
                 date_from = st.date_input(
-                    "Closed from",
+                    "Activity from",
                     value=default_from,
+                    key=FILTER_WIDGET_KEYS[
+                        "activity_from"
+                    ],
+                    on_change=_reset_listing_results,
                 )
 
             with date_columns[1]:
                 date_through = st.date_input(
-                    "Closed through",
+                    "Activity through",
                     value=default_through,
+                    key=FILTER_WIDGET_KEYS[
+                        "activity_through"
+                    ],
+                    on_change=_reset_listing_results,
                 )
 
         verdicts = [
             "all",
             *sorted(
                 value
-                for value in dataframe[
+                for value in marketplace_rows[
                     "verdict_display"
                 ].dropna().unique()
                 if value
@@ -981,13 +1105,17 @@ def apply_filters(
         verdict = st.selectbox(
             "Verdict",
             verdicts,
+            key=FILTER_WIDGET_KEYS[
+                "verdict"
+            ],
+            on_change=_reset_listing_results,
         )
 
         media_types = [
             "all",
             *sorted(
                 value
-                for value in dataframe[
+                for value in marketplace_rows[
                     "media_display"
                 ].dropna().unique()
                 if value
@@ -997,6 +1125,10 @@ def apply_filters(
         media_type = st.selectbox(
             "Media type",
             media_types,
+            key=FILTER_WIDGET_KEYS[
+                "media_type"
+            ],
+            on_change=_reset_listing_results,
         )
 
         purchase_filter = st.selectbox(
@@ -1006,13 +1138,17 @@ def apply_filters(
                 "In collection",
                 "Not in collection",
             ),
+            key=FILTER_WIDGET_KEYS[
+                "purchase"
+            ],
+            on_change=_reset_listing_results,
         )
 
         sale_types = [
             "all",
             *sorted(
                 value
-                for value in dataframe[
+                for value in marketplace_rows[
                     "sale_type_display"
                 ].dropna().unique()
                 if value
@@ -1022,12 +1158,20 @@ def apply_filters(
         sale_type = st.selectbox(
             "Auction type",
             sale_types,
+            key=FILTER_WIDGET_KEYS[
+                "sale_type"
+            ],
+            on_change=_reset_listing_results,
         )
 
         st.divider()
 
         enable_price_filter = st.checkbox(
             "Filter by price",
+            key=FILTER_WIDGET_KEYS[
+                "enable_price"
+            ],
+            on_change=_reset_listing_results,
         )
 
         price_basis = st.selectbox(
@@ -1039,6 +1183,10 @@ def apply_filters(
                 "Local hammer before tax",
             ),
             disabled=not enable_price_filter,
+            key=FILTER_WIDGET_KEYS[
+                "price_basis"
+            ],
+            on_change=_reset_listing_results,
         )
 
         minimum_price = None
@@ -1057,7 +1205,9 @@ def apply_filters(
             }[price_basis]
 
             valid_prices = pd.to_numeric(
-                dataframe[price_column],
+                marketplace_rows[
+                    price_column
+                ],
                 errors="coerce",
             ).dropna()
 
@@ -1075,6 +1225,10 @@ def apply_filters(
                     min_value=0.0,
                     value=0.0,
                     step=1.0,
+                    key=FILTER_WIDGET_KEYS[
+                        "minimum_price"
+                    ],
+                    on_change=_reset_listing_results,
                 )
 
             with price_columns[1]:
@@ -1083,29 +1237,40 @@ def apply_filters(
                     min_value=0.0,
                     value=default_maximum,
                     step=1.0,
+                    key=FILTER_WIDGET_KEYS[
+                        "maximum_price"
+                    ],
+                    on_change=_reset_listing_results,
                 )
 
         page_size = st.selectbox(
             "Rows per page",
             PAGE_SIZE_OPTIONS,
             index=2,
+            key=FILTER_WIDGET_KEYS[
+                "page_size"
+            ],
+            on_change=_reset_listing_results,
         )
 
         if st.button(
             "Refresh database",
-            use_container_width=True,
+            width="stretch",
+            key="collector_refresh_database",
         ):
             load_records.clear()
             relation_columns.clear()
             review_relation.clear()
+            _reset_listing_results()
             st.rerun()
 
-    filtered = dataframe.copy()
+    filtered = marketplace_rows.copy()
 
-    if marketplace != "all":
+    if recent_only:
         filtered = filtered[
-            filtered["marketplace"]
-            == marketplace
+            filtered[
+                "_is_recent_addition"
+            ].fillna(False)
         ]
 
     if search_text.strip():
@@ -1147,15 +1312,24 @@ def apply_filters(
         ]
 
     if filter_dates:
-        known_dates = (
-            filtered["closing_display"]
-            .dt.date
-        )
+        activity_dates = pd.to_datetime(
+            filtered[
+                "_activity_sort"
+            ],
+            errors="coerce",
+            utc=True,
+        ).dt.date
 
         filtered = filtered[
-            known_dates.notna()
-            & (known_dates >= date_from)
-            & (known_dates <= date_through)
+            activity_dates.notna()
+            & (
+                activity_dates
+                >= date_from
+            )
+            & (
+                activity_dates
+                <= date_through
+            )
         ]
 
     if verdict != "all":
@@ -1208,8 +1382,14 @@ def apply_filters(
 
         filtered = filtered[
             prices.notna()
-            & (prices >= minimum_price)
-            & (prices <= maximum_price)
+            & (
+                prices
+                >= minimum_price
+            )
+            & (
+                prices
+                <= maximum_price
+            )
         ]
 
     return (
@@ -1218,6 +1398,7 @@ def apply_filters(
         ),
         str(page_size),
     )
+
 
 
 def render_metrics(
@@ -1282,14 +1463,31 @@ def render_listing_table(
     *,
     key: str,
 ) -> None:
-    """Render listing rows with prices and links."""
+    """Render listing rows with truthful dates, prices, and source links."""
+    duration = pd.to_numeric(
+        dataframe.get(
+            "auction_duration_days",
+            pd.Series(
+                pd.NA,
+                index=dataframe.index,
+            ),
+        ),
+        errors="coerce",
+    ).map(
+        lambda value: (
+            "—"
+            if pd.isna(value)
+            else f"{float(value):.2f}"
+        )
+    )
+
     display = pd.DataFrame(
         {
-            "marketplace":
+            "Marketplace":
                 dataframe["marketplace"],
             "Listing ID":
                 dataframe["listing_id"],
-            "seller":
+            "Seller":
                 dataframe["seller"],
             "Title":
                 dataframe["title"],
@@ -1303,6 +1501,20 @@ def render_listing_table(
                 dataframe[
                     "closing_display"
                 ].map(format_datetime),
+            "Added":
+                dataframe[
+                    "_audit_first_seen_at"
+                ].map(format_datetime),
+            "Activity":
+                dataframe[
+                    "_activity_display"
+                ].map(format_datetime),
+            "Date basis":
+                dataframe[
+                    "_activity_date_basis"
+                ],
+            "Duration days":
+                duration,
             "Starting bid":
                 [
                     format_money(
@@ -1421,7 +1633,7 @@ def render_listing_table(
     st.dataframe(
         display,
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         height=560,
         key=key,
         column_config={
@@ -1434,11 +1646,13 @@ def render_listing_table(
     )
 
 
+
 def render_pagination(
     page_number: int,
     page_count: int,
+    key_prefix: str = "pagination",
 ) -> None:
-    """Render page navigation controls."""
+    """Render page navigation controls with a unique namespace."""
     columns = st.columns(
         [
             2,
@@ -1451,7 +1665,8 @@ def render_pagination(
         if st.button(
             "← Previous",
             disabled=page_number <= 1,
-            use_container_width=True,
+            width="stretch",
+            key=f"{key_prefix}:previous",
         ):
             st.session_state[
                 "_listing_page"
@@ -1478,8 +1693,11 @@ def render_pagination(
 
             if st.button(
                 label,
-                key=f"page:{candidate}",
-                use_container_width=True,
+                key=(
+                    f"{key_prefix}:"
+                    f"page:{candidate}"
+                ),
+                width="stretch",
             ):
                 st.session_state[
                     "_listing_page"
@@ -1490,12 +1708,14 @@ def render_pagination(
         if st.button(
             "Next →",
             disabled=page_number >= page_count,
-            use_container_width=True,
+            width="stretch",
+            key=f"{key_prefix}:next",
         ):
             st.session_state[
                 "_listing_page"
             ] = page_number + 1
             st.rerun()
+
 
 
 def render_listing_editor(
@@ -2561,6 +2781,23 @@ def coverage_count(
     )
 
 
+def _coalesce_duplicate_named_column(
+    dataframe: pd.DataFrame,
+    column_name: str,
+) -> pd.Series:
+    """Return one Series even when a column label is duplicated."""
+    selected = dataframe.loc[:, column_name]
+
+    if isinstance(selected, pd.DataFrame):
+        return (
+            selected
+            .bfill(axis=1)
+            .iloc[:, 0]
+        )
+
+    return selected
+
+
 def render_update_status(
     dataframe: pd.DataFrame,
 ) -> None:
@@ -2695,9 +2932,7 @@ def render_update_status(
         recent[
             "_updated_sort"
         ] = pd.to_datetime(
-            recent[
-                updated_column
-            ],
+            _coalesce_duplicate_named_column(recent, updated_column),
             errors="coerce",
             utc=True,
         )
@@ -2780,6 +3015,7 @@ st.caption(
 
 try:
     records = load_records()
+    records = integrate_recent_activity(records)
 except Exception as error:
     st.error(
         f"Could not load Auction ETL records: {error}"
@@ -2872,23 +3108,51 @@ with tabs[0]:
             )
         )
 
+        filter_revision = int(
+            st.session_state.get(
+                "_filter_revision",
+                0,
+            )
+        )
+
+        row_signature = int(
+            pd.util.hash_pandas_object(
+                page_rows[
+                    [
+                        "marketplace",
+                        "listing_id",
+                    ]
+                ],
+                index=False,
+            ).sum()
+        )
+
         render_pagination(
             page_number,
             page_count,
+            key_prefix=(
+                "collector_pagination_top:"
+                f"{filter_revision}"
+            ),
         )
 
         render_listing_table(
             page_rows,
             key=(
-                f"listings:"
+                "listings:"
+                f"{filter_revision}:"
                 f"{page_number}:"
-                f"{len(page_rows)}"
+                f"{row_signature}"
             ),
         )
 
         render_pagination(
             page_number,
             page_count,
+            key_prefix=(
+                "collector_pagination_bottom:"
+                f"{filter_revision}"
+            ),
         )
 
         render_listing_editor(

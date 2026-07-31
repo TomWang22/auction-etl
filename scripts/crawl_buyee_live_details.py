@@ -58,7 +58,6 @@ class BuyeeDetail:
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line options."""
-
     parser = argparse.ArgumentParser(
         description=(
             "Render Buyee listing pages and extract live auction details."
@@ -82,6 +81,14 @@ def parse_arguments() -> argparse.Namespace:
         help="Process one listing ID. May be repeated.",
     )
     parser.add_argument(
+        "--first-seen-source",
+        default=None,
+        help=(
+            "Restrict candidates to one durable ingestion source, "
+            "for example new-only-export."
+        ),
+    )
+    parser.add_argument(
         "--refresh",
         action="store_true",
         help="Revisit listings that already have detail data.",
@@ -90,6 +97,22 @@ def parse_arguments() -> argparse.Namespace:
         "--headed",
         action="store_true",
         help="Show the browser while crawling.",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        type=Path,
+        default=(
+            Path(__file__).resolve().parents[1]
+            / "profiles"
+            / "anonymous"
+        ),
+        help="Persistent authenticated Buyee browser profile.",
+    )
+    parser.add_argument(
+        "--authentication-timeout-minutes",
+        type=int,
+        default=30,
+        help="Maximum headed wait for login or two-factor verification.",
     )
     parser.add_argument(
         "--delay",
@@ -121,7 +144,13 @@ def parse_arguments() -> argparse.Namespace:
     if arguments.timeout < 1:
         parser.error("--timeout must be at least 1.")
 
+    if arguments.authentication_timeout_minutes < 1:
+        parser.error(
+            "--authentication-timeout-minutes must be at least 1."
+        )
+
     return arguments
+
 
 
 def normalize_space(value: str | None) -> str | None:
@@ -333,19 +362,38 @@ def first_link_text(
 
 def detect_status(body_text: str) -> str | None:
     """Classify the displayed auction status."""
-
     lowered = body_text.casefold()
 
-    if "finished" in lowered:
+    if any(
+        marker in lowered
+        for marker in (
+            "auction has ended",
+            "auction ended",
+            "this auction is closed",
+            "finished",
+            "closed auction",
+        )
+    ):
         return "finished"
 
-    if "time remaining" in lowered:
+    if any(
+        marker in lowered
+        for marker in (
+            "time remaining",
+            "current bid",
+            "place bid",
+        )
+    ):
         return "active"
 
-    if "cancelled" in lowered or "canceled" in lowered:
+    if (
+        "cancelled" in lowered
+        or "canceled" in lowered
+    ):
         return "cancelled"
 
     return None
+
 
 
 def extract_detail(
@@ -568,11 +616,11 @@ def ensure_schema() -> None:
 def load_candidates(
     *,
     listing_ids: tuple[str, ...],
+    first_seen_source: str | None,
     refresh: bool,
     limit: int | None,
 ) -> list[dict[str, str]]:
-    """Load existing Buyee listings that need live detail enrichment."""
-
+    """Load Buyee listings that need authenticated detail enrichment."""
     conditions = [
         "a.marketplace = 'buyee'",
         "a.auction_url IS NOT NULL",
@@ -584,7 +632,17 @@ def load_candidates(
         conditions.append(
             "a.listing_id = ANY(:listing_ids)"
         )
-        parameters["listing_ids"] = list(listing_ids)
+        parameters["listing_ids"] = list(
+            listing_ids
+        )
+
+    if first_seen_source:
+        conditions.append(
+            "audit.first_seen_source = :first_seen_source"
+        )
+        parameters[
+            "first_seen_source"
+        ] = first_seen_source
 
     if not refresh:
         conditions.append(
@@ -592,8 +650,9 @@ def load_candidates(
             (
                 d.listing_id IS NULL
                 OR d.detail_status <> 'complete'
+                OR d.opening_at IS NULL
                 OR d.closing_at IS NULL
-                OR d.current_price_gross IS NULL
+                OR d.starting_price IS NULL
             )
             """
         )
@@ -613,9 +672,15 @@ def load_candidates(
         LEFT JOIN warehouse.auction_detail AS d
           ON d.marketplace = a.marketplace
          AND d.listing_id = a.listing_id
+        LEFT JOIN system.auction_ingestion_identity AS audit
+          ON audit.marketplace = a.marketplace
+         AND audit.listing_id = a.listing_id
         WHERE {" AND ".join(conditions)}
         ORDER BY
-            a.created_at DESC,
+            COALESCE(
+                audit.first_seen_at,
+                a.created_at
+            ) DESC,
             a.id DESC
         {limit_clause}
         """
@@ -629,11 +694,16 @@ def load_candidates(
 
     return [
         {
-            "listing_id": str(row["listing_id"]),
-            "auction_url": str(row["auction_url"]),
+            "listing_id": str(
+                row["listing_id"]
+            ),
+            "auction_url": str(
+                row["auction_url"]
+            ),
         }
         for row in rows
     ]
+
 
 
 def pre_tax_price(
@@ -938,8 +1008,7 @@ def crawl_candidate(
     log_dir: Path,
     timeout_seconds: int,
 ) -> BuyeeDetail:
-    """Render and extract one Buyee detail page."""
-
+    """Render and extract one authenticated Buyee detail page."""
     response = page.goto(
         auction_url,
         wait_until="domcontentloaded",
@@ -949,6 +1018,17 @@ def crawl_candidate(
     if response is not None and response.status >= 400:
         raise RuntimeError(
             f"HTTP {response.status} for {auction_url}"
+        )
+
+    if any(
+        marker in page.url.casefold()
+        for marker in (
+            "/signup/login",
+            "/signup/twofactor",
+        )
+    ):
+        raise RuntimeError(
+            "Buyee authentication expired during detail crawl."
         )
 
     try:
@@ -986,6 +1066,29 @@ def crawl_candidate(
         auction_url=auction_url,
     )
 
+    telemetry = (
+        detail.opening_at,
+        detail.closing_at,
+        detail.starting_price,
+        detail.current_price_gross,
+        detail.bid_count,
+    )
+
+    if all(
+        value is None
+        for value in telemetry
+    ):
+        raise RuntimeError(
+            "The rendered detail page yielded no auction telemetry."
+        )
+
+    if (
+        detail.opening_at is None
+        or detail.closing_at is None
+        or detail.starting_price is None
+    ):
+        detail.detail_status = "partial"
+
     (item_dir / "detail.json").write_text(
         json.dumps(
             serialize_detail(detail),
@@ -997,6 +1100,7 @@ def crawl_candidate(
     )
 
     return detail
+
 
 
 def print_result(
@@ -1029,20 +1133,152 @@ def print_result(
     print(f"Condition   : {detail.condition_text or '—'}")
 
 
-def main() -> int:
-    """Run the live Buyee detail crawler."""
+WATCHLIST_URL = (
+    "https://buyee.jp/"
+    "myorders/watchlist/closed"
+)
 
+
+def authentication_required(
+    url: str,
+) -> bool:
+    """Return whether Buyee is showing login or two-factor verification."""
+    lowered = url.casefold()
+
+    return any(
+        marker in lowered
+        for marker in (
+            "/signup/login",
+            "/signup/twofactor",
+        )
+    )
+
+
+def wait_for_authenticated_profile(
+    context: BrowserContext,
+    *,
+    headed: bool,
+    timeout_minutes: int,
+) -> Page:
+    """Wait for the persistent profile to reach the closed watchlist."""
+    page = (
+        context.pages[-1]
+        if context.pages
+        else context.new_page()
+    )
+
+    try:
+        page.goto(
+            WATCHLIST_URL,
+            wait_until="domcontentloaded",
+            timeout=90_000,
+        )
+    except PlaywrightTimeoutError:
+        pass
+
+    deadline = (
+        time.monotonic()
+        + timeout_minutes * 60
+    )
+    last_message = 0.0
+
+    while time.monotonic() < deadline:
+        page = (
+            context.pages[-1]
+            if context.pages
+            else context.new_page()
+        )
+
+        if authentication_required(
+            page.url
+        ):
+            if not headed:
+                raise RuntimeError(
+                    "Buyee authentication is required. "
+                    "Run again with --headed."
+                )
+
+            if (
+                time.monotonic()
+                - last_message
+                >= 10
+            ):
+                remaining = int(
+                    deadline
+                    - time.monotonic()
+                )
+                print(
+                    "Waiting for Buyee login or two-factor "
+                    f"verification ({remaining}s remaining)..."
+                )
+                last_message = time.monotonic()
+
+            page.wait_for_timeout(1_000)
+            continue
+
+        if (
+            "/myorders/watchlist/closed"
+            not in page.url
+        ):
+            try:
+                page.goto(
+                    WATCHLIST_URL,
+                    wait_until="domcontentloaded",
+                    timeout=90_000,
+                )
+            except PlaywrightTimeoutError:
+                pass
+
+            page.wait_for_timeout(1_000)
+            continue
+
+        link_count = page.locator(
+            'a[href*="/item/jdirectitems/auction/"]'
+        ).count()
+
+        if link_count > 0:
+            print(
+                "✓ Authenticated Buyee profile verified: "
+                f"{link_count} visible auction links."
+            )
+            return page
+
+        page.wait_for_timeout(1_000)
+
+    raise RuntimeError(
+        "Timed out waiting for authenticated Buyee access."
+    )
+
+
+def main() -> int:
+    """Run the authenticated live Buyee detail crawler."""
     arguments = parse_arguments()
     arguments.log_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
 
+    profile_dir = (
+        arguments.profile_dir
+        .expanduser()
+        .resolve()
+    )
+
+    if not profile_dir.is_dir():
+        raise RuntimeError(
+            f"Buyee profile is missing: {profile_dir}"
+        )
+
     if arguments.apply:
         ensure_schema()
 
     candidates = load_candidates(
-        listing_ids=tuple(arguments.listing_id),
+        listing_ids=tuple(
+            arguments.listing_id
+        ),
+        first_seen_source=(
+            arguments.first_seen_source
+        ),
         refresh=arguments.refresh,
         limit=arguments.limit,
     )
@@ -1053,33 +1289,66 @@ def main() -> int:
     print(f"Candidates : {len(candidates)}")
     print(f"Apply      : {arguments.apply}")
     print(f"Refresh    : {arguments.refresh}")
+    print(f"Profile    : {profile_dir}")
     print(f"Diagnostics: {arguments.log_dir}")
 
     if not candidates:
         print()
-        print("No matching Buyee listings require enrichment.")
+        print(
+            "No matching Buyee listings require enrichment."
+        )
         return 0
 
     results: list[dict[str, Any]] = []
     failures = 0
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=not arguments.headed,
-        )
-        context = create_context(browser)
-        page = context.new_page()
-        page.set_default_timeout(
-            arguments.timeout * 1_000
+        context = (
+            playwright.chromium
+            .launch_persistent_context(
+                user_data_dir=str(
+                    profile_dir
+                ),
+                headless=not arguments.headed,
+                locale="en-US",
+                timezone_id="Asia/Tokyo",
+                viewport={
+                    "width": 1600,
+                    "height": 1200,
+                },
+                user_agent=(
+                    "Mozilla/5.0 "
+                    "(Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/126.0 Safari/537.36"
+                ),
+            )
         )
 
         try:
+            page = wait_for_authenticated_profile(
+                context,
+                headed=arguments.headed,
+                timeout_minutes=(
+                    arguments
+                    .authentication_timeout_minutes
+                ),
+            )
+            page.set_default_timeout(
+                arguments.timeout * 1_000
+            )
+
             for index, candidate in enumerate(
                 candidates,
                 start=1,
             ):
-                listing_id = candidate["listing_id"]
-                auction_url = candidate["auction_url"]
+                listing_id = candidate[
+                    "listing_id"
+                ]
+                auction_url = candidate[
+                    "auction_url"
+                ]
 
                 try:
                     detail = crawl_candidate(
@@ -1087,7 +1356,9 @@ def main() -> int:
                         listing_id=listing_id,
                         auction_url=auction_url,
                         log_dir=arguments.log_dir,
-                        timeout_seconds=arguments.timeout,
+                        timeout_seconds=(
+                            arguments.timeout
+                        ),
                     )
                     print_result(
                         index,
@@ -1123,7 +1394,10 @@ def main() -> int:
                         }
                     )
 
-                    if arguments.apply:
+                    if (
+                        arguments.apply
+                        and "authentication" not in message.casefold()
+                    ):
                         save_failure(
                             listing_id=listing_id,
                             auction_url=auction_url,
@@ -1134,13 +1408,15 @@ def main() -> int:
                     index < len(candidates)
                     and arguments.delay > 0
                 ):
-                    time.sleep(arguments.delay)
+                    time.sleep(
+                        arguments.delay
+                    )
         finally:
             context.close()
-            browser.close()
 
     summary_path = (
-        arguments.log_dir / "crawl_summary.json"
+        arguments.log_dir
+        / "crawl_summary.json"
     )
     summary_path.write_text(
         json.dumps(
@@ -1162,9 +1438,12 @@ def main() -> int:
     if not arguments.apply:
         print()
         print("DRY RUN ONLY")
-        print("No database writes were performed.")
+        print(
+            "No database writes were performed."
+        )
 
     return 1 if failures else 0
+
 
 
 if __name__ == "__main__":
