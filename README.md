@@ -159,34 +159,43 @@ links, and browser acceptance remain read-only.
 <!-- collector-save-upsert:end -->
 
 <!-- collector-filtered-export:start -->
-## Filtered Collector Review exports
+## Filtered and recent-ingestion exports
 
-Auction ETL exists to automate a real collector workflow: continuously
-collecting completed eBay and Buyee auction results, preserving source
-provenance, normalizing marketplace-specific fields, classifying physical
-media and pressings, reviewing uncertain records, and producing useful
-collector reports.
+Auction ETL automates a real collector workflow: continuously collecting
+completed eBay and Buyee auction results, preserving source provenance,
+normalizing marketplace-specific fields, classifying physical media and
+pressings, reviewing uncertain records, and producing collector reports.
 
-The Listings tab includes an **Export filtered listings** panel.
+The Listings tab includes an
+**Export filtered or recent ingestion listings** panel with three
+independent actions:
 
-The export uses the complete filtered result set, not only the current
-pagination page. Marketplace, seller, search, recent-ingestion, date,
-media, verdict, sale type, collection status, and price filters remain
-applied.
+1. **Prepare filtered export** exports every historical and recent row
+   matching the current sidebar filters.
+2. **Prepare recent-in-filter export** exports recent ingestion rows that
+   also match the selected marketplace, search, seller, date interval,
+   media, verdict, sale type, collection, and price filters.
+3. **Prepare all recent ingestion** exports the established recent
+   ingestion set regardless of sidebar filters.
 
-Available formats:
+The recent set uses the integrated `_is_recent_addition` metadata when
+available. Batch and ingestion-date fields provide fallbacks for sources
+that do not expose that flag.
 
-- CSV
-- Excel
-- JSON
-- Markdown
-- Word
-- Plain text
+CSV, Excel, JSON, and plain-text exports preserve every dataframe column,
+including automatic classifications, collector overrides, audit fields,
+recent-ingestion metadata, activity timestamps, source information, and
+custom recovery columns.
+
+Markdown and Word exports are intentionally collector-optimized and group
+listings by media type while presenting title, pressing, catalog or
+matrix identity, condition, seller, bids, tax, totals, dates, notes, and
+auction URL.
 
 The media selector can export all matches in one file, one selected media
-type, or a ZIP containing one export per media type.
+type, or a ZIP containing one file per media type.
 
 Deduplication prefers native eBay warehouse records over matching
-Gripsweat archive records sharing the same eBay listing ID. Exporting is
+Gripsweat archive records sharing the same listing ID. Exporting is
 read-only and never deletes or modifies warehouse records.
 <!-- collector-filtered-export:end -->

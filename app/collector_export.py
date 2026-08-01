@@ -1,27 +1,20 @@
-"""Filtered multi-format exports for Collector Review."""
+"""Filtered and recent-ingestion exports for Collector Review."""
 
 from __future__ import annotations
 
+import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from io import BytesIO
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 import streamlit as st
 
-from app.collector_review_support import clean_text, is_missing
-from auction_etl.services.export import (
-    EXPORT_COLUMNS,
-    export_csv,
-    export_docx,
-    export_json,
-    export_markdown,
-    export_xlsx,
-)
+from app.collector_review_support import clean_text
+
 
 ALL_COMBINED = "All media — one file"
 ALL_SPLIT = "All media — ZIP by media"
@@ -35,154 +28,166 @@ EXPORT_FORMATS = (
     "Plain text",
 )
 
-COLUMN_CANDIDATES = {
-    "id": ("id",),
-    "marketplace": ("marketplace",),
-    "listing_id": ("listing_id",),
-    "auction_url": ("auction_url",),
-    "seller": ("seller",),
-    "artist": ("artist_display", "artist"),
-    "title": ("title",),
-    "media_type": (
-        "media_display",
-        "effective_media_type",
-        "manual_media_type",
-        "auto_media_type",
-        "media_type",
-    ),
-    "disc_count": (
-        "effective_disc_count",
-        "manual_disc_count",
-        "auto_disc_count",
-        "disc_count",
-    ),
-    "edition": (
-        "effective_pressing_type",
-        "manual_pressing_type",
-        "auto_pressing_type",
-        "edition",
-    ),
-    "catalog_number": (
-        "catalog_display",
-        "catalog_number",
-    ),
-    "condition_media": (
-        "effective_condition_media",
-        "manual_condition_media",
-        "condition_media",
-    ),
-    "condition_cover": (
-        "effective_condition_cover",
-        "manual_condition_cover",
-        "condition_cover",
-    ),
-    "bulk_lot": (
-        "effective_bulk_lot",
-        "manual_bulk_lot",
-        "auto_bulk_lot",
-        "bulk_lot",
-    ),
-    "bid_count": (
-        "bid_count_display",
-        "bid_count",
-    ),
-    "watch_count": ("watch_count",),
-    "start_price": (
-        "starting_local",
-        "start_price",
-    ),
-    "hammer_price_local": (
-        "hammer_local",
-        "final_price",
-    ),
-    "tax_rate": ("tax_rate",),
-    "tax_amount_local": (
-        "tax_local",
-        "tax_amount",
-    ),
-    "gross_price_local": (
-        "total_local",
-        "gross_price",
-        "current_price_gross",
-    ),
-    "price_includes_tax": ("price_includes_tax",),
-    "currency": (
-        "currency_display",
-        "currency",
-    ),
-    "fx_rate_to_usd": ("fx_rate_to_usd",),
-    "fx_rate_date": ("fx_rate_date",),
-    "final_price_usd": (
-        "hammer_usd",
-        "final_price_usd",
-    ),
-    "tax_usd": (
-        "tax_usd_display",
-        "tax_usd",
-    ),
-    "total_usd": (
-        "total_usd",
-        "gross_price_usd",
-    ),
-    "shipping_price": ("shipping_price",),
-    "shipping_usd": ("shipping_usd",),
-    "landed_usd": ("landed_usd",),
-    "ended_at": (
-        "closing_display",
-        "ended_at",
-    ),
-    "created_at": (
-        "created_at",
-        "_audit_first_seen_at",
-    ),
-    "_fx_source": (
-        "_fx_source",
-        "fx_source",
-    ),
-}
+RECENT_FLAG_COLUMNS = (
+    "_is_recent_addition",
+    "is_recent_addition",
+    "recent_addition",
+    "recent_ingestion",
+    "is_recent_ingestion",
+)
 
-TEXT_FIELDS = {
-    "marketplace",
-    "listing_id",
-    "auction_url",
-    "seller",
-    "artist",
-    "title",
+INGESTION_BATCH_COLUMNS = (
+    "ingestion_run_id",
+    "ingestion_batch_id",
+    "crawl_run_id",
+    "crawl_job_id",
+    "batch_id",
+    "source_run_id",
+)
+
+INGESTION_DATE_COLUMNS = (
+    "_audit_first_seen_at",
+    "ingested_at",
+    "added_at",
+    "first_seen_at",
+    "created_at",
+)
+
+MEDIA_COLUMNS = (
+    "media_display",
+    "effective_media_type",
+    "manual_media_type",
+    "auto_media_type",
     "media_type",
-    "edition",
-    "catalog_number",
-    "condition_media",
-    "condition_cover",
-    "currency",
-    "_fx_source",
-}
+)
 
-INTEGER_FIELDS = {
-    "id",
-    "disc_count",
-    "bid_count",
-    "watch_count",
-}
-
-BOOLEAN_FIELDS = {
-    "bulk_lot",
-    "price_includes_tax",
-}
-
-DECIMAL_FIELDS = {
-    "start_price",
-    "hammer_price_local",
-    "tax_rate",
-    "tax_amount_local",
-    "gross_price_local",
-    "fx_rate_to_usd",
-    "final_price_usd",
-    "tax_usd",
-    "total_usd",
-    "shipping_price",
-    "shipping_usd",
-    "landed_usd",
-}
+COLLECTOR_REPORT_FIELDS = (
+    ("Marketplace", ("marketplace",)),
+    ("Listing ID", ("listing_id",)),
+    ("Seller", ("seller",)),
+    ("Artist", ("artist_display", "artist")),
+    ("Media", MEDIA_COLUMNS),
+    (
+        "Catalog / matrix",
+        (
+            "catalog_display",
+            "pressing_token",
+            "catalog_number",
+        ),
+    ),
+    (
+        "Pressing",
+        (
+            "effective_pressing_type",
+            "manual_pressing_type",
+            "auto_pressing_type",
+            "edition",
+        ),
+    ),
+    (
+        "Condition media",
+        (
+            "effective_condition_media",
+            "manual_condition_media",
+            "condition_media",
+        ),
+    ),
+    (
+        "Condition cover",
+        (
+            "effective_condition_cover",
+            "manual_condition_cover",
+            "condition_cover",
+        ),
+    ),
+    (
+        "Starting price",
+        (
+            "starting_local",
+            "start_price",
+        ),
+    ),
+    (
+        "Hammer before tax",
+        (
+            "hammer_local",
+            "final_price",
+        ),
+    ),
+    (
+        "Tax",
+        (
+            "tax_local",
+            "tax_amount",
+        ),
+    ),
+    (
+        "Total local",
+        (
+            "total_local",
+            "gross_price",
+            "current_price_gross",
+        ),
+    ),
+    (
+        "Total USD",
+        (
+            "total_usd",
+            "gross_price_usd",
+        ),
+    ),
+    (
+        "Shipping",
+        (
+            "shipping_price",
+            "shipping_usd",
+        ),
+    ),
+    (
+        "Bids",
+        (
+            "bid_count_display",
+            "bid_count",
+        ),
+    ),
+    (
+        "Watch count",
+        ("watch_count",),
+    ),
+    (
+        "Closed",
+        (
+            "closing_display",
+            "ended_at",
+        ),
+    ),
+    (
+        "Added",
+        (
+            "added_display",
+            "_audit_first_seen_at",
+            "created_at",
+        ),
+    ),
+    (
+        "Verdict",
+        (
+            "verdict_display",
+            "manual_verdict",
+        ),
+    ),
+    (
+        "Collector notes",
+        (
+            "manual_collector_notes",
+            "collector_notes",
+        ),
+    ),
+    (
+        "URL",
+        ("auction_url",),
+    ),
+)
 
 
 def _series(
@@ -190,7 +195,7 @@ def _series(
     column: str,
     default: Any = "",
 ) -> pd.Series:
-    """Return one Series even when a column label is duplicated."""
+    """Return one Series even when duplicate column labels exist."""
     if column not in dataframe.columns:
         return pd.Series(
             default,
@@ -201,122 +206,273 @@ def _series(
     selected = dataframe.loc[:, column]
 
     if isinstance(selected, pd.DataFrame):
-        return selected.bfill(axis=1).iloc[:, 0]
+        return (
+            selected
+            .bfill(axis=1)
+            .iloc[:, 0]
+        )
 
     return selected
 
 
-def _first_value(
-    row: pd.Series,
-    candidates: tuple[str, ...],
-) -> Any:
-    """Return the first non-empty candidate from one row."""
-    for candidate in candidates:
-        if candidate not in row.index:
-            continue
+def _truthy(value: Any) -> bool:
+    """Interpret database, NumPy, and string booleans safely."""
+    if value is None:
+        return False
 
-        value = row[candidate]
+    try:
+        missing = pd.isna(value)
 
-        if isinstance(value, pd.Series):
-            values = [
-                item
-                for item in value.tolist()
-                if not is_missing(item)
-            ]
-
-            if not values:
-                continue
-
-            value = values[0]
-
-        if not is_missing(value):
-            return value
-
-    return None
-
-
-def _boolean(value: Any) -> bool | None:
-    if is_missing(value):
-        return None
+        if (
+            not hasattr(missing, "__len__")
+            and bool(missing)
+        ):
+            return False
+    except (TypeError, ValueError):
+        pass
 
     if isinstance(value, bool):
         return value
 
-    normalized = clean_text(value).lower()
+    normalized = str(value).strip().lower()
 
-    if normalized in {"1", "true", "yes", "y"}:
-        return True
+    return normalized in {
+        "1",
+        "true",
+        "t",
+        "yes",
+        "y",
+        "recent",
+    }
 
-    if normalized in {"0", "false", "no", "n"}:
-        return False
 
-    return bool(value)
-
-
-def _normalize(field: str, value: Any) -> Any:
-    if is_missing(value):
+def _safe_value(value: Any) -> Any:
+    """Convert one dataframe value into an export-safe scalar."""
+    if value is None:
         return None
 
-    if field in TEXT_FIELDS:
-        return clean_text(value)
+    if isinstance(value, Decimal):
+        return str(value)
 
-    if field in INTEGER_FIELDS:
+    if isinstance(
+        value,
+        (
+            datetime,
+            date,
+            pd.Timestamp,
+        ),
+    ):
         try:
-            return int(float(value))
+            if pd.isna(value):
+                return None
         except (TypeError, ValueError):
+            pass
+
+        return value.isoformat()
+
+    if isinstance(
+        value,
+        (
+            dict,
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            default=str,
+        )
+
+    try:
+        missing = pd.isna(value)
+
+        if (
+            not hasattr(missing, "__len__")
+            and bool(missing)
+        ):
             return None
+    except (TypeError, ValueError):
+        pass
 
-    if field in BOOLEAN_FIELDS:
-        return _boolean(value)
-
-    if field in DECIMAL_FIELDS:
+    if hasattr(value, "item"):
         try:
-            return Decimal(str(value))
-        except (ArithmeticError, TypeError, ValueError):
-            return None
+            return value.item()
+        except (TypeError, ValueError):
+            pass
 
     return value
 
 
-def dataframe_to_export_rows(
-    dataframe: pd.DataFrame,
-) -> list[dict[str, Any]]:
-    """Adapt prepared UI rows to the existing export service."""
-    export_rows: list[dict[str, Any]] = []
+def _unique_column_names(
+    columns: list[Any],
+) -> list[str]:
+    """Preserve every column while making duplicate names exportable."""
+    counts: dict[str, int] = {}
+    result: list[str] = []
 
-    for _, source_row in dataframe.iterrows():
-        row = {
-            field: _normalize(
-                field,
-                _first_value(
-                    source_row,
-                    candidates,
-                ),
+    for position, raw_name in enumerate(
+        columns,
+        start=1,
+    ):
+        base_name = str(
+            raw_name
+            if raw_name not in {
+                None,
+                "",
+            }
+            else f"column_{position}"
+        )
+
+        counts[base_name] = (
+            counts.get(
+                base_name,
+                0,
             )
-            for field, candidates
-            in COLUMN_CANDIDATES.items()
-        }
-
-        for column in EXPORT_COLUMNS:
-            row.setdefault(column, None)
-
-        row["currency"] = row["currency"] or "USD"
-        row["media_type"] = (
-            row["media_type"] or "UNCLASSIFIED"
-        )
-        row["_fx_source"] = (
-            row["_fx_source"] or "collector-review"
+            + 1
         )
 
-        if (
-            row["currency"] == "USD"
-            and row["fx_rate_to_usd"] is None
-        ):
-            row["fx_rate_to_usd"] = Decimal("1")
+        occurrence = counts[base_name]
 
-        export_rows.append(row)
+        result.append(
+            base_name
+            if occurrence == 1
+            else f"{base_name}__{occurrence}"
+        )
 
-    return export_rows
+    return result
+
+
+def full_export_frame(
+    dataframe: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return every source column with JSON/CSV-safe values."""
+    frame = dataframe.copy()
+
+    frame.columns = _unique_column_names(
+        list(frame.columns)
+    )
+
+    for column in frame.columns:
+        frame[column] = frame[column].map(
+            _safe_value
+        )
+
+    return frame
+
+
+def _media_series(
+    dataframe: pd.DataFrame,
+) -> pd.Series:
+    """Return the best available media classification."""
+    for column in MEDIA_COLUMNS:
+        if column not in dataframe.columns:
+            continue
+
+        values = (
+            _series(
+                dataframe,
+                column,
+            )
+            .fillna("")
+            .astype(str)
+            .map(clean_text)
+        )
+
+        values = values.replace(
+            "",
+            "UNCLASSIFIED",
+        )
+
+        return values
+
+    return pd.Series(
+        "UNCLASSIFIED",
+        index=dataframe.index,
+        dtype="object",
+    )
+
+
+def recent_ingestion_frame(
+    dataframe: pd.DataFrame,
+) -> pd.DataFrame:
+    """Select the established recent-ingestion set."""
+    if dataframe.empty:
+        return dataframe.copy()
+
+    for column in RECENT_FLAG_COLUMNS:
+        if column not in dataframe.columns:
+            continue
+
+        mask = _series(
+            dataframe,
+            column,
+        ).map(_truthy)
+
+        return (
+            dataframe.loc[mask]
+            .copy()
+            .reset_index(drop=True)
+        )
+
+    for column in INGESTION_BATCH_COLUMNS:
+        if column not in dataframe.columns:
+            continue
+
+        batches = _series(
+            dataframe,
+            column,
+        )
+
+        populated = batches[
+            batches.notna()
+            & batches.astype(str).str.strip().ne("")
+        ]
+
+        if populated.empty:
+            continue
+
+        latest_batch = populated.iloc[-1]
+
+        return (
+            dataframe.loc[
+                batches.eq(latest_batch)
+            ]
+            .copy()
+            .reset_index(drop=True)
+        )
+
+    for column in INGESTION_DATE_COLUMNS:
+        if column not in dataframe.columns:
+            continue
+
+        timestamps = pd.to_datetime(
+            _series(
+                dataframe,
+                column,
+            ),
+            errors="coerce",
+            utc=True,
+        )
+
+        if timestamps.dropna().empty:
+            continue
+
+        latest_day = timestamps.max().date()
+
+        return (
+            dataframe.loc[
+                timestamps.notna()
+                & timestamps.dt.date.eq(
+                    latest_day
+                )
+            ]
+            .copy()
+            .reset_index(drop=True)
+        )
+
+    return dataframe.iloc[0:0].copy()
 
 
 def deduplicate_export_frame(
@@ -329,7 +485,10 @@ def deduplicate_export_frame(
     frame = dataframe.copy()
 
     marketplace = (
-        _series(frame, "marketplace")
+        _series(
+            frame,
+            "marketplace",
+        )
         .fillna("")
         .astype(str)
         .str.strip()
@@ -337,7 +496,10 @@ def deduplicate_export_frame(
     )
 
     listing_id = (
-        _series(frame, "listing_id")
+        _series(
+            frame,
+            "listing_id",
+        )
         .fillna("")
         .astype(str)
         .str.strip()
@@ -352,35 +514,46 @@ def deduplicate_export_frame(
         "data_source",
         "source",
     ):
-        if source_column in frame.columns:
-            source_marker = (
-                source_marker
-                + " "
-                + _series(
-                    frame,
-                    source_column,
-                )
-                .fillna("")
-                .astype(str)
-                .str.lower()
-            )
+        if source_column not in frame.columns:
+            continue
 
-    gripsweat = source_marker.str.contains(
+        source_marker = (
+            source_marker
+            + " "
+            + _series(
+                frame,
+                source_column,
+            )
+            .fillna("")
+            .astype(str)
+            .str.lower()
+        )
+
+    is_gripsweat = source_marker.str.contains(
         "gripsweat",
         regex=False,
     )
 
     frame["_export_family"] = marketplace.mask(
-        gripsweat,
+        is_gripsweat,
         "ebay",
     )
-    frame["_export_priority"] = gripsweat.astype(int)
-    frame["_export_order"] = range(len(frame))
+
+    frame["_export_priority"] = (
+        is_gripsweat.astype(int)
+    )
+
+    frame["_export_order"] = range(
+        len(frame)
+    )
+
     frame["_export_listing_id"] = listing_id.mask(
         listing_id.eq(""),
         (
             "__missing__:"
-            + frame["_export_order"].astype(str)
+            + frame[
+                "_export_order"
+            ].astype(str)
         ),
     )
 
@@ -408,219 +581,749 @@ def deduplicate_export_frame(
         inplace=True,
     )
 
-    return frame.drop(
-        columns=[
-            "_export_family",
-            "_export_priority",
-            "_export_order",
-            "_export_listing_id",
-        ],
-    ).reset_index(drop=True)
+    return (
+        frame.drop(
+            columns=[
+                "_export_family",
+                "_export_priority",
+                "_export_order",
+                "_export_listing_id",
+            ],
+        )
+        .reset_index(drop=True)
+    )
 
 
 def _slug(value: str) -> str:
-    value = re.sub(
+    """Return a filesystem-safe filename fragment."""
+    result = re.sub(
         r"[^a-z0-9]+",
         "-",
-        value.lower(),
+        value.strip().lower(),
     ).strip("-")
 
-    return value or "all"
+    return result or "all"
 
 
-def _format_metadata(
-    export_format: str,
-) -> tuple[str, str]:
-    return {
-        "CSV": ("csv", "text/csv"),
-        "Excel": (
-            "xlsx",
-            (
-                "application/vnd.openxmlformats-officedocument."
-                "spreadsheetml.sheet"
-            ),
+def _row_value(
+    row: pd.Series,
+    candidates: tuple[str, ...],
+) -> Any:
+    """Return the first populated collector-report value."""
+    for candidate in candidates:
+        if candidate not in row.index:
+            continue
+
+        value = row[candidate]
+
+        if isinstance(value, pd.Series):
+            values = [
+                item
+                for item in value.tolist()
+                if _safe_value(item) is not None
+            ]
+
+            if not values:
+                continue
+
+            value = values[0]
+
+        normalized = _safe_value(value)
+
+        if normalized not in {
+            None,
+            "",
+        }:
+            return normalized
+
+    return None
+
+
+def _csv_payload(
+    dataframe: pd.DataFrame,
+) -> tuple[bytes, str]:
+    frame = full_export_frame(dataframe)
+
+    return (
+        frame.to_csv(
+            index=False,
+        ).encode("utf-8-sig"),
+        "text/csv",
+    )
+
+
+def _json_payload(
+    dataframe: pd.DataFrame,
+) -> tuple[bytes, str]:
+    frame = full_export_frame(dataframe)
+
+    payload = json.dumps(
+        frame.to_dict(
+            orient="records"
         ),
-        "JSON": ("json", "application/json"),
-        "Markdown": ("md", "text/markdown"),
-        "Word": (
-            "docx",
-            (
-                "application/vnd.openxmlformats-officedocument."
-                "wordprocessingml.document"
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    ).encode("utf-8")
+
+    return payload, "application/json"
+
+
+def _text_payload(
+    dataframe: pd.DataFrame,
+) -> tuple[bytes, str]:
+    frame = full_export_frame(dataframe)
+
+    return (
+        frame.to_csv(
+            index=False,
+            sep="\t",
+        ).encode("utf-8"),
+        "text/plain",
+    )
+
+
+def _excel_payload(
+    dataframe: pd.DataFrame,
+    title: str,
+) -> tuple[bytes, str]:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    frame = full_export_frame(dataframe)
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Listings"
+
+    sheet.append(
+        list(frame.columns)
+    )
+
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(
+            fill_type="solid",
+            fgColor="D9EAF7",
+        )
+
+    for values in frame.itertuples(
+        index=False,
+        name=None,
+    ):
+        sheet.append(
+            list(values)
+        )
+
+    sheet.freeze_panes = "A2"
+
+    if sheet.max_column > 0:
+        sheet.auto_filter.ref = (
+            sheet.dimensions
+        )
+
+    for column_index, column_name in enumerate(
+        frame.columns,
+        start=1,
+    ):
+        samples = [
+            str(column_name),
+            *[
+                str(value)
+                for value in frame[
+                    column_name
+                ].head(200)
+                if value is not None
+            ],
+        ]
+
+        width = min(
+            70,
+            max(
+                12,
+                max(
+                    len(value)
+                    for value in samples
+                )
+                + 2,
             ),
+        )
+
+        sheet.column_dimensions[
+            get_column_letter(
+                column_index
+            )
+        ].width = width
+
+    summary = workbook.create_sheet(
+        "Summary"
+    )
+
+    summary.append(
+        [
+            "Metric",
+            "Value",
+        ]
+    )
+    summary.append(
+        [
+            "Report",
+            title,
+        ]
+    )
+    summary.append(
+        [
+            "Generated UTC",
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+        ]
+    )
+    summary.append(
+        [
+            "Rows",
+            len(frame),
+        ]
+    )
+    summary.append(
+        [
+            "Columns",
+            len(frame.columns),
+        ]
+    )
+
+    for marketplace, count in sorted(
+        _series(
+            dataframe,
+            "marketplace",
+            "UNKNOWN",
+        )
+        .fillna("UNKNOWN")
+        .astype(str)
+        .value_counts()
+        .items()
+    ):
+        summary.append(
+            [
+                f"Marketplace: {marketplace}",
+                int(count),
+            ]
+        )
+
+    for media_type, count in sorted(
+        _media_series(
+            dataframe
+        )
+        .value_counts()
+        .items()
+    ):
+        summary.append(
+            [
+                f"Media: {media_type}",
+                int(count),
+            ]
+        )
+
+    for cell in summary[1]:
+        cell.font = Font(bold=True)
+
+    summary.column_dimensions["A"].width = 32
+    summary.column_dimensions["B"].width = 60
+
+    output = BytesIO()
+    workbook.save(output)
+
+    return (
+        output.getvalue(),
+        (
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
         ),
-        "Plain text": ("txt", "text/plain"),
-    }[export_format]
+    )
 
 
-def _write_export(
-    rows: list[dict[str, Any]],
-    path: Path,
+def _markdown_payload(
+    dataframe: pd.DataFrame,
+    title: str,
+) -> tuple[bytes, str]:
+    media = _media_series(
+        dataframe
+    )
+
+    lines = [
+        f"# {title}",
+        "",
+        (
+            "Generated: "
+            + datetime.now(
+                timezone.utc
+            ).isoformat()
+        ),
+        "",
+        f"Total listings: **{len(dataframe)}**",
+        "",
+    ]
+
+    for media_type in sorted(
+        media.unique()
+    ):
+        selected = dataframe.loc[
+            media.eq(media_type)
+        ]
+
+        lines.extend(
+            [
+                f"## {media_type}",
+                "",
+                f"Listings: **{len(selected)}**",
+                "",
+            ]
+        )
+
+        for index, (_, row) in enumerate(
+            selected.iterrows(),
+            start=1,
+        ):
+            title_value = (
+                _row_value(
+                    row,
+                    ("title",),
+                )
+                or "Untitled listing"
+            )
+
+            lines.extend(
+                [
+                    f"### {index}. {title_value}",
+                    "",
+                ]
+            )
+
+            for label, candidates in (
+                COLLECTOR_REPORT_FIELDS
+            ):
+                value = _row_value(
+                    row,
+                    candidates,
+                )
+
+                if value in {
+                    None,
+                    "",
+                }:
+                    continue
+
+                lines.append(
+                    f"- **{label}:** {value}"
+                )
+
+            lines.append("")
+
+    return (
+        "\n".join(lines).encode(
+            "utf-8"
+        ),
+        "text/markdown",
+    )
+
+
+def _word_payload(
+    dataframe: pd.DataFrame,
+    title: str,
+) -> tuple[bytes, str]:
+    from docx import Document
+
+    document = Document()
+
+    document.add_heading(
+        title,
+        level=0,
+    )
+
+    document.add_paragraph(
+        f"Total listings: {len(dataframe)}"
+    )
+
+    document.add_paragraph(
+        (
+            "Generated UTC: "
+            + datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+    )
+
+    media = _media_series(
+        dataframe
+    )
+
+    for media_type in sorted(
+        media.unique()
+    ):
+        selected = dataframe.loc[
+            media.eq(media_type)
+        ]
+
+        document.add_heading(
+            f"{media_type} ({len(selected)})",
+            level=1,
+        )
+
+        for index, (_, row) in enumerate(
+            selected.iterrows(),
+            start=1,
+        ):
+            title_value = (
+                _row_value(
+                    row,
+                    ("title",),
+                )
+                or "Untitled listing"
+            )
+
+            document.add_heading(
+                f"{index}. {title_value}",
+                level=2,
+            )
+
+            table = document.add_table(
+                rows=0,
+                cols=2,
+            )
+
+            table.style = "Table Grid"
+
+            for label, candidates in (
+                COLLECTOR_REPORT_FIELDS
+            ):
+                value = _row_value(
+                    row,
+                    candidates,
+                )
+
+                if value in {
+                    None,
+                    "",
+                }:
+                    continue
+
+                cells = table.add_row().cells
+                cells[0].text = label
+                cells[1].text = str(value)
+
+    output = BytesIO()
+    document.save(output)
+
+    return (
+        output.getvalue(),
+        (
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
+    )
+
+
+def _single_payload(
+    dataframe: pd.DataFrame,
     export_format: str,
     title: str,
-) -> None:
+) -> tuple[bytes, str, str]:
+    """Build one file and return bytes, extension, and MIME type."""
     if export_format == "CSV":
-        export_csv(rows, path)
-    elif export_format == "Excel":
-        export_xlsx(rows, path)
-    elif export_format == "JSON":
-        export_json(rows, path)
-    elif export_format in {"Markdown", "Plain text"}:
-        export_markdown(
-            rows,
-            path,
-            title=title,
+        payload, mime_type = _csv_payload(
+            dataframe
         )
-    elif export_format == "Word":
-        export_docx(
-            rows,
-            path,
-            title=title,
+        return payload, "csv", mime_type
+
+    if export_format == "Excel":
+        payload, mime_type = _excel_payload(
+            dataframe,
+            title,
         )
-    else:
-        raise ValueError(
-            f"Unsupported export format: {export_format}"
+        return payload, "xlsx", mime_type
+
+    if export_format == "JSON":
+        payload, mime_type = _json_payload(
+            dataframe
         )
+        return payload, "json", mime_type
+
+    if export_format == "Markdown":
+        payload, mime_type = _markdown_payload(
+            dataframe,
+            title,
+        )
+        return payload, "md", mime_type
+
+    if export_format == "Word":
+        payload, mime_type = _word_payload(
+            dataframe,
+            title,
+        )
+        return payload, "docx", mime_type
+
+    if export_format == "Plain text":
+        payload, mime_type = _text_payload(
+            dataframe
+        )
+        return payload, "txt", mime_type
+
+    raise ValueError(
+        f"Unsupported export format: {export_format}"
+    )
+
+
+def _filter_media(
+    dataframe: pd.DataFrame,
+    media_selection: str,
+) -> pd.DataFrame:
+    """Apply the export-specific media selector."""
+    if media_selection in {
+        ALL_COMBINED,
+        ALL_SPLIT,
+    }:
+        return dataframe.copy()
+
+    media = _media_series(
+        dataframe
+    )
+
+    return (
+        dataframe.loc[
+            media.eq(media_selection)
+        ]
+        .copy()
+        .reset_index(drop=True)
+    )
 
 
 def build_export_payload(
     dataframe: pd.DataFrame,
     export_format: str,
     media_selection: str,
+    dataset_label: str,
 ) -> tuple[bytes, str, str, int]:
-    """Build one export file or a ZIP split by media."""
-    extension, mime_type = _format_metadata(
-        export_format
-    )
-
+    """Build one file or a ZIP separated by media."""
     timestamp = datetime.now(
         timezone.utc
-    ).strftime("%Y%m%d-%H%M%S")
-
-    media = (
-        _series(
-            dataframe,
-            "media_display",
-            "UNCLASSIFIED",
-        )
-        .fillna("UNCLASSIFIED")
-        .astype(str)
-        .replace("", "UNCLASSIFIED")
+    ).strftime(
+        "%Y%m%d-%H%M%S"
     )
 
-    with TemporaryDirectory(
-        prefix="auction-etl-ui-export-"
-    ) as directory_name:
-        directory = Path(directory_name)
+    dataset_slug = _slug(
+        dataset_label
+    )
 
-        if media_selection == ALL_SPLIT:
-            archive_name = (
-                "collector-review-by-media-"
-                f"{timestamp}.zip"
-            )
-            archive_path = directory / archive_name
+    if media_selection == ALL_SPLIT:
+        media = _media_series(
+            dataframe
+        )
 
-            with ZipFile(
-                archive_path,
-                "w",
-                compression=ZIP_DEFLATED,
-            ) as archive:
-                for media_type in sorted(
-                    media.unique()
-                ):
-                    selected = dataframe[
+        archive_output = BytesIO()
+
+        with ZipFile(
+            archive_output,
+            "w",
+            compression=ZIP_DEFLATED,
+        ) as archive:
+            for media_type in sorted(
+                media.unique()
+            ):
+                selected = (
+                    dataframe.loc[
                         media.eq(media_type)
-                    ].copy()
+                    ]
+                    .copy()
+                    .reset_index(drop=True)
+                )
 
-                    rows = dataframe_to_export_rows(
-                        selected
-                    )
+                title = (
+                    f"Auction Collector Review — "
+                    f"{dataset_label} — {media_type}"
+                )
 
-                    filename = (
-                        "collector-review-"
-                        f"{_slug(media_type)}-"
-                        f"{timestamp}.{extension}"
-                    )
+                (
+                    payload,
+                    extension,
+                    _,
+                ) = _single_payload(
+                    selected,
+                    export_format,
+                    title,
+                )
 
-                    output_path = directory / filename
+                filename = (
+                    "collector-review-"
+                    f"{dataset_slug}-"
+                    f"{_slug(media_type)}-"
+                    f"{timestamp}."
+                    f"{extension}"
+                )
 
-                    _write_export(
-                        rows,
-                        output_path,
-                        export_format,
-                        (
-                            "Auction Collector Review — "
-                            f"{media_type}"
-                        ),
-                    )
-
-                    archive.write(
-                        output_path,
-                        arcname=filename,
-                    )
-
-            return (
-                archive_path.read_bytes(),
-                archive_name,
-                "application/zip",
-                len(dataframe),
-            )
-
-        if media_selection == ALL_COMBINED:
-            selected = dataframe.copy()
-            media_slug = "all-media"
-            title = "Auction Collector Review"
-        else:
-            selected = dataframe[
-                media.eq(media_selection)
-            ].copy()
-
-            media_slug = _slug(media_selection)
-            title = (
-                "Auction Collector Review — "
-                f"{media_selection}"
-            )
-
-        rows = dataframe_to_export_rows(selected)
-
-        filename = (
-            "collector-review-"
-            f"{media_slug}-"
-            f"{timestamp}.{extension}"
-        )
-
-        output_path = directory / filename
-
-        _write_export(
-            rows,
-            output_path,
-            export_format,
-            title,
-        )
+                archive.writestr(
+                    filename,
+                    payload,
+                )
 
         return (
-            output_path.read_bytes(),
+            archive_output.getvalue(),
+            (
+                "collector-review-"
+                f"{dataset_slug}-"
+                f"by-media-{timestamp}.zip"
+            ),
+            "application/zip",
+            len(dataframe),
+        )
+
+    selected = _filter_media(
+        dataframe,
+        media_selection,
+    )
+
+    media_slug = (
+        "all-media"
+        if media_selection == ALL_COMBINED
+        else _slug(media_selection)
+    )
+
+    title = (
+        f"Auction Collector Review — "
+        f"{dataset_label}"
+    )
+
+    (
+        payload,
+        extension,
+        mime_type,
+    ) = _single_payload(
+        selected,
+        export_format,
+        title,
+    )
+
+    return (
+        payload,
+        (
+            "collector-review-"
+            f"{dataset_slug}-"
+            f"{media_slug}-"
+            f"{timestamp}."
+            f"{extension}"
+        ),
+        mime_type,
+        len(selected),
+    )
+
+
+def _frame_signature(
+    dataframe: pd.DataFrame,
+) -> str:
+    """Return a stable signature for one exportable dataset."""
+    if dataframe.empty:
+        return "empty"
+
+    signature_frame = pd.DataFrame(
+        {
+            "marketplace": _series(
+                dataframe,
+                "marketplace",
+            ).astype(str),
+            "listing_id": _series(
+                dataframe,
+                "listing_id",
+            ).astype(str),
+            "media": _media_series(
+                dataframe
+            ).astype(str),
+            "total": _series(
+                dataframe,
+                "total_local",
+            ).astype(str),
+            "recent": _series(
+                dataframe,
+                "_is_recent_addition",
+            ).astype(str),
+        }
+    )
+
+    return str(
+        int(
+            pd.util.hash_pandas_object(
+                signature_frame,
+                index=False,
+            ).sum()
+        )
+    )
+
+
+def _prepare_export(
+    dataframe: pd.DataFrame,
+    export_format: str,
+    media_selection: str,
+    dataset_label: str,
+) -> None:
+    """Build and persist one download in Streamlit session state."""
+    with st.spinner(
+        f"Preparing {dataset_label.lower()} export…"
+    ):
+        (
+            payload,
             filename,
             mime_type,
-            len(rows),
+            row_count,
+        ) = build_export_payload(
+            dataframe,
+            export_format,
+            media_selection,
+            dataset_label,
         )
+
+    st.session_state[
+        "_collector_export_result"
+    ] = {
+        "payload": payload,
+        "filename": filename,
+        "mime_type": mime_type,
+        "row_count": row_count,
+        "dataset_label": dataset_label,
+        "format": export_format,
+        "media": media_selection,
+    }
 
 
 def render_export_toolbar(
-    dataframe: pd.DataFrame,
+    filtered_dataframe: pd.DataFrame,
+    all_dataframe: pd.DataFrame | None = None,
 ) -> None:
-    """Render exports for the complete filtered result set."""
+    """Render filtered, recent-filtered, and all-recent exports."""
+    complete_dataframe = (
+        all_dataframe
+        if all_dataframe is not None
+        else filtered_dataframe
+    )
+
     with st.expander(
-        "Export filtered listings",
+        "Export filtered or recent ingestion listings",
         expanded=False,
     ):
         st.caption(
-            "Exports every row matching the sidebar filters. "
-            "Pagination does not limit the downloaded data."
+            "CSV, Excel, JSON, and plain-text exports include every "
+            "dataframe column. Markdown and Word exports are grouped "
+            "by media and optimized for collector review."
         )
 
-        format_column, media_column, dedupe_column = (
-            st.columns([2, 3, 1])
+        (
+            format_column,
+            media_column,
+            dedupe_column,
+        ) = st.columns(
+            [
+                2,
+                3,
+                1,
+            ]
         )
 
         with format_column:
@@ -630,16 +1333,24 @@ def render_export_toolbar(
                 key="collector_export_format",
             )
 
+        media_source = pd.concat(
+            [
+                filtered_dataframe,
+                complete_dataframe,
+            ],
+            ignore_index=True,
+            sort=False,
+        )
+
         media_values = tuple(
             sorted(
-                {
-                    clean_text(value)
-                    for value in _series(
-                        dataframe,
-                        "media_display",
-                    ).dropna()
-                    if clean_text(value)
-                }
+                set(
+                    _media_series(
+                        media_source
+                    )
+                    .dropna()
+                    .astype(str)
+                )
             )
         )
 
@@ -660,128 +1371,203 @@ def render_export_toolbar(
                 value=True,
                 key="collector_export_deduplicate",
                 help=(
-                    "Prefer native eBay over matching "
-                    "Gripsweat archive rows."
+                    "Prefer native eBay rows over matching "
+                    "Gripsweat archive rows with the same listing ID."
                 ),
             )
 
-        export_frame = (
-            deduplicate_export_frame(dataframe)
+        filtered_export = (
+            deduplicate_export_frame(
+                filtered_dataframe
+            )
             if deduplicate
-            else dataframe.copy()
+            else filtered_dataframe.copy()
         )
 
-        media_series = (
-            _series(
-                export_frame,
-                "media_display",
-                "UNCLASSIFIED",
+        complete_export = (
+            deduplicate_export_frame(
+                complete_dataframe
             )
-            .fillna("UNCLASSIFIED")
-            .astype(str)
-            .replace("", "UNCLASSIFIED")
+            if deduplicate
+            else complete_dataframe.copy()
         )
 
-        if media_selection in {
-            ALL_COMBINED,
-            ALL_SPLIT,
-        }:
-            row_count = len(export_frame)
-        else:
-            row_count = int(
-                media_series.eq(
-                    media_selection
-                ).sum()
+        recent_filtered = recent_ingestion_frame(
+            filtered_export
+        )
+
+        recent_all = recent_ingestion_frame(
+            complete_export
+        )
+
+        filtered_selected = _filter_media(
+            filtered_export,
+            media_selection,
+        )
+
+        recent_filtered_selected = _filter_media(
+            recent_filtered,
+            media_selection,
+        )
+
+        recent_all_selected = _filter_media(
+            recent_all,
+            media_selection,
+        )
+
+        metrics = st.columns(3)
+
+        metrics[0].metric(
+            "Current filtered",
+            len(filtered_selected),
+        )
+
+        metrics[1].metric(
+            "Recent within filters",
+            len(recent_filtered_selected),
+        )
+
+        metrics[2].metric(
+            "All recent ingestion",
+            len(recent_all_selected),
+        )
+
+        controls_signature = "|".join(
+            (
+                export_format,
+                media_selection,
+                str(deduplicate),
+                _frame_signature(
+                    filtered_export
+                ),
+                _frame_signature(
+                    recent_filtered
+                ),
+                _frame_signature(
+                    recent_all
+                ),
             )
-
-        signature_frame = pd.DataFrame(
-            {
-                "marketplace": _series(
-                    export_frame,
-                    "marketplace",
-                ).astype(str),
-                "listing_id": _series(
-                    export_frame,
-                    "listing_id",
-                ).astype(str),
-                "media": media_series,
-                "total": _series(
-                    export_frame,
-                    "total_local",
-                ).astype(str),
-            }
         )
 
-        signature_hash = int(
-            pd.util.hash_pandas_object(
-                signature_frame,
-                index=False,
-            ).sum()
-        )
-
-        signature = (
-            f"{export_format}|{media_selection}|"
-            f"{deduplicate}|{row_count}|{signature_hash}"
-        )
-
-        st.caption(
-            f"{row_count:,} listings will be exported."
-        )
-
-        if st.button(
-            "Prepare export",
-            type="primary",
-            width="stretch",
-            disabled=row_count == 0,
-            key="collector_prepare_export",
+        if (
+            st.session_state.get(
+                "_collector_export_controls"
+            )
+            != controls_signature
         ):
-            try:
-                with st.spinner(
-                    "Preparing export…"
-                ):
-                    result = build_export_payload(
-                        export_frame,
+            st.session_state[
+                "_collector_export_controls"
+            ] = controls_signature
+
+            st.session_state.pop(
+                "_collector_export_result",
+                None,
+            )
+
+        (
+            filtered_button,
+            recent_filtered_button,
+            recent_all_button,
+        ) = st.columns(3)
+
+        with filtered_button:
+            if st.button(
+                "Prepare filtered export",
+                type="primary",
+                width="stretch",
+                disabled=(
+                    len(filtered_selected)
+                    == 0
+                ),
+                key=(
+                    "collector_prepare_"
+                    "filtered_export"
+                ),
+            ):
+                try:
+                    _prepare_export(
+                        filtered_export,
                         export_format,
                         media_selection,
+                        "Current filtered results",
+                    )
+                except Exception as error:
+                    st.error(
+                        "Could not create filtered export: "
+                        f"{error}"
                     )
 
-                st.session_state[
-                    "_collector_export_result"
-                ] = (
-                    signature,
-                    *result,
-                )
+        with recent_filtered_button:
+            if st.button(
+                "Prepare recent-in-filter export",
+                width="stretch",
+                disabled=(
+                    len(
+                        recent_filtered_selected
+                    )
+                    == 0
+                ),
+                key=(
+                    "collector_prepare_"
+                    "recent_filtered_export"
+                ),
+            ):
+                try:
+                    _prepare_export(
+                        recent_filtered,
+                        export_format,
+                        media_selection,
+                        "Recent ingestion within filters",
+                    )
+                except Exception as error:
+                    st.error(
+                        "Could not create recent filtered export: "
+                        f"{error}"
+                    )
 
-            except Exception as error:
-                st.error(
-                    f"Could not create export: {error}"
-                )
+        with recent_all_button:
+            if st.button(
+                "Prepare all recent ingestion",
+                width="stretch",
+                disabled=(
+                    len(recent_all_selected)
+                    == 0
+                ),
+                key=(
+                    "collector_prepare_"
+                    "all_recent_export"
+                ),
+            ):
+                try:
+                    _prepare_export(
+                        recent_all,
+                        export_format,
+                        media_selection,
+                        "All recent ingestion",
+                    )
+                except Exception as error:
+                    st.error(
+                        "Could not create all-recent export: "
+                        f"{error}"
+                    )
 
         result = st.session_state.get(
             "_collector_export_result"
         )
 
-        if (
-            result
-            and result[0] == signature
-        ):
-            (
-                _,
-                payload,
-                filename,
-                mime_type,
-                prepared_rows,
-            ) = result
-
+        if result:
             st.success(
-                f"Prepared {prepared_rows:,} listings."
+                (
+                    f"Prepared {result['row_count']:,} listings from "
+                    f"{result['dataset_label']}."
+                )
             )
 
             st.download_button(
-                "Download export",
-                data=payload,
-                file_name=filename,
-                mime=mime_type,
+                "Download prepared export",
+                data=result["payload"],
+                file_name=result["filename"],
+                mime=result["mime_type"],
                 width="stretch",
                 key="collector_download_export",
             )

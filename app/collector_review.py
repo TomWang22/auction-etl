@@ -3762,7 +3762,8 @@ with tabs[0]:
         )
     else:
         render_export_toolbar(
-            filtered_records
+            filtered_records,
+            records,
         )
 
         start_index = (
