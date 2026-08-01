@@ -40,7 +40,7 @@ The table exposes `Opened`, `Closed`, `Added`, `Activity`, and
 cd ~/auction-etl
 source .venv/bin/activate
 
-export DATABASE_URL='postgresql+psycopg://auction:auction@127.0.0.1:5444/auction_warehouse'
+export DATABASE_URL='postgresql+psycopg://auction:auction@127.0.0.1:5544/auction_warehouse'
 
 python -m streamlit run             app/collector_review.py             --server.address 127.0.0.1             --server.port 8501             --server.headless true
 ```

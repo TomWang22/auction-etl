@@ -37,7 +37,7 @@ from auction_etl.reporting.main_review_integration import _concat_unique_columns
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://auction:auction@localhost:5444/auction_warehouse",
+    "postgresql://auction:auction@localhost:5544/auction_warehouse",
 )
 
 PAGE_SIZE_OPTIONS = (
