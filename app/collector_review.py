@@ -14,6 +14,8 @@ from st_aggrid import AgGrid, JsCode
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from app.collector_export import render_export_toolbar
+
 from app.collector_review_support import (
     as_boolean,
     clean_text,
@@ -3759,6 +3761,10 @@ with tabs[0]:
             "No listings match the current filters."
         )
     else:
+        render_export_toolbar(
+            filtered_records
+        )
+
         start_index = (
             page_number - 1
         ) * page_size

@@ -40,7 +40,7 @@ The table exposes `Opened`, `Closed`, `Added`, `Activity`, and
 cd ~/auction-etl
 source .venv/bin/activate
 
-export DATABASE_URL='postgresql+psycopg://auction:auction@127.0.0.1:5544/auction_warehouse'
+export DATABASE_URL='postgresql+psycopg://auction:auction@127.0.0.1:5444/auction_warehouse'
 
 python -m streamlit run             app/collector_review.py             --server.address 127.0.0.1             --server.port 8501             --server.headless true
 ```
@@ -157,3 +157,36 @@ workflow that writes collector metadata. Searching, filtering,
 hovering, selecting rows, changing pages, opening external listing
 links, and browser acceptance remain read-only.
 <!-- collector-save-upsert:end -->
+
+<!-- collector-filtered-export:start -->
+## Filtered Collector Review exports
+
+Auction ETL exists to automate a real collector workflow: continuously
+collecting completed eBay and Buyee auction results, preserving source
+provenance, normalizing marketplace-specific fields, classifying physical
+media and pressings, reviewing uncertain records, and producing useful
+collector reports.
+
+The Listings tab includes an **Export filtered listings** panel.
+
+The export uses the complete filtered result set, not only the current
+pagination page. Marketplace, seller, search, recent-ingestion, date,
+media, verdict, sale type, collection status, and price filters remain
+applied.
+
+Available formats:
+
+- CSV
+- Excel
+- JSON
+- Markdown
+- Word
+- Plain text
+
+The media selector can export all matches in one file, one selected media
+type, or a ZIP containing one export per media type.
+
+Deduplication prefers native eBay warehouse records over matching
+Gripsweat archive records sharing the same eBay listing ID. Exporting is
+read-only and never deletes or modifies warehouse records.
+<!-- collector-filtered-export:end -->
