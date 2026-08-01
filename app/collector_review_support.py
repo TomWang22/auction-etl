@@ -203,3 +203,66 @@ def derive_sale_type(
         return "FIXED_PRICE"
 
     return "UNKNOWN"
+
+def listing_identity(
+    marketplace: Any,
+    listing_id: Any,
+) -> str:
+    """Return a stable marketplace/listing identity."""
+    return (
+        f"{clean_text(marketplace).lower()}:"
+        f"{clean_text(listing_id)}"
+    )
+
+
+def listing_option_label(
+    *,
+    marketplace: Any,
+    listing_id: Any,
+    seller: Any,
+    title: Any,
+    title_limit: int = 96,
+) -> str:
+    """Return a concise searchable listing label."""
+    clean_title = clean_text(
+        title
+    )
+    clean_seller = clean_text(
+        seller
+    )
+
+    if (
+        title_limit > 1
+        and len(clean_title) > title_limit
+    ):
+        clean_title = (
+            clean_title[
+                : title_limit - 1
+            ].rstrip()
+            + "…"
+        )
+
+    parts = [
+        clean_text(
+            marketplace
+        ).upper()
+        or "UNKNOWN",
+        clean_text(
+            listing_id
+        )
+        or "missing ID",
+    ]
+
+    if clean_seller:
+        parts.append(
+            clean_seller
+        )
+
+    if clean_title:
+        parts.append(
+            clean_title
+        )
+
+    return " · ".join(
+        parts
+    )

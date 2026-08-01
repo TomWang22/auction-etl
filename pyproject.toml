@@ -24,6 +24,7 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     "streamlit>=1.60.0",
     "pandas>=3.0.5",
+    "streamlit-aggrid==1.2.1.post2",
 ]
 
 [project.scripts]

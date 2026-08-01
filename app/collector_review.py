@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 import streamlit as st
+from st_aggrid import AgGrid, JsCode
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -19,6 +20,8 @@ from app.collector_review_support import (
     derive_pressing_token,
     derive_sale_type,
     is_missing,
+    listing_identity,
+    listing_option_label,
     safe_float,
     safe_int,
 )
@@ -41,7 +44,11 @@ PAGE_SIZE_OPTIONS = (
     250,
 )
 
-PLACEHOLDER_LISTING = "Choose a listing to review…"
+SELECTED_LISTING_KEY = "_selected_listing_identity"
+JUMP_LISTING_KEY = "collector_jump_listing"
+PENDING_JUMP_LISTING_KEY = "_pending_jump_listing_identity"
+RESET_JUMP_LISTING_KEY = "_reset_jump_listing"
+TABLE_SELECTION_REVISION_KEY = "_listing_table_selection_revision"
 
 MEDIA_OPTIONS = (
     "Automatic / unset",
@@ -857,21 +864,7 @@ def save_collector_record(
     with get_engine().begin() as connection:
         connection.execute(
             text(
-                """
-                INSERT INTO warehouse.auction_collector (
-                    marketplace,
-                    listing_id
-                )
-                SELECT
-                    :marketplace,
-                    :listing_id
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM warehouse.auction_collector
-                    WHERE marketplace = :marketplace
-                      AND listing_id = :listing_id
-                )
-                """
+                'INSERT INTO warehouse.auction_collector (\n    marketplace,\n    listing_id\n)\nVALUES (\n    CAST(:marketplace AS character varying),\n    CAST(:listing_id AS character varying)\n)\nON CONFLICT (\n    marketplace,\n    listing_id\n)\nDO NOTHING'
             ),
             {
                 "marketplace": marketplace,
@@ -936,10 +929,24 @@ FILTER_WIDGET_KEYS = {
 }
 
 
+def _increment_table_selection_revision() -> None:
+    """Force a fresh table widget while preserving stable selection."""
+    st.session_state[
+        TABLE_SELECTION_REVISION_KEY
+    ] = (
+        int(
+            st.session_state.get(
+                TABLE_SELECTION_REVISION_KEY,
+                0,
+            )
+        )
+        + 1
+    )
+
+
 def _reset_listing_results() -> None:
-    """Reset pagination and table/editor identity after filter changes."""
+    """Reset pagination and table identity after filter changes."""
     st.session_state["_listing_page"] = 1
-    st.session_state["_reset_listing_selector"] = True
     st.session_state["_filter_revision"] = (
         int(
             st.session_state.get(
@@ -949,6 +956,292 @@ def _reset_listing_results() -> None:
         )
         + 1
     )
+    _increment_table_selection_revision()
+
+
+def _current_listing_identity() -> str | None:
+    """Return the stable identity selected for review."""
+    value = st.session_state.get(
+        SELECTED_LISTING_KEY
+    )
+
+    if not value:
+        return None
+
+    return str(value)
+
+
+def _set_listing_identity(
+    identity: str,
+    *,
+    synchronize_jump: bool,
+) -> None:
+    """Select one stable listing identity."""
+    st.session_state[
+        SELECTED_LISTING_KEY
+    ] = identity
+
+    if synchronize_jump:
+        st.session_state[
+            PENDING_JUMP_LISTING_KEY
+        ] = identity
+
+
+def _request_clear_listing_identity() -> None:
+    """Clear selection on the next clean rerun."""
+    st.session_state.pop(
+        SELECTED_LISTING_KEY,
+        None,
+    )
+    st.session_state.pop(
+        PENDING_JUMP_LISTING_KEY,
+        None,
+    )
+    st.session_state[
+        RESET_JUMP_LISTING_KEY
+    ] = True
+    _increment_table_selection_revision()
+
+
+def _listing_identity_series(
+    dataframe: pd.DataFrame,
+) -> pd.Series:
+    """Return stable identities for a listing dataframe."""
+    return pd.Series(
+        [
+            listing_identity(
+                marketplace,
+                listing_id,
+            )
+            for marketplace, listing_id in zip(
+                dataframe["marketplace"],
+                dataframe["listing_id"],
+            )
+        ],
+        index=dataframe.index,
+        dtype="string",
+    )
+
+
+def _listing_position(
+    dataframe: pd.DataFrame,
+    identity: str,
+) -> int | None:
+    """Return the positional index of a stable identity."""
+    identities = _listing_identity_series(
+        dataframe
+    )
+    matches = identities[
+        identities == identity
+    ]
+
+    if matches.empty:
+        return None
+
+    return int(
+        dataframe.index.get_loc(
+            matches.index[0]
+        )
+    )
+
+
+def _selected_listing_row(
+    dataframe: pd.DataFrame,
+) -> pd.Series | None:
+    """Resolve the selected identity against current filtered rows."""
+    identity = _current_listing_identity()
+
+    if identity is None:
+        return None
+
+    position = _listing_position(
+        dataframe,
+        identity,
+    )
+
+    if position is None:
+        return None
+
+    return dataframe.iloc[position]
+
+
+def _selection_rows(
+    event: Any,
+) -> list[int]:
+    """Extract selected row positions from a Streamlit event."""
+    selection = getattr(
+        event,
+        "selection",
+        None,
+    )
+
+    if selection is None:
+        try:
+            selection = event["selection"]
+        except (
+            KeyError,
+            TypeError,
+        ):
+            return []
+
+    rows = getattr(
+        selection,
+        "rows",
+        None,
+    )
+
+    if rows is None:
+        try:
+            rows = selection["rows"]
+        except (
+            KeyError,
+            TypeError,
+        ):
+            return []
+
+    return [
+        int(row)
+        for row in rows
+    ]
+
+
+def _prepare_jump_widget(
+    valid_identities: set[str],
+) -> None:
+    """Synchronize pending selection before rendering its widget."""
+    if st.session_state.pop(
+        RESET_JUMP_LISTING_KEY,
+        False,
+    ):
+        st.session_state.pop(
+            JUMP_LISTING_KEY,
+            None,
+        )
+
+    pending = st.session_state.pop(
+        PENDING_JUMP_LISTING_KEY,
+        None,
+    )
+
+    if pending in valid_identities:
+        st.session_state[
+            JUMP_LISTING_KEY
+        ] = pending
+
+    selected = _current_listing_identity()
+
+    if (
+        selected in valid_identities
+        and JUMP_LISTING_KEY
+        not in st.session_state
+    ):
+        st.session_state[
+            JUMP_LISTING_KEY
+        ] = selected
+
+    widget_value = st.session_state.get(
+        JUMP_LISTING_KEY
+    )
+
+    if widget_value not in valid_identities:
+        st.session_state.pop(
+            JUMP_LISTING_KEY,
+            None,
+        )
+
+
+def render_listing_jump(
+    dataframe: pd.DataFrame,
+    page_size: int,
+) -> None:
+    """Render a searchable sidebar jump control."""
+    identities = _listing_identity_series(
+        dataframe
+    ).tolist()
+    valid_identities = set(
+        identities
+    )
+
+    selected = _current_listing_identity()
+
+    if (
+        selected is not None
+        and selected not in valid_identities
+    ):
+        _request_clear_listing_identity()
+        selected = None
+
+    _prepare_jump_widget(
+        valid_identities
+    )
+
+    labels = {
+        identity:
+            listing_option_label(
+                marketplace=row.marketplace,
+                listing_id=row.listing_id,
+                seller=row.seller,
+                title=row.title,
+            )
+        for identity, row in zip(
+            identities,
+            dataframe.itertuples(
+                index=False,
+            ),
+        )
+    }
+
+    with st.sidebar:
+        st.divider()
+        st.subheader(
+            "Review selection"
+        )
+        st.caption(
+            "Type inside the control to search by marketplace, "
+            "listing ID, seller, or title."
+        )
+
+        choice = st.selectbox(
+            "Search / jump to listing",
+            identities,
+            index=None,
+            placeholder=(
+                "Search ID, seller, or title…"
+            ),
+            format_func=labels.__getitem__,
+            key=JUMP_LISTING_KEY,
+        )
+
+        if choice:
+            st.caption(
+                f"Selected: {labels[choice]}"
+            )
+
+    if (
+        choice
+        and choice != selected
+    ):
+        _set_listing_identity(
+            choice,
+            synchronize_jump=False,
+        )
+
+        position = _listing_position(
+            dataframe,
+            choice,
+        )
+
+        if position is not None:
+            st.session_state[
+                "_listing_page"
+            ] = (
+                position
+                // page_size
+                + 1
+            )
+
+        _increment_table_selection_revision()
+        st.rerun()
 
 
 def _marketplace_changed() -> None:
@@ -1458,12 +1751,106 @@ def render_metrics(
     )
 
 
+
+def _aggrid_selected_identity(
+    response: Any,
+) -> str | None:
+    """Extract one stable identity from an AG Grid response."""
+    selected_rows = getattr(
+        response,
+        "selected_rows",
+        None,
+    )
+
+    if (
+        selected_rows is None
+        and isinstance(response, dict)
+    ):
+        selected_rows = response.get(
+            "selected_rows"
+        )
+
+    if selected_rows is None:
+        return None
+
+    if isinstance(
+        selected_rows,
+        pd.DataFrame,
+    ):
+        if selected_rows.empty:
+            return None
+
+        value = selected_rows.iloc[0].get(
+            "__identity"
+        )
+
+        return clean_text(value) or None
+
+    if isinstance(
+        selected_rows,
+        dict,
+    ):
+        return (
+            clean_text(
+                selected_rows.get(
+                    "__identity"
+                )
+            )
+            or None
+        )
+
+    if isinstance(
+        selected_rows,
+        (list, tuple),
+    ):
+        if not selected_rows:
+            return None
+
+        first_row = selected_rows[0]
+
+        if isinstance(first_row, dict):
+            return (
+                clean_text(
+                    first_row.get(
+                        "__identity"
+                    )
+                )
+                or None
+            )
+
+    try:
+        selected_frame = pd.DataFrame(
+            selected_rows
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+    if (
+        selected_frame.empty
+        or "__identity"
+        not in selected_frame.columns
+    ):
+        return None
+
+    return (
+        clean_text(
+            selected_frame.iloc[0][
+                "__identity"
+            ]
+        )
+        or None
+    )
+
+
 def render_listing_table(
     dataframe: pd.DataFrame,
     *,
     key: str,
 ) -> None:
-    """Render listing rows with truthful dates, prices, and source links."""
+    """Render a hoverable click-to-review listing grid."""
     duration = pd.to_numeric(
         dataframe.get(
             "auction_duration_days",
@@ -1481,16 +1868,30 @@ def render_listing_table(
         )
     )
 
+    identities = _listing_identity_series(
+        dataframe
+    ).astype(str)
+
+    selected_identity = (
+        _current_listing_identity()
+    )
+
     display = pd.DataFrame(
         {
+            "__identity":
+                identities,
+            "__selected":
+                identities.eq(
+                    selected_identity
+                ),
             "Marketplace":
                 dataframe["marketplace"],
             "Listing ID":
                 dataframe["listing_id"],
-            "Seller":
-                dataframe["seller"],
             "Title":
                 dataframe["title"],
+            "Seller":
+                dataframe["seller"],
             "Auction type":
                 dataframe["sale_type_display"],
             "Opened":
@@ -1630,20 +2031,306 @@ def render_listing_table(
         }
     )
 
-    st.dataframe(
-        display,
-        hide_index=True,
-        width="stretch",
-        height=560,
-        key=key,
-        column_config={
-            "Listing":
-                st.column_config.LinkColumn(
-                    "Listing",
-                    display_text="Open ↗",
-                ),
-        },
+    link_renderer = JsCode(
+        """
+        class ListingLinkRenderer {
+            init(params) {
+                this.eGui = document.createElement("a");
+
+                const url = params.value || "";
+
+                if (!url) {
+                    this.eGui.textContent = "";
+                    return;
+                }
+
+                this.eGui.textContent = "Open ↗";
+                this.eGui.href = url;
+                this.eGui.target = "_blank";
+                this.eGui.rel = "noopener noreferrer";
+                this.eGui.className = "collector-listing-link";
+
+                this.eGui.addEventListener(
+                    "click",
+                    (event) => event.stopPropagation()
+                );
+            }
+
+            getGui() {
+                return this.eGui;
+            }
+        }
+        """
     )
+
+    selected_row_rule = JsCode(
+        """
+        function(params) {
+            return Boolean(
+                params.data
+                && params.data.__selected
+            );
+        }
+        """
+    )
+
+    row_identity = JsCode(
+        """
+        function(params) {
+            return params.data.__identity;
+        }
+        """
+    )
+
+    grid_options = {
+        "columnDefs": [
+            {
+                "field": "__identity",
+                "hide": True,
+            },
+            {
+                "field": "__selected",
+                "hide": True,
+            },
+            {
+                "field": "Marketplace",
+                "pinned": "left",
+                "lockPinned": True,
+                "width": 118,
+                "minWidth": 105,
+            },
+            {
+                "field": "Listing ID",
+                "pinned": "left",
+                "lockPinned": True,
+                "width": 170,
+                "minWidth": 145,
+            },
+            {
+                "field": "Title",
+                "pinned": "left",
+                "lockPinned": True,
+                "width": 480,
+                "minWidth": 330,
+                "tooltipField": "Title",
+            },
+            {
+                "field": "Seller",
+                "width": 190,
+                "minWidth": 150,
+                "tooltipField": "Seller",
+            },
+            {
+                "field": "Auction type",
+                "width": 145,
+            },
+            {
+                "field": "Opened",
+                "width": 155,
+            },
+            {
+                "field": "Closed",
+                "width": 155,
+            },
+            {
+                "field": "Added",
+                "width": 155,
+            },
+            {
+                "field": "Activity",
+                "width": 155,
+            },
+            {
+                "field": "Date basis",
+                "width": 120,
+            },
+            {
+                "field": "Duration days",
+                "width": 125,
+            },
+            {
+                "field": "Starting bid",
+                "width": 125,
+            },
+            {
+                "field": "Hammer before tax",
+                "width": 155,
+            },
+            {
+                "field": "Tax",
+                "width": 105,
+            },
+            {
+                "field": "Total with tax",
+                "width": 145,
+            },
+            {
+                "field": "Total USD",
+                "width": 120,
+            },
+            {
+                "field": "Buyout",
+                "width": 115,
+            },
+            {
+                "field": "Bids",
+                "width": 82,
+            },
+            {
+                "field": "Matrix / catalog",
+                "width": 155,
+                "tooltipField":
+                    "Matrix / catalog",
+            },
+            {
+                "field": "Pressing key",
+                "width": 155,
+                "tooltipField":
+                    "Pressing key",
+            },
+            {
+                "field": "In collection",
+                "width": 125,
+            },
+            {
+                "field": "Verdict",
+                "width": 155,
+            },
+            {
+                "field": "Detail status",
+                "width": 125,
+            },
+            {
+                "field": "Listing",
+                "width": 105,
+                "sortable": False,
+                "cellRenderer":
+                    link_renderer,
+            },
+        ],
+        "defaultColDef": {
+            "sortable": True,
+            "resizable": True,
+            "filter": False,
+            "editable": False,
+            "wrapHeaderText": True,
+            "autoHeaderHeight": True,
+        },
+        "rowSelection": {
+            "mode": "singleRow",
+            "checkboxes": False,
+            "headerCheckbox": False,
+            "enableClickSelection": True,
+        },
+        "cellSelection": False,
+        "suppressRowHoverHighlight": False,
+        "suppressCellFocus": True,
+        "animateRows": False,
+        "ensureDomOrder": True,
+        "rowHeight": 40,
+        "headerHeight": 44,
+        "tooltipShowDelay": 150,
+        "getRowId": row_identity,
+        "rowClassRules": {
+            "collector-current-row":
+                selected_row_rule,
+        },
+    }
+
+    custom_css = {
+        ".ag-row": {
+            "cursor":
+                "pointer !important",
+        },
+        ".ag-row-hover": {
+            "background-color":
+                "rgba(37, 99, 235, 0.08) !important",
+        },
+        ".ag-row-selected": {
+            "background-color":
+                "rgba(37, 99, 235, 0.14) !important",
+            "box-shadow":
+                "inset 4px 0 0 rgb(37, 99, 235) !important",
+        },
+        ".collector-current-row": {
+            "background-color":
+                "rgba(37, 99, 235, 0.14) !important",
+            "box-shadow":
+                "inset 4px 0 0 rgb(37, 99, 235) !important",
+        },
+        ".ag-selection-checkbox": {
+            "display":
+                "none !important",
+        },
+        ".ag-header-select-all": {
+            "display":
+                "none !important",
+        },
+        ".ag-cell": {
+            "display":
+                "flex",
+            "align-items":
+                "center",
+        },
+        ".collector-listing-link": {
+            "color":
+                "rgb(37, 99, 235) !important",
+            "font-weight":
+                "600",
+            "text-decoration":
+                "none",
+        },
+        ".collector-listing-link:hover": {
+            "text-decoration":
+                "underline",
+        },
+    }
+
+    st.caption(
+        "Hover over a row to inspect it. "
+        "Click anywhere on the row to open its collector editor."
+    )
+
+    response = AgGrid(
+        display,
+        gridOptions=grid_options,
+        height=560,
+        theme="streamlit",
+        update_on=[
+            "selectionChanged",
+        ],
+        allow_unsafe_jscode=True,
+        enable_enterprise_modules=False,
+        show_toolbar=False,
+        server_sync_strategy="server_wins",
+        custom_css=custom_css,
+        key=key,
+    )
+
+    identity = _aggrid_selected_identity(
+        response
+    )
+
+    if (
+        not identity
+        or identity
+        == selected_identity
+    ):
+        return
+
+    valid_identities = set(
+        identities.tolist()
+    )
+
+    if identity not in valid_identities:
+        return
+
+    _set_listing_identity(
+        identity,
+        synchronize_jump=True,
+    )
+
+    st.rerun()
 
 
 
@@ -1719,48 +2406,19 @@ def render_pagination(
 
 
 def render_listing_editor(
-    page_rows: pd.DataFrame,
+    dataframe: pd.DataFrame,
 ) -> None:
-    """Render one listing editor and clear it after save."""
-    if st.session_state.pop(
-        "_reset_listing_selector",
-        False,
-    ):
-        st.session_state.pop(
-            "listing_selector",
-            None,
-        )
-
-    selector_map: dict[str, int] = {}
-
-    for row_index, row in page_rows.iterrows():
-        label = (
-            f"{row['marketplace']} · "
-            f"{row['listing_id']} · "
-            f"{row['seller']} · "
-            f"{row['title']}"
-        )
-
-        selector_map[label] = row_index
-
-    selected_label = st.selectbox(
-        "Select a listing to review",
-        [
-            PLACEHOLDER_LISTING,
-            *selector_map,
-        ],
-        key="listing_selector",
+    """Render the editor for the stable selected identity."""
+    selected = _selected_listing_row(
+        dataframe
     )
 
-    if selected_label == PLACEHOLDER_LISTING:
-        st.info(
-            "Choose a listing above to edit collector metadata."
+    if selected is None:
+        st.caption(
+            "Select any table row or use the sidebar "
+            "search to open its collector editor."
         )
         return
-
-    selected = page_rows.loc[
-        selector_map[selected_label]
-    ]
 
     marketplace = selected[
         "marketplace"
@@ -1770,8 +2428,9 @@ def render_listing_editor(
         "listing_id"
     ]
 
-    identity = (
-        f"{marketplace}:{listing_id}"
+    identity = listing_identity(
+        marketplace,
+        listing_id,
     )
 
     revision_key = (
@@ -1792,7 +2451,7 @@ def render_listing_editor(
     st.divider()
 
     heading_columns = st.columns(
-        [5, 1]
+        [5, 1, 1]
     )
 
     with heading_columns[0]:
@@ -1819,6 +2478,16 @@ def render_listing_editor(
                 selected["auction_url"],
                 width="stretch",
             )
+
+    with heading_columns[2]:
+        if st.button(
+            "Clear",
+            key=f"clear_listing:{identity}",
+            width="stretch",
+            help="Close the current editor selection.",
+        ):
+            _request_clear_listing_identity()
+            st.rerun()
 
     summary_columns = st.columns(6)
 
@@ -2491,15 +3160,11 @@ def render_listing_editor(
         revision_key
     ] = revision + 1
 
-    st.session_state[
-        "_reset_listing_selector"
-    ] = True
-
     set_notification(
         (
             "Collector record saved for "
             f"{marketplace} {listing_id}. "
-            "The editor was cleared."
+            "The selected editor was refreshed."
         )
     )
 
@@ -3036,6 +3701,11 @@ st.session_state[
     "_page_size"
 ] = page_size
 
+render_listing_jump(
+    filtered_records,
+    page_size,
+)
+
 page_count = max(
     1,
     (
@@ -3127,11 +3797,18 @@ with tabs[0]:
             ).sum()
         )
 
+        table_selection_revision = int(
+            st.session_state.get(
+                TABLE_SELECTION_REVISION_KEY,
+                0,
+            )
+        )
+
         render_pagination(
             page_number,
             page_count,
             key_prefix=(
-                "collector_pagination_top:"
+                "collector_pagination:"
                 f"{filter_revision}"
             ),
         )
@@ -3141,22 +3818,14 @@ with tabs[0]:
             key=(
                 "listings:"
                 f"{filter_revision}:"
+                f"{table_selection_revision}:"
                 f"{page_number}:"
                 f"{row_signature}"
             ),
         )
 
-        render_pagination(
-            page_number,
-            page_count,
-            key_prefix=(
-                "collector_pagination_bottom:"
-                f"{filter_revision}"
-            ),
-        )
-
         render_listing_editor(
-            page_rows
+            filtered_records
         )
 
 with tabs[1]:
