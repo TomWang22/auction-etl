@@ -35,6 +35,35 @@ def run_migrations_online():
         poolclass=pool.NullPool,
     )
 
+    # auction-etl-runtime-database-url:start
+    import os as _os
+
+    from sqlalchemy import create_engine as _create_engine
+
+    _runtime_database_url = _os.getenv(
+        "DATABASE_URL",
+        "",
+    ).strip()
+
+    if _runtime_database_url:
+        if _runtime_database_url.startswith(
+            "postgresql://"
+        ):
+            _runtime_database_url = (
+                _runtime_database_url.replace(
+                    "postgresql://",
+                    "postgresql+psycopg://",
+                    1,
+                )
+            )
+
+        connectable = _create_engine(
+            _runtime_database_url,
+            pool_pre_ping=True,
+            future=True,
+        )
+    # auction-etl-runtime-database-url:end
+
     with connectable.connect() as connection:
         context.configure(
             connection=connection,
