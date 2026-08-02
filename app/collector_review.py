@@ -14,6 +14,10 @@ from st_aggrid import AgGrid, JsCode
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from app.collector_analytics_editor import (
+    render_collector_analytics_editor,
+)
+
 from app.collector_export import render_export_toolbar
 
 from app.collector_review_support import (
@@ -3748,6 +3752,7 @@ tabs = st.tabs(
         "Listings",
         "Pressing groups",
         "Update status",
+        "Collector analytics",
     )
 )
 
@@ -3857,3 +3862,25 @@ with tabs[2]:
     render_update_status(
         records
     )
+
+
+# collector-analytics-editor:start
+with tabs[3]:
+    st.header(
+        "Collector analytics curation"
+    )
+
+    st.caption(
+        "Assign exact pressings, record expected and observed "
+        "components, normalize condition, preserve bidder-data "
+        "limitations, and calculate collector analytics."
+    )
+
+    render_collector_analytics_editor(
+        get_engine(),
+        records,
+        st.session_state.get(
+            SELECTED_LISTING_KEY
+        ),
+    )
+# collector-analytics-editor:end
