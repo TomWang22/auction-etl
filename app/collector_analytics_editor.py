@@ -36,6 +36,13 @@ from auction_etl.services.collector_curation import (
     save_behavior,
     save_condition,
 )
+# collector-evidence-assistant:import-start
+from auction_etl.services.collector_evidence import (
+    apply_evidence_report,
+    build_evidence_report,
+)
+# collector-evidence-assistant:import-end
+
 
 
 def _clean(value: Any) -> str:
@@ -1543,6 +1550,144 @@ def _render_score_snapshot(
     )
 
 
+# collector-evidence-assistant:function-start
+def _render_evidence_assistant(
+    engine: Engine,
+    marketplace: str,
+    listing_id_value: str,
+) -> None:
+    """Render conservative database-backed suggestions."""
+    report = build_evidence_report(
+        engine,
+        marketplace,
+        listing_id_value,
+    )
+
+    with st.expander(
+        "Evidence-backed suggestions",
+        expanded=False,
+    ):
+        st.caption(
+            "Exact condition tokens only. Historical anchors "
+            "require at least three high-confidence listings "
+            "assigned to the same pressing. Closing-window "
+            "analytics require a timestamped price snapshot."
+        )
+
+        columns = st.columns(3)
+
+        if report.condition is None:
+            columns[0].metric(
+                "Condition",
+                "No safe proposal",
+            )
+        else:
+            grade_parts = [
+                value
+                for value in (
+                    report.condition.media_grade_code,
+                    report.condition.cover_grade_code,
+                )
+                if value
+            ]
+
+            columns[0].metric(
+                "Condition",
+                " / ".join(grade_parts),
+            )
+
+        if report.historical_anchor is None:
+            columns[1].metric(
+                "Historical anchor",
+                "Not ready",
+                delta=(
+                    f"{report.comparable_count} "
+                    "comparables"
+                ),
+            )
+        else:
+            columns[1].metric(
+                "Historical anchor",
+                (
+                    f"${report.historical_anchor.anchor_usd}"
+                ),
+                delta=(
+                    f"{report.historical_anchor.sample_count} "
+                    "comparables"
+                ),
+            )
+
+        if report.closing_window is None:
+            columns[2].metric(
+                "Closing window",
+                "Not available",
+                delta=(
+                    f"{report.snapshot_count} snapshots"
+                ),
+            )
+        else:
+            columns[2].metric(
+                "Closing window",
+                (
+                    f"{report.closing_window.escalation_ratio:.2%}"
+                ),
+                delta=(
+                    f"{report.closing_window.minutes_before_close} "
+                    "minutes"
+                ),
+            )
+
+        if report.blockers:
+            st.caption(
+                " · ".join(report.blockers)
+            )
+
+        actions = report.ready_actions
+
+        if actions:
+            st.success(
+                "Ready: "
+                + ", ".join(actions)
+            )
+        else:
+            st.info(
+                "No evidence-backed write is currently ready. "
+                "Nothing will be fabricated."
+            )
+
+        submitted = st.button(
+            "Apply evidence-backed suggestions",
+            type="primary",
+            width="stretch",
+            disabled=not actions,
+            key=(
+                "collector_evidence_apply:"
+                f"{marketplace}:"
+                f"{listing_id_value}"
+            ),
+        )
+
+        if submitted:
+            applied = apply_evidence_report(
+                engine,
+                report,
+            )
+
+            _rerun(
+                (
+                    "Evidence-backed suggestions applied: "
+                    + ", ".join(applied)
+                )
+                if applied
+                else (
+                    "No evidence-backed changes were required."
+                )
+            )
+
+
+# collector-evidence-assistant:function-end
+
+
 def _render_analysis_editor(
     engine: Engine,
     marketplace: str,
@@ -1797,6 +1942,12 @@ def render_collector_analytics_editor(
         )
 
     with tabs[4]:
+        _render_evidence_assistant(
+            engine,
+            marketplace,
+            listing_id_value,
+        )
+
         _render_analysis_editor(
             engine,
             marketplace,
