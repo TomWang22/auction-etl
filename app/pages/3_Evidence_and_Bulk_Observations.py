@@ -10,8 +10,10 @@ import streamlit as st
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
+from auction_etl.services.reference_record_admin import (
+    apply_audited_bulk_observations as apply_bulk_observations,
+)
 from auction_etl.services.collector_observation_bulk import (
-    apply_bulk_observations,
     export_observation_worksheet,
     list_evidence_sources,
     preview_bulk_observations,

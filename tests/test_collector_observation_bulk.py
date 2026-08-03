@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import inspect
 
 import pytest
@@ -10,6 +12,7 @@ from auction_etl.services.collector_observation_bulk import (
     apply_bulk_observations,
     normalize_source_key,
     parse_observation_csv,
+    preview_bulk_observations,
 )
 
 
@@ -93,3 +96,86 @@ def test_apply_is_serializable_and_atomic() -> None:
     assert "DELETE FROM" in source
     assert "INSERT INTO" in source
     assert "preview_bulk_observations" in source
+
+
+# evidence-registry-lookup-regression:start
+def test_preview_reads_complete_evidence_registry() -> None:
+    """Registered keys are validated without array adaptation."""
+    source = inspect.getsource(
+        preview_bulk_observations
+    )
+
+    compact_source = " ".join(
+        source.split()
+    )
+
+    assert (
+        "FROM system.evidence_source_registry"
+        in compact_source
+    )
+
+    assert (
+        "CAST(:source_keys AS text[])"
+        not in compact_source
+    )
+
+    assert (
+        "source_map ="
+        in compact_source
+    )
+# evidence-registry-lookup-regression:end
+
+
+# legacy-registry-key-regression:start
+def test_preview_canonicalizes_legacy_registry_suffix() -> None:
+    """Legacy trailing underscores do not break source lookup."""
+    source = Path(
+        "auction_etl/services/"
+        "collector_observation_bulk.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "def _canonical_registry_source_key("
+        in source
+    )
+
+    assert '.rstrip("_")' in source
+
+    preview_source = inspect.getsource(
+        preview_bulk_observations
+    )
+
+    assert (
+        "_canonical_registry_source_key("
+        in preview_source
+    )
+# legacy-registry-key-regression:end
+
+
+# evidence-source-map-row-regression:start
+def test_preview_source_map_preserves_registry_row() -> None:
+    """Source validation retains active and metadata fields."""
+    source = inspect.getsource(
+        preview_bulk_observations
+    )
+
+    compact_source = "".join(
+        source.split()
+    )
+
+    assert (
+        '_canonical_registry_source_key('
+        'row["source_key"]'
+        '):dict(row)'
+        in compact_source
+    )
+
+    assert (
+        ':bool(row["active"])'
+        not in compact_source
+    )
+
+    assert 'source["active"]' in compact_source
+# evidence-source-map-row-regression:end

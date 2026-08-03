@@ -799,6 +799,18 @@ def _values_relation(
     )
 
 
+def _canonical_registry_source_key(
+    value: object,
+) -> str:
+    """Canonicalize legacy registry keys for comparison."""
+    return (
+        str(value)
+        .strip()
+        .upper()
+        .rstrip("_")
+    )
+
+
 def preview_bulk_observations(
     engine: Engine,
     payload: bytes | str,
@@ -922,14 +934,8 @@ def preview_bulk_observations(
                     source_key,
                     active
                 FROM system.evidence_source_registry
-                WHERE source_key = ANY(
-                    CAST(:source_keys AS text[])
-                )
                 """
-            ),
-            {
-                "source_keys": source_keys,
-            },
+            )
         ).mappings().all()
 
         identities = [
@@ -1032,7 +1038,9 @@ def preview_bulk_observations(
             )
 
     source_map = {
-        str(row["source_key"]): dict(row)
+        _canonical_registry_source_key(
+            row["source_key"]
+        ): dict(row)
         for row in source_rows
     }
 
