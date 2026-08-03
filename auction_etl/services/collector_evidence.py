@@ -10,7 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Iterable, Mapping, Sequence
 
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from auction_etl.services.collector_curation import (
     PRICE_BASES,
@@ -74,6 +74,8 @@ class EvidenceReport:
     comparable_count: int
     snapshot_count: int
     blockers: tuple[str, ...]
+    normalized_comparable_count: int = 0
+    normalization_ready: bool = False
 
     @property
     def ready_actions(self) -> tuple[str, ...]:
@@ -574,6 +576,24 @@ def build_evidence_report(
             Mapping[str, Any]
         ] = []
 
+        normalized_comparable_rows: list[
+            Mapping[str, Any]
+        ] = []
+
+        target_normalization_ready = False
+
+        normalized_price_columns = {
+            "HAMMER": "price_hammer_usd",
+            "GROSS": "price_gross_usd",
+            "LANDED": "price_landed_usd",
+        }
+
+        normalized_price_column = (
+            normalized_price_columns[
+                price_basis_value
+            ]
+        )
+
         pressing_id = listing[
             "pressing_id"
         ]
@@ -637,6 +657,99 @@ def build_evidence_report(
                 ).mappings()
             )
 
+            target_normalization_ready = bool(
+                connection.execute(
+                    text(
+                        f"""
+                        SELECT COALESCE(
+                            (
+                                base.{normalized_price_column}
+                                    > 0
+                                AND base.condition_market_factor
+                                    > 0
+                                AND base
+                                    .completeness_market_factor
+                                    > 0
+                            ),
+                            false
+                        )
+                        FROM analytics
+                            .auction_collector_base
+                            AS base
+                        WHERE base.marketplace =
+                                :marketplace
+                          AND base.listing_id =
+                                :listing_id
+                        """
+                    ),
+                    {
+                        "marketplace":
+                            marketplace_value,
+                        "listing_id":
+                            listing_id_value,
+                    },
+                ).scalar_one()
+            )
+
+            normalized_comparable_rows = list(
+                connection.execute(
+                    text(
+                        f"""
+                        SELECT
+                            base.marketplace,
+                            base.listing_id,
+                            (
+                                base.{normalized_price_column}
+                                / NULLIF(
+                                    base.condition_market_factor,
+                                    0
+                                )
+                                / NULLIF(
+                                    base
+                                        .completeness_market_factor,
+                                    0
+                                )
+                            ) AS price_usd
+                        FROM analytics
+                            .auction_collector_base
+                            AS base
+                        WHERE base.pressing_id =
+                                :pressing_id
+                          AND NOT (
+                              base.marketplace =
+                                  :marketplace
+                              AND base.listing_id =
+                                  :listing_id
+                          )
+                          AND COALESCE(
+                              base.bulk_lot,
+                              false
+                          ) = false
+                          AND base.{normalized_price_column} > 0
+                          AND base.condition_market_factor > 0
+                          AND base.completeness_market_factor > 0
+                          AND COALESCE(
+                              base.pressing_match_confidence,
+                              0
+                          ) >= :minimum_confidence
+                        ORDER BY
+                            base.marketplace,
+                            base.listing_id
+                        """
+                    ),
+                    {
+                        "pressing_id":
+                            pressing_id,
+                        "marketplace":
+                            marketplace_value,
+                        "listing_id":
+                            listing_id_value,
+                        "minimum_confidence":
+                            MINIMUM_ASSIGNMENT_CONFIDENCE,
+                    },
+                ).mappings()
+            )
+
         historical_anchor: (
             HistoricalAnchorSuggestion
             | None
@@ -655,15 +768,21 @@ def build_evidence_report(
                 "A historical anchor already exists and will "
                 "not be replaced automatically."
             )
+        elif not target_normalization_ready:
+            blockers.append(
+                "Historical anchor is blocked because the "
+                "target listing is not normalization-ready."
+            )
         elif (
-            len(comparable_rows)
+            len(normalized_comparable_rows)
             >= minimum_comparables
         ):
             prices = [
                 Decimal(
                     str(row["price_usd"])
                 )
-                for row in comparable_rows
+                for row
+                in normalized_comparable_rows
             ]
 
             historical_anchor = (
@@ -673,27 +792,33 @@ def build_evidence_report(
                         prices
                     ),
                     sample_count=len(
-                        comparable_rows
+                        normalized_comparable_rows
                     ),
                     comparable_listings=tuple(
                         (
                             f"{row['marketplace']}/"
                             f"{row['listing_id']}"
                         )
-                        for row in comparable_rows
+                        for row
+                        in normalized_comparable_rows
                     ),
                     rationale=(
-                        "Median of high-confidence listings "
-                        "assigned to the same exact pressing, "
-                        "excluding bulk lots."
+                        "Median condition- and completeness-"
+                        "adjusted price from normalization-ready, "
+                        "high-confidence listings assigned to "
+                        "the same exact pressing, excluding "
+                        "bulk lots."
                     ),
                 )
             )
         else:
             blockers.append(
                 "Historical anchor requires at least "
-                f"{minimum_comparables} exact-pressing "
-                f"comparables; found {len(comparable_rows)}."
+                f"{minimum_comparables} normalization-ready "
+                "exact-pressing comparables; found "
+                f"{len(normalized_comparable_rows)} of "
+                f"{len(comparable_rows)} high-confidence "
+                "comparables."
             )
 
         snapshots = list(
@@ -779,7 +904,163 @@ def build_evidence_report(
         ),
         snapshot_count=len(snapshots),
         blockers=tuple(blockers),
+        normalized_comparable_count=len(
+            normalized_comparable_rows
+        ),
+        normalization_ready=(
+            target_normalization_ready
+        ),
     )
+
+
+# historical-anchor-normalization-guard:start
+def _historical_anchor_is_still_valid(
+    connection: Connection,
+    report: EvidenceReport,
+) -> bool:
+    """Revalidate normalized identities and adjusted median."""
+    anchor = report.historical_anchor
+
+    if anchor is None:
+        return False
+
+    price_columns = {
+        "HAMMER": "price_hammer_usd",
+        "GROSS": "price_gross_usd",
+        "LANDED": "price_landed_usd",
+    }
+
+    price_column = price_columns.get(
+        anchor.price_basis
+    )
+
+    if price_column is None:
+        return False
+
+    target = connection.execute(
+        text(
+            f"""
+            SELECT
+                base.pressing_id,
+                COALESCE(
+                    (
+                        base.{price_column} > 0
+                        AND base.condition_market_factor > 0
+                        AND base.completeness_market_factor > 0
+                    ),
+                    false
+                ) AS normalization_ready
+            FROM analytics.auction_collector_base
+                AS base
+            WHERE base.marketplace = :marketplace
+              AND base.listing_id = :listing_id
+            """
+        ),
+        {
+            "marketplace":
+                report.marketplace,
+            "listing_id":
+                report.listing_id,
+        },
+    ).mappings().one_or_none()
+
+    if (
+        target is None
+        or target["pressing_id"] is None
+        or not bool(
+            target["normalization_ready"]
+        )
+    ):
+        return False
+
+    rows = list(
+        connection.execute(
+            text(
+                f"""
+                SELECT
+                    base.marketplace,
+                    base.listing_id,
+                    (
+                        base.{price_column}
+                        / NULLIF(
+                            base.condition_market_factor,
+                            0
+                        )
+                        / NULLIF(
+                            base.completeness_market_factor,
+                            0
+                        )
+                    ) AS price_usd
+                FROM analytics.auction_collector_base
+                    AS base
+                WHERE base.pressing_id = :pressing_id
+                  AND NOT (
+                      base.marketplace = :marketplace
+                      AND base.listing_id = :listing_id
+                  )
+                  AND COALESCE(
+                      base.bulk_lot,
+                      false
+                  ) = false
+                  AND base.{price_column} > 0
+                  AND base.condition_market_factor > 0
+                  AND base.completeness_market_factor > 0
+                  AND COALESCE(
+                      base.pressing_match_confidence,
+                      0
+                  ) >= :minimum_confidence
+                ORDER BY
+                    base.marketplace,
+                    base.listing_id
+                """
+            ),
+            {
+                "pressing_id":
+                    target["pressing_id"],
+                "marketplace":
+                    report.marketplace,
+                "listing_id":
+                    report.listing_id,
+                "minimum_confidence":
+                    MINIMUM_ASSIGNMENT_CONFIDENCE,
+            },
+        ).mappings()
+    )
+
+    current_identities = {
+        (
+            f"{row['marketplace']}/"
+            f"{row['listing_id']}"
+        )
+        for row in rows
+    }
+
+    expected_identities = set(
+        anchor.comparable_listings
+    )
+
+    if current_identities != expected_identities:
+        return False
+
+    if len(rows) != anchor.sample_count:
+        return False
+
+    if not rows:
+        return False
+
+    current_median = median_decimal(
+        [
+            Decimal(
+                str(row["price_usd"])
+            )
+            for row in rows
+        ]
+    )
+
+    return current_median == anchor.anchor_usd
+
+
+# historical-anchor-normalization-guard:end
 
 
 def apply_evidence_report(
@@ -1072,7 +1353,13 @@ def apply_evidence_report(
                 else None
             )
 
-            if existing_anchor is None:
+            if (
+                existing_anchor is None
+                and _historical_anchor_is_still_valid(
+                    connection,
+                    report,
+                )
+            ):
                 anchor = (
                     report.historical_anchor
                 )

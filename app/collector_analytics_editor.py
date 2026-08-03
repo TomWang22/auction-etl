@@ -1569,7 +1569,8 @@ def _render_evidence_assistant(
     ):
         st.caption(
             "Exact condition tokens only. Historical anchors "
-            "require at least three high-confidence listings "
+            "require a normalization-ready target and at least "
+            "three normalization-ready, high-confidence listings "
             "assigned to the same pressing. Closing-window "
             "analytics require a timestamped price snapshot."
         )
@@ -1601,8 +1602,9 @@ def _render_evidence_assistant(
                 "Historical anchor",
                 "Not ready",
                 delta=(
+                    f"{report.normalized_comparable_count}/"
                     f"{report.comparable_count} "
-                    "comparables"
+                    "normalization-ready"
                 ),
             )
         else:
@@ -1613,7 +1615,7 @@ def _render_evidence_assistant(
                 ),
                 delta=(
                     f"{report.historical_anchor.sample_count} "
-                    "comparables"
+                    "normalized comparables"
                 ),
             )
 
