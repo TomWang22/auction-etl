@@ -1832,73 +1832,70 @@ def save_behavior(
     with engine.begin() as connection:
         connection.execute(
             text(
-                """
-                INSERT INTO warehouse
-                    .auction_behavior_observation (
-                        marketplace,
-                        listing_id,
-                        distinct_bidder_count,
-                        distinct_bidder_state,
-                        distinct_bidder_source,
-                        closing_window_minutes,
-                        closing_window_start_price,
-                        closing_window_final_price,
-                        closing_window_currency,
-                        closing_window_escalation_ratio,
-                        reserve_status,
-                        notes,
-                        updated_at
-                    )
-                VALUES (
-                    :marketplace,
-                    :listing_id,
-                    :distinct_bidder_count,
-                    :distinct_bidder_state,
-                    :distinct_bidder_source,
-                    :closing_window_minutes,
-                    :closing_window_start_price,
-                    :closing_window_final_price,
-                    :closing_window_currency,
-                    :closing_window_escalation_ratio,
-                    :reserve_status,
-                    :notes,
-                    now()
+                (
+                    '\n'
+                    '                INSERT INTO warehouse\n'
+                    '                    .auction_behavior_observation (\n'
+                    '                        marketplace,\n'
+                    '                        listing_id,\n'
+                    '                        distinct_bidder_count,\n'
+                    '                        distinct_bidder_state,\n'
+                    '                        distinct_bidder_source,\n'
+                    '                        closing_window_minutes,\n'
+                    '                        closing_window_start_price,\n'
+                    '                        closing_window_final_price,\n'
+                    '                        closing_window_currency,\n'
+                    '                        reserve_status,\n'
+                    '                        notes,\n'
+                    '                        updated_at\n'
+                    '                    )\n'
+                    '                VALUES (\n'
+                    '                    :marketplace,\n'
+                    '                    :listing_id,\n'
+                    '                    :distinct_bidder_count,\n'
+                    '                    :distinct_bidder_state,\n'
+                    '                    :distinct_bidder_source,\n'
+                    '                    :closing_window_minutes,\n'
+                    '                    :closing_window_start_price,\n'
+                    '                    :closing_window_final_price,\n'
+                    '                    :closing_window_currency,\n'
+                    '                    :reserve_status,\n'
+                    '                    :notes,\n'
+                    '                    now()\n'
+                    '                )\n'
+                    '                ON CONFLICT (\n'
+                    '                    marketplace,\n'
+                    '                    listing_id\n'
+                    '                )\n'
+                    '                DO UPDATE SET\n'
+                    '                    distinct_bidder_count =\n'
+                    '                        EXCLUDED\n'
+                    '                            .distinct_bidder_count,\n'
+                    '                    distinct_bidder_state =\n'
+                    '                        EXCLUDED\n'
+                    '                            .distinct_bidder_state,\n'
+                    '                    distinct_bidder_source =\n'
+                    '                        EXCLUDED\n'
+                    '                            .distinct_bidder_source,\n'
+                    '                    closing_window_minutes =\n'
+                    '                        EXCLUDED\n'
+                    '                            .closing_window_minutes,\n'
+                    '                    closing_window_start_price =\n'
+                    '                        EXCLUDED\n'
+                    '                            .closing_window_start_price,\n'
+                    '                    closing_window_final_price =\n'
+                    '                        EXCLUDED\n'
+                    '                            .closing_window_final_price,\n'
+                    '                    closing_window_currency =\n'
+                    '                        EXCLUDED\n'
+                    '                            .closing_window_currency,\n'
+                    '                    reserve_status =\n'
+                    '                        EXCLUDED.reserve_status,\n'
+                    '                    notes =\n'
+                    '                        EXCLUDED.notes,\n'
+                    '                    updated_at = now()\n'
+                    '                '
                 )
-                ON CONFLICT (
-                    marketplace,
-                    listing_id
-                )
-                DO UPDATE SET
-                    distinct_bidder_count =
-                        EXCLUDED
-                            .distinct_bidder_count,
-                    distinct_bidder_state =
-                        EXCLUDED
-                            .distinct_bidder_state,
-                    distinct_bidder_source =
-                        EXCLUDED
-                            .distinct_bidder_source,
-                    closing_window_minutes =
-                        EXCLUDED
-                            .closing_window_minutes,
-                    closing_window_start_price =
-                        EXCLUDED
-                            .closing_window_start_price,
-                    closing_window_final_price =
-                        EXCLUDED
-                            .closing_window_final_price,
-                    closing_window_currency =
-                        EXCLUDED
-                            .closing_window_currency,
-                    closing_window_escalation_ratio =
-                        EXCLUDED
-                            .closing_window_escalation_ratio,
-                    reserve_status =
-                        EXCLUDED.reserve_status,
-                    notes =
-                        EXCLUDED.notes,
-                    updated_at = now()
-                """
             ),
             values,
         )
