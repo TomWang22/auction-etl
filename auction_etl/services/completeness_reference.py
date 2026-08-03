@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping
 
@@ -990,3 +992,457 @@ def save_listing_observation_rows(
                     **row,
                 },
             )
+
+# factory-sealed-evidence:start
+FACTORY_SEALED_COMPONENT_CODE = "SHRINK_WRAP"
+FACTORY_SEALED_VARIANT_KEY = "FACTORY_SEALED"
+FACTORY_SEALED_VARIANT_LABEL = "Factory sealed"
+FACTORY_SEALED_MINIMUM_CONFIDENCE = Decimal("0.9000")
+
+
+FACTORY_SEALED_TITLE_PATTERNS = (
+    re.compile(
+        r"(?i)(?<![A-Z])FACTORY[\s-]+SEALED(?![A-Z])"
+    ),
+    re.compile(
+        r"(?i)(?<![A-Z])STILL[\s-]+SEALED(?![A-Z])"
+    ),
+    re.compile(
+        r"(?i)(?<![A-Z])NEW[\s-]+SEALED(?![A-Z])"
+    ),
+    re.compile(
+        r"(?i)(?<![A-Z])SEALED(?![A-Z])"
+    ),
+    re.compile(r"新品未開封"),
+    re.compile(r"シュリンク未開封"),
+    re.compile(r"未開封"),
+)
+
+FACTORY_SEALED_CONTRADICTION_PATTERNS = (
+    re.compile(
+        r"(?i)(?<![A-Z])UNSEALED(?![A-Z])"
+    ),
+    re.compile(
+        r"(?i)(?<![A-Z])RESEALED(?![A-Z])"
+    ),
+    re.compile(
+        r"(?i)SHRINK[\s-]+REMOVED"
+    ),
+    re.compile(
+        r"(?i)OPENED[\s-]+COPY"
+    ),
+    re.compile(r"開封済"),
+    re.compile(r"開封品"),
+    re.compile(r"シュリンクなし"),
+    re.compile(r"シュリンク無し"),
+    re.compile(r"シュリンク欠"),
+)
+
+
+def infer_factory_sealed_title_evidence(
+    title: Any,
+    evidence_url: Any,
+) -> dict[str, Any]:
+    """Build safe form defaults from explicit title evidence."""
+    normalized_title = _text(title)
+    normalized_url = _text(evidence_url)
+
+    if normalized_title is None:
+        return {
+            "eligible": False,
+            "evidence_source": "",
+            "evidence_url": normalized_url or "",
+            "confidence": Decimal("0.9000"),
+            "notes": "",
+            "matched_text": None,
+            "blocker": "The listing title is empty.",
+        }
+
+    contradiction = next(
+        (
+            pattern.search(normalized_title)
+            for pattern
+            in FACTORY_SEALED_CONTRADICTION_PATTERNS
+            if pattern.search(normalized_title)
+        ),
+        None,
+    )
+
+    if contradiction is not None:
+        return {
+            "eligible": False,
+            "evidence_source": "",
+            "evidence_url": normalized_url or "",
+            "confidence": Decimal("0.9000"),
+            "notes": "",
+            "matched_text": None,
+            "blocker": (
+                "The title contains contradictory opened, "
+                "unsealed, resealed, or shrink-removed evidence: "
+                f"{contradiction.group(0)}"
+            ),
+        }
+
+    positive_match = next(
+        (
+            pattern.search(normalized_title)
+            for pattern in FACTORY_SEALED_TITLE_PATTERNS
+            if pattern.search(normalized_title)
+        ),
+        None,
+    )
+
+    if positive_match is None:
+        return {
+            "eligible": False,
+            "evidence_source": "",
+            "evidence_url": normalized_url or "",
+            "confidence": Decimal("0.9000"),
+            "notes": "",
+            "matched_text": None,
+            "blocker": (
+                "No explicit factory-sealed token was found "
+                "in the listing title."
+            ),
+        }
+
+    matched_text = positive_match.group(0)
+
+    return {
+        "eligible": True,
+        "evidence_source": "LISTING_TITLE",
+        "evidence_url": normalized_url or "",
+        "confidence": Decimal("0.9900"),
+        "notes": (
+            "Listing title explicitly indicates factory-sealed "
+            f"condition using '{matched_text}'. "
+            f"Reviewed title: {normalized_title}"
+        ),
+        "matched_text": matched_text,
+        "blocker": None,
+    }
+
+
+def build_factory_sealed_prefill(
+    engine: Engine,
+    marketplace: str,
+    listing_id: str,
+) -> dict[str, Any]:
+    """Load a listing and build reviewed form defaults."""
+    marketplace_value = _required_text(
+        marketplace,
+        "Marketplace",
+    )
+
+    listing_id_value = _required_text(
+        listing_id,
+        "Listing ID",
+    )
+
+    with engine.connect() as connection:
+        listing = connection.execute(
+            text(
+                """
+                SELECT
+                    title,
+                    auction_url
+                FROM warehouse.auction
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                """
+            ),
+            {
+                "marketplace": marketplace_value,
+                "listing_id": listing_id_value,
+            },
+        ).mappings().one_or_none()
+
+    if listing is None:
+        raise ValueError(
+            "The auction listing does not exist."
+        )
+
+    return infer_factory_sealed_title_evidence(
+        listing["title"],
+        listing["auction_url"],
+    )
+
+
+def validate_factory_sealed_evidence(
+    evidence_source: Any,
+    evidence_url: Any,
+    confidence: Any,
+    notes: Any = None,
+) -> dict[str, Any]:
+    """Validate explicit factory-sealed evidence."""
+    normalized_source = _required_text(
+        evidence_source,
+        "Factory-sealed evidence source",
+    )
+
+    normalized_url = _required_text(
+        evidence_url,
+        "Factory-sealed evidence URL",
+    )
+
+    normalized_confidence = _decimal(
+        confidence,
+        required=True,
+        field_name="Factory-sealed confidence",
+    )
+
+    if normalized_confidence is None:
+        raise ValueError(
+            "Factory-sealed confidence is required."
+        )
+
+    if (
+        normalized_confidence
+        < FACTORY_SEALED_MINIMUM_CONFIDENCE
+    ):
+        raise ValueError(
+            "Factory-sealed confidence must be at least 0.90."
+        )
+
+    return {
+        "component_code":
+            FACTORY_SEALED_COMPONENT_CODE,
+        "variant_key":
+            FACTORY_SEALED_VARIANT_KEY,
+        "variant_label":
+            FACTORY_SEALED_VARIANT_LABEL,
+        "observation_state":
+            "PRESENT",
+        "observed_quantity":
+            1,
+        "evidence_source":
+            normalized_source,
+        "confidence":
+            normalized_confidence,
+        "evidence_url":
+            normalized_url,
+        "notes":
+            _text(notes),
+    }
+
+
+def load_factory_sealed_observation(
+    engine: Engine,
+    marketplace: str,
+    listing_id: str,
+) -> dict[str, Any] | None:
+    """Load reviewed factory-sealed evidence for one listing."""
+    marketplace_value = _required_text(
+        marketplace,
+        "Marketplace",
+    )
+
+    listing_id_value = _required_text(
+        listing_id,
+        "Listing ID",
+    )
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT
+                    marketplace,
+                    listing_id,
+                    component_code,
+                    variant_key,
+                    variant_label,
+                    observation_state,
+                    observed_quantity,
+                    evidence_source,
+                    confidence,
+                    evidence_url,
+                    notes
+                FROM warehouse.auction_component_observation
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                  AND component_code = 'SHRINK_WRAP'
+                  AND variant_key = 'FACTORY_SEALED'
+                """
+            ),
+            {
+                "marketplace": marketplace_value,
+                "listing_id": listing_id_value,
+            },
+        ).mappings().one_or_none()
+
+    return (
+        dict(row)
+        if row is not None
+        else None
+    )
+
+
+def save_factory_sealed_observation(
+    engine: Engine,
+    marketplace: str,
+    listing_id: str,
+    evidence_source: Any,
+    evidence_url: Any,
+    confidence: Any,
+    notes: Any = None,
+) -> None:
+    """Save one explicit factory-sealed observation only."""
+    marketplace_value = _required_text(
+        marketplace,
+        "Marketplace",
+    )
+
+    listing_id_value = _required_text(
+        listing_id,
+        "Listing ID",
+    )
+
+    evidence = validate_factory_sealed_evidence(
+        evidence_source,
+        evidence_url,
+        confidence,
+        notes,
+    )
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+        )
+
+        assignment_exists = connection.execute(
+            text(
+                """
+                SELECT 1
+                FROM warehouse.auction_pressing_assignment
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                FOR UPDATE
+                """
+            ),
+            {
+                "marketplace": marketplace_value,
+                "listing_id": listing_id_value,
+            },
+        ).scalar_one_or_none()
+
+        if assignment_exists is None:
+            raise ValueError(
+                "An exact pressing assignment is required "
+                "before factory-sealed evidence can be saved."
+            )
+
+        seal_contradiction = connection.execute(
+            text(
+                """
+                SELECT 1
+                FROM warehouse.auction_component_observation
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                  AND component_code = 'SHRINK_WRAP'
+                  AND observation_state = 'ABSENT'
+                LIMIT 1
+                """
+            ),
+            {
+                "marketplace": marketplace_value,
+                "listing_id": listing_id_value,
+            },
+        ).scalar_one_or_none()
+
+        if seal_contradiction is not None:
+            raise ValueError(
+                "Factory-sealed evidence conflicts with an "
+                "existing SHRINK_WRAP=ABSENT observation."
+            )
+
+        connection.execute(
+            text(
+                """
+                DELETE FROM warehouse.auction_component_observation
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                  AND component_code = 'SHRINK_WRAP'
+                  AND variant_key = 'FACTORY_SEALED'
+                """
+            ),
+            {
+                "marketplace": marketplace_value,
+                "listing_id": listing_id_value,
+            },
+        )
+
+        connection.execute(
+            text(
+                """
+                INSERT INTO warehouse.auction_component_observation (
+                    marketplace,
+                    listing_id,
+                    component_code,
+                    variant_key,
+                    variant_label,
+                    observation_state,
+                    observed_quantity,
+                    evidence_source,
+                    confidence,
+                    evidence_url,
+                    notes,
+                    updated_at
+                )
+                VALUES (
+                    :marketplace,
+                    :listing_id,
+                    :component_code,
+                    :variant_key,
+                    :variant_label,
+                    :observation_state,
+                    :observed_quantity,
+                    :evidence_source,
+                    :confidence,
+                    :evidence_url,
+                    :notes,
+                    now()
+                )
+                """
+            ),
+            {
+                "marketplace": marketplace_value,
+                "listing_id": listing_id_value,
+                **evidence,
+            },
+        )
+
+
+def delete_factory_sealed_observation(
+    engine: Engine,
+    marketplace: str,
+    listing_id: str,
+) -> None:
+    """Delete only the reviewed factory-sealed evidence row."""
+    marketplace_value = _required_text(
+        marketplace,
+        "Marketplace",
+    )
+
+    listing_id_value = _required_text(
+        listing_id,
+        "Listing ID",
+    )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                DELETE FROM warehouse.auction_component_observation
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                  AND component_code = 'SHRINK_WRAP'
+                  AND variant_key = 'FACTORY_SEALED'
+                """
+            ),
+            {
+                "marketplace": marketplace_value,
+                "listing_id": listing_id_value,
+            },
+        )
+# factory-sealed-evidence:end

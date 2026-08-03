@@ -41,6 +41,11 @@ from auction_etl.services.completeness_reference import (
     load_pressing_reference_summary,
     save_listing_observation_rows,
     save_pressing_reference_rows,
+    FACTORY_SEALED_VARIANT_KEY,
+    build_factory_sealed_prefill,
+    delete_factory_sealed_observation,
+    load_factory_sealed_observation,
+    save_factory_sealed_observation,
 )
 # collector-evidence-assistant:import-start
 from auction_etl.services.collector_evidence import (
@@ -1102,13 +1107,6 @@ def _render_component_editor(
             "cannot modify the pressing reference."
         )
 
-        st.info(
-            "For a factory-sealed copy, record SEALED as "
-            "PRESENT. Do not mark hidden inserts PRESENT merely "
-            "because the copy is sealed; use NOT_VISIBLE until "
-            "a separate sealed-copy policy is explicitly applied."
-        )
-
         observation_rows = (
             load_listing_observation_rows(
                 engine,
@@ -1116,6 +1114,202 @@ def _render_component_editor(
                 listing_id_value,
             )
         )
+
+        factory_sealed = load_factory_sealed_observation(
+            engine,
+            marketplace,
+            listing_id_value,
+        )
+
+        factory_prefill = build_factory_sealed_prefill(
+            engine,
+            marketplace,
+            listing_id_value,
+        )
+
+        factory_defaults = (
+            factory_sealed
+            or factory_prefill
+        )
+
+        st.info(
+            "Factory-sealed copies use explicit SHRINK_WRAP "
+            "evidence with variant FACTORY_SEALED. Hidden inserts "
+            "remain unverified and are never fabricated as PRESENT."
+        )
+
+        with st.expander(
+            "Factory-sealed completeness exception",
+            expanded=bool(factory_sealed),
+        ):
+            st.caption(
+                "Use this only after reviewing explicit evidence "
+                "that the individual copy is factory sealed. "
+                "A verified pressing reference is still required. "
+                "The exception does not set complete=true and does "
+                "not automatically unlock normalized pricing."
+            )
+
+            if factory_sealed:
+                st.success(
+                    "Saved factory-sealed evidence is loaded."
+                )
+            elif factory_prefill.get("eligible"):
+                st.success(
+                    "The form was automatically filled from "
+                    "explicit sealed wording in the listing title. "
+                    "Review it, then click Save."
+                )
+            else:
+                st.warning(
+                    str(
+                        factory_prefill.get("blocker")
+                        or "No safe title-based autofill is available."
+                    )
+                )
+
+            factory_source = st.text_input(
+                "Evidence source",
+                value=str(
+                    (
+                        factory_defaults
+                        or {}
+                    ).get(
+                        "evidence_source"
+                    )
+                    or ""
+                ),
+                placeholder=(
+                    "LISTING_TITLE, LISTING_IMAGES, "
+                    "SELLER_DESCRIPTION"
+                ),
+                key=(
+                    "factory-sealed-source:"
+                    f"{marketplace}:"
+                    f"{listing_id_value}"
+                ),
+            )
+
+            factory_url = st.text_input(
+                "Evidence URL",
+                value=str(
+                    (
+                        factory_defaults
+                        or {}
+                    ).get(
+                        "evidence_url"
+                    )
+                    or ""
+                ),
+                key=(
+                    "factory-sealed-url:"
+                    f"{marketplace}:"
+                    f"{listing_id_value}"
+                ),
+            )
+
+            factory_confidence = st.number_input(
+                "Confidence",
+                min_value=0.90,
+                max_value=1.00,
+                value=float(
+                    (
+                        factory_defaults
+                        or {}
+                    ).get(
+                        "confidence"
+                    )
+                    or 0.99
+                ),
+                step=0.01,
+                key=(
+                    "factory-sealed-confidence:"
+                    f"{marketplace}:"
+                    f"{listing_id_value}"
+                ),
+            )
+
+            factory_notes = st.text_area(
+                "Evidence notes",
+                value=str(
+                    (
+                        factory_defaults
+                        or {}
+                    ).get(
+                        "notes"
+                    )
+                    or ""
+                ),
+                placeholder=(
+                    "Quote the exact factory-sealed evidence. "
+                    "Do not infer hidden components."
+                ),
+                key=(
+                    "factory-sealed-notes:"
+                    f"{marketplace}:"
+                    f"{listing_id_value}"
+                ),
+            )
+
+            factory_save_column, factory_remove_column = (
+                st.columns(2)
+            )
+
+            if factory_save_column.button(
+                "Save factory-sealed evidence",
+                type="primary",
+                width="stretch",
+                key=(
+                    "factory-sealed-save:"
+                    f"{marketplace}:"
+                    f"{listing_id_value}"
+                ),
+            ):
+                try:
+                    save_factory_sealed_observation(
+                        engine,
+                        marketplace,
+                        listing_id_value,
+                        factory_source,
+                        factory_url,
+                        factory_confidence,
+                        factory_notes,
+                    )
+                except ValueError as error:
+                    st.error(str(error))
+                else:
+                    _rerun(
+                        "Factory-sealed evidence saved."
+                    )
+
+            if factory_remove_column.button(
+                "Remove factory-sealed evidence",
+                width="stretch",
+                disabled=not bool(factory_sealed),
+                key=(
+                    "factory-sealed-remove:"
+                    f"{marketplace}:"
+                    f"{listing_id_value}"
+                ),
+            ):
+                delete_factory_sealed_observation(
+                    engine,
+                    marketplace,
+                    listing_id_value,
+                )
+
+                _rerun(
+                    "Factory-sealed evidence removed."
+                )
+
+            st.code(
+                (
+                    "component_code = SHRINK_WRAP\n"
+                    f"variant_key = {FACTORY_SEALED_VARIANT_KEY}\n"
+                    "observation_state = PRESENT"
+                ),
+                language="text",
+            )
 
         observation_frame = pd.DataFrame(
             observation_rows
