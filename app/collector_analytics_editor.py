@@ -28,13 +28,19 @@ from auction_etl.services.collector_curation import (
     load_assignment,
     load_behavior,
     load_completeness,
-    load_component_rows,
     load_condition,
     load_score_snapshot,
-    replace_component_rows,
     save_analysis_input,
     save_behavior,
     save_condition,
+)
+from auction_etl.services.completeness_reference import (
+    REFERENCE_EDITOR_STATES,
+    load_listing_observation_rows,
+    load_pressing_reference_rows,
+    load_pressing_reference_summary,
+    save_listing_observation_rows,
+    save_pressing_reference_rows,
 )
 # collector-evidence-assistant:import-start
 from auction_etl.services.collector_evidence import (
@@ -814,7 +820,7 @@ def _render_component_editor(
     marketplace: str,
     listing_id_value: str,
 ) -> None:
-    """Render expected and observed component curation."""
+    """Render pressing reference and listing evidence separately."""
     assignment = load_assignment(
         engine,
         marketplace,
@@ -823,7 +829,7 @@ def _render_component_editor(
 
     if not assignment:
         st.warning(
-            "Assign an exact pressing before editing components."
+            "Assign an exact pressing before editing completeness."
         )
         return
 
@@ -851,161 +857,419 @@ def _render_component_editor(
         for row in grades
     ]
 
-    rows = load_component_rows(
-        engine,
-        marketplace,
-        listing_id_value,
-        pressing_id,
+    reference_tab, observation_tab = st.tabs(
+        (
+            "Pressing completeness reference",
+            "This listing's observations",
+        )
     )
 
-    dataframe = pd.DataFrame(
-        rows
-    )
+    with reference_tab:
+        st.subheader(
+            "What originally counts as complete"
+        )
 
-    editable_columns = [
-        "component_code",
-        "variant_key",
-        "variant_label",
-        "expectation_state",
-        "expected_quantity",
-        "expectation_evidence_source",
-        "expectation_confidence",
-        "expectation_notes",
-        "observation_state",
-        "observed_quantity",
-        "normalized_condition",
-        "source_condition_text",
-        "observation_evidence_source",
-        "observation_confidence",
-        "evidence_url",
-        "observation_notes",
-    ]
+        st.warning(
+            "This is the shared reference for pressing "
+            f"#{pressing_id}. Saving it affects every listing "
+            "assigned to this exact pressing."
+        )
 
-    for column in editable_columns:
-        if column not in dataframe.columns:
-            dataframe[column] = None
+        st.caption(
+            "Classify every active component as REQUIRED, "
+            "OPTIONAL, or NOT_INCLUDED. A reference cannot be "
+            "verified while any component remains UNKNOWN. "
+            "Use an exact pressing guide, original packaging, "
+            "label documentation, or another reviewable source."
+        )
 
-    st.warning(
-        "Expected components belong to pressing "
-        f"#{pressing_id} and therefore apply to every listing "
-        "assigned to that pressing."
-    )
+        summary = load_pressing_reference_summary(
+            engine,
+            pressing_id,
+        )
 
-    edited = st.data_editor(
-        dataframe[editable_columns],
-        hide_index=True,
-        width="stretch",
-        num_rows="dynamic",
-        column_config={
-            "component_code":
-                st.column_config.SelectboxColumn(
-                    "Component",
-                    options=component_codes,
-                    required=True,
-                ),
-            "variant_key":
-                st.column_config.TextColumn(
-                    "Variant key"
-                ),
-            "variant_label":
-                st.column_config.TextColumn(
-                    "Variant label"
-                ),
-            "expectation_state":
-                st.column_config.SelectboxColumn(
-                    "Expected",
-                    options=EXPECTATION_STATES,
-                    required=True,
-                ),
-            "expected_quantity":
-                st.column_config.NumberColumn(
-                    "Expected qty",
-                    min_value=1,
-                    step=1,
-                ),
-            "expectation_confidence":
-                st.column_config.NumberColumn(
-                    "Expected confidence",
-                    min_value=0.0,
-                    max_value=1.0,
-                    step=0.05,
-                ),
-            "observation_state":
-                st.column_config.SelectboxColumn(
-                    "Observed",
-                    options=OBSERVATION_STATES,
-                    required=True,
-                ),
-            "observed_quantity":
-                st.column_config.NumberColumn(
-                    "Observed qty",
-                    min_value=0,
-                    step=1,
-                ),
-            "normalized_condition":
-                st.column_config.SelectboxColumn(
-                    "Component grade",
-                    options=grade_codes,
-                ),
-            "observation_confidence":
-                st.column_config.NumberColumn(
-                    "Observed confidence",
-                    min_value=0.0,
-                    max_value=1.0,
-                    step=0.05,
-                ),
-            "evidence_url":
-                st.column_config.LinkColumn(
-                    "Evidence URL"
-                ),
-        },
-        key=(
-            "collector_component_editor:"
-            f"{marketplace}:"
-            f"{listing_id_value}:"
-            f"{pressing_id}"
-        ),
-    )
+        summary_columns = st.columns(5)
 
-    if st.button(
-        "Save expected and observed components",
-        type="primary",
-        width="stretch",
-        key=(
-            "collector_component_save:"
-            f"{marketplace}:"
-            f"{listing_id_value}"
-        ),
-    ):
-        payload = (
-            edited.where(
-                pd.notna(edited),
-                None,
+        summary_columns[0].metric(
+            "Assigned listings",
+            summary.get(
+                "assigned_listings"
             )
-            .to_dict(
-                orient="records"
+            or 0,
+        )
+
+        summary_columns[1].metric(
+            "Required",
+            summary.get(
+                "required_components"
+            )
+            or 0,
+        )
+
+        summary_columns[2].metric(
+            "Optional",
+            summary.get(
+                "optional_components"
+            )
+            or 0,
+        )
+
+        summary_columns[3].metric(
+            "Not included",
+            summary.get(
+                "excluded_components"
+            )
+            or 0,
+        )
+
+        summary_columns[4].metric(
+            "Reference",
+            (
+                "Verified"
+                if summary.get(
+                    "reference_complete"
+                )
+                else "Not verified"
+            ),
+        )
+
+        reference_rows = (
+            load_pressing_reference_rows(
+                engine,
+                pressing_id,
             )
         )
 
-        payload = [
-            row
-            for row in payload
-            if _clean(
-                row.get("component_code")
+        reference_frame = pd.DataFrame(
+            reference_rows
+        )
+
+        if (
+            "applicable_media"
+            in reference_frame.columns
+        ):
+            reference_frame[
+                "applicable_media"
+            ] = reference_frame[
+                "applicable_media"
+            ].map(
+                lambda values: ", ".join(
+                    values or []
+                )
             )
+
+        reference_columns = [
+            "component_code",
+            "display_name",
+            "applicable_media",
+            "applies_to_pressing",
+            "variant_key",
+            "variant_label",
+            "expectation_state",
+            "expected_quantity",
+            "evidence_source",
+            "confidence",
+            "notes",
         ]
 
-        replace_component_rows(
-            engine,
-            marketplace,
-            listing_id_value,
-            pressing_id,
-            payload,
+        edited_reference = st.data_editor(
+            reference_frame[
+                reference_columns
+            ],
+            hide_index=True,
+            width="stretch",
+            num_rows="dynamic",
+            disabled=[
+                "display_name",
+                "applicable_media",
+                "applies_to_pressing",
+            ],
+            column_config={
+                "component_code":
+                    st.column_config.SelectboxColumn(
+                        "Component",
+                        options=component_codes,
+                        required=True,
+                    ),
+                "display_name":
+                    st.column_config.TextColumn(
+                        "Name"
+                    ),
+                "applicable_media":
+                    st.column_config.TextColumn(
+                        "Media applicability"
+                    ),
+                "applies_to_pressing":
+                    st.column_config.CheckboxColumn(
+                        "Applies"
+                    ),
+                "variant_key":
+                    st.column_config.TextColumn(
+                        "Variant key"
+                    ),
+                "variant_label":
+                    st.column_config.TextColumn(
+                        "Variant label"
+                    ),
+                "expectation_state":
+                    st.column_config.SelectboxColumn(
+                        "Reference state",
+                        options=REFERENCE_EDITOR_STATES,
+                        required=True,
+                    ),
+                "expected_quantity":
+                    st.column_config.NumberColumn(
+                        "Expected qty",
+                        min_value=1,
+                        step=1,
+                        required=True,
+                    ),
+                "evidence_source":
+                    st.column_config.TextColumn(
+                        "Reference source",
+                        required=True,
+                    ),
+                "confidence":
+                    st.column_config.NumberColumn(
+                        "Confidence",
+                        min_value=0.0,
+                        max_value=1.0,
+                        step=0.05,
+                        required=True,
+                    ),
+                "notes":
+                    st.column_config.TextColumn(
+                        "Reference notes"
+                    ),
+            },
+            key=(
+                "pressing_reference_editor:"
+                f"{pressing_id}"
+            ),
         )
 
-        _rerun(
-            "Expected and observed components saved."
+        confirmation = st.checkbox(
+            (
+                "I verified that this table defines the "
+                "original contents of this exact pressing."
+            ),
+            key=(
+                "pressing_reference_confirmation:"
+                f"{pressing_id}"
+            ),
         )
+
+        if st.button(
+            "Save verified pressing reference",
+            type="primary",
+            width="stretch",
+            disabled=not confirmation,
+            key=(
+                "pressing_reference_save:"
+                f"{pressing_id}"
+            ),
+        ):
+            reference_payload = (
+                edited_reference.where(
+                    pd.notna(
+                        edited_reference
+                    ),
+                    None,
+                )
+                .to_dict(
+                    orient="records"
+                )
+            )
+
+            save_pressing_reference_rows(
+                engine,
+                pressing_id,
+                reference_payload,
+            )
+
+            _rerun(
+                "Verified pressing completeness reference saved."
+            )
+
+    with observation_tab:
+        st.subheader(
+            "What this auction copy actually contains"
+        )
+
+        st.caption(
+            "These observations belong only to "
+            f"{marketplace}/{listing_id_value}. Saving them "
+            "cannot modify the pressing reference."
+        )
+
+        st.info(
+            "For a factory-sealed copy, record SEALED as "
+            "PRESENT. Do not mark hidden inserts PRESENT merely "
+            "because the copy is sealed; use NOT_VISIBLE until "
+            "a separate sealed-copy policy is explicitly applied."
+        )
+
+        observation_rows = (
+            load_listing_observation_rows(
+                engine,
+                marketplace,
+                listing_id_value,
+            )
+        )
+
+        observation_frame = pd.DataFrame(
+            observation_rows
+        )
+
+        if (
+            "applicable_media"
+            in observation_frame.columns
+        ):
+            observation_frame[
+                "applicable_media"
+            ] = observation_frame[
+                "applicable_media"
+            ].map(
+                lambda values: ", ".join(
+                    values or []
+                )
+            )
+
+        observation_columns = [
+            "component_code",
+            "display_name",
+            "applicable_media",
+            "variant_key",
+            "variant_label",
+            "observation_state",
+            "observed_quantity",
+            "normalized_condition",
+            "source_condition_text",
+            "evidence_source",
+            "confidence",
+            "evidence_url",
+            "notes",
+        ]
+
+        edited_observations = st.data_editor(
+            observation_frame[
+                observation_columns
+            ],
+            hide_index=True,
+            width="stretch",
+            num_rows="dynamic",
+            disabled=[
+                "display_name",
+                "applicable_media",
+            ],
+            column_config={
+                "component_code":
+                    st.column_config.SelectboxColumn(
+                        "Component",
+                        options=component_codes,
+                        required=True,
+                    ),
+                "display_name":
+                    st.column_config.TextColumn(
+                        "Name"
+                    ),
+                "applicable_media":
+                    st.column_config.TextColumn(
+                        "Media applicability"
+                    ),
+                "variant_key":
+                    st.column_config.TextColumn(
+                        "Variant key"
+                    ),
+                "variant_label":
+                    st.column_config.TextColumn(
+                        "Variant label"
+                    ),
+                "observation_state":
+                    st.column_config.SelectboxColumn(
+                        "Observed state",
+                        options=OBSERVATION_STATES,
+                        required=True,
+                    ),
+                "observed_quantity":
+                    st.column_config.NumberColumn(
+                        "Observed qty",
+                        min_value=0,
+                        step=1,
+                    ),
+                "normalized_condition":
+                    st.column_config.SelectboxColumn(
+                        "Component grade",
+                        options=grade_codes,
+                    ),
+                "source_condition_text":
+                    st.column_config.TextColumn(
+                        "Source condition"
+                    ),
+                "evidence_source":
+                    st.column_config.TextColumn(
+                        "Evidence source"
+                    ),
+                "confidence":
+                    st.column_config.NumberColumn(
+                        "Confidence",
+                        min_value=0.0,
+                        max_value=1.0,
+                        step=0.05,
+                    ),
+                "evidence_url":
+                    st.column_config.LinkColumn(
+                        "Evidence URL"
+                    ),
+                "notes":
+                    st.column_config.TextColumn(
+                        "Observation notes"
+                    ),
+            },
+            key=(
+                "listing_observation_editor:"
+                f"{marketplace}:"
+                f"{listing_id_value}"
+            ),
+        )
+
+        if st.button(
+            "Save this listing's observations",
+            type="primary",
+            width="stretch",
+            key=(
+                "listing_observation_save:"
+                f"{marketplace}:"
+                f"{listing_id_value}"
+            ),
+        ):
+            observation_payload = (
+                edited_observations.where(
+                    pd.notna(
+                        edited_observations
+                    ),
+                    None,
+                )
+                .to_dict(
+                    orient="records"
+                )
+            )
+
+            save_listing_observation_rows(
+                engine,
+                marketplace,
+                listing_id_value,
+                pressing_id,
+                observation_payload,
+            )
+
+            _rerun(
+                "Listing component observations saved."
+            )
+
+    st.subheader(
+        "Derived completeness"
+    )
 
     _render_completeness(
         load_completeness(

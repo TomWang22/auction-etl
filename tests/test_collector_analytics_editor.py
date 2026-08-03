@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+
 from pathlib import Path
 
 import pandas as pd
@@ -79,6 +81,7 @@ def test_editor_preserves_buyee_bidder_uncertainty() -> None:
 
 
 def test_editor_wires_all_curation_services() -> None:
+    """The editor wires each independent persistence scope."""
     source = Path(
         "app/collector_analytics_editor.py"
     ).read_text(
@@ -88,7 +91,10 @@ def test_editor_wires_all_curation_services() -> None:
     required_calls = (
         "create_and_assign_pressing(",
         "assign_existing_pressing(",
-        "replace_component_rows(",
+        "load_pressing_reference_rows(",
+        "save_pressing_reference_rows(",
+        "load_listing_observation_rows(",
+        "save_listing_observation_rows(",
         "save_condition(",
         "save_behavior(",
         "save_analysis_input(",
@@ -97,6 +103,8 @@ def test_editor_wires_all_curation_services() -> None:
 
     for required_call in required_calls:
         assert required_call in source
+
+    assert "replace_component_rows(" not in source
 
 
 def test_collector_review_has_analytics_tab() -> None:
@@ -121,18 +129,51 @@ def test_collector_review_has_analytics_tab() -> None:
     )
 
 
-def test_component_editor_warns_about_pressing_scope() -> None:
+def test_component_editor_separates_pressing_and_listing_scope() -> None:
+    """The component editor keeps persistence scopes independent."""
     source = Path(
         "app/collector_analytics_editor.py"
     ).read_text(
         encoding="utf-8"
     )
 
-    assert (
-        "Expected components belong to pressing"
-        in source
+    tree = ast.parse(source)
+
+    editor_function = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_component_editor"
+        ),
+        None,
     )
-    assert (
-        "apply to every listing"
-        in source
-    )
+
+    assert editor_function is not None
+
+    string_literals = {
+        node.value
+        for node in ast.walk(editor_function)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+    }
+
+    call_names: set[str] = set()
+
+    for node in ast.walk(editor_function):
+        if not isinstance(node, ast.Call):
+            continue
+
+        if isinstance(node.func, ast.Name):
+            call_names.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            call_names.add(node.func.attr)
+
+    assert "Pressing completeness reference" in string_literals
+    assert "This listing's observations" in string_literals
+    assert "Save verified pressing reference" in string_literals
+    assert "Save this listing's observations" in string_literals
+
+    assert "save_pressing_reference_rows" in call_names
+    assert "save_listing_observation_rows" in call_names
+    assert "replace_component_rows" not in call_names
