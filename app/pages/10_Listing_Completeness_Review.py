@@ -248,5 +248,12 @@ def main() -> None:
         "to edit the exact-pressing master."
     )
 
+    st.divider()
+
+    st.page_link(
+        "pages/12_Completeness_History.py",
+        label="Open immutable completeness history",
+    )
+
 
 main()
