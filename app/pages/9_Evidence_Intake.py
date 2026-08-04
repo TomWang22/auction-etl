@@ -17,6 +17,7 @@ from auction_etl.services.evidence_intake import (
     IntakeRequest,
     clone_packet,
     discover_packets,
+    evidence_packet_root,
     list_active_components,
     list_active_sources,
     stage_and_review,
@@ -68,7 +69,9 @@ def _rerun() -> None:
 
 def _packet_selector():
     """Render the general exact-pressing packet selector."""
-    packets = discover_packets()
+    packets = discover_packets(
+        evidence_packet_root()
+    )
 
     current_path = st.session_state.get(
         "evidence_intake_packet"
@@ -123,7 +126,9 @@ def _packet_selector():
         use_container_width=True,
     ):
         destination = clone_packet(
-            selected.path
+            selected.path,
+            destination_root=
+                evidence_packet_root(),
         )
 
         st.session_state[
@@ -278,6 +283,52 @@ def _claim_editor(
     )
 
 
+
+
+def _render_return_to_wizard() -> None:
+    """Render the active Cohort Curation Wizard return control."""
+    return_page = st.session_state.get(
+        "evidence_intake_return_page"
+    )
+
+    if not return_page:
+        return
+
+    pressing_id = st.session_state.get(
+        "evidence_intake_handoff_pressing_id"
+    )
+
+    catalog = st.session_state.get(
+        "evidence_intake_handoff_catalog",
+        "",
+    )
+
+    st.info(
+        "Handoff from Cohort Curation Wizard"
+        + (
+            f" · Pressing #{pressing_id}"
+            if pressing_id is not None
+            else ""
+        )
+        + (
+            f" · {catalog}"
+            if catalog
+            else ""
+        )
+    )
+
+    if st.button(
+        "Return to Cohort Curation Wizard",
+        type="secondary",
+        use_container_width=True,
+        key="evidence_intake_return_to_wizard",
+    ):
+        st.switch_page(
+            str(
+                return_page
+            )
+        )
+
 def main() -> None:
     """Render the general evidence-intake workflow."""
     st.title(
@@ -308,6 +359,8 @@ def main() -> None:
     st.info(
         f"Working packet: `{packet_path}`"
     )
+
+    _render_return_to_wizard()
 
     identity_columns = st.columns(
         4
@@ -576,6 +629,17 @@ def main() -> None:
             review_output_dir=
                 review_dir,
         )
+
+        st.session_state["evidence_intake_last_result"] = {
+            "pressing_id": packet.pressing_id,
+            "catalog": packet.catalog,
+            "packet_path": str(result.packet_dir),
+            "workflow_status": result.workflow_status,
+            "review_status": result.review_status,
+            "blockers": list(result.blockers),
+            "planned_mutation_count": result.planned_mutation_count,
+            "database_writes": result.database_writes,
+        }
     except EvidenceIntakeError as error:
         st.error(
             str(error)

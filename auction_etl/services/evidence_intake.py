@@ -546,7 +546,7 @@ def clone_packet(
     )
 
     timestamp = datetime.now().strftime(
-        "%Y%m%d-%H%M%S"
+        "%Y%m%d-%H%M%S-%f"
     )
 
     safe_catalog = re.sub(
@@ -1362,3 +1362,43 @@ def stage_and_review(
         ),
         database_writes=0,
     )
+
+
+def evidence_packet_root() -> Path:
+    """Return the configurable packet-discovery root."""
+    configured = os.environ.get(
+        "EVIDENCE_INTAKE_PACKET_ROOT",
+        "logs",
+    )
+
+    return Path(
+        configured
+    ).expanduser()
+
+
+def latest_packet_for_pressing(
+    pressing_id: int,
+    root: Path | None = None,
+) -> PacketOption | None:
+    """Return the newest complete packet for one exact pressing."""
+    packet_root = (
+        root
+        if root is not None
+        else evidence_packet_root()
+    )
+
+    matches = [
+        packet
+        for packet in discover_packets(
+            packet_root
+        )
+        if packet.pressing_id
+        == int(
+            pressing_id
+        )
+    ]
+
+    if not matches:
+        return None
+
+    return matches[0]

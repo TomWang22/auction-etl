@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 import os
 from typing import Any
@@ -48,6 +50,13 @@ from auction_etl.services.normalization_workbench import (
     COMPARABLE_DECISIONS,
     list_comparable_candidates,
     save_comparable_review,
+)
+
+from auction_etl.services.evidence_intake import (
+    clone_packet,
+    discover_packets,
+    evidence_packet_root,
+    latest_packet_for_pressing,
 )
 
 
@@ -288,6 +297,9 @@ def _stage_three(
         "3. Evidence and attachments"
     )
 
+    _render_evidence_intake_handoff()
+
+
     st.info(
         "Attachments are metadata records referencing external "
         "evidence by URI and SHA-256 checksum. File contents are "
@@ -435,6 +447,7 @@ def _stage_three(
                 "Evidence attachment registered: "
                 f"#{saved['id']}."
             )
+
 
 
 def _stage_four(
@@ -1673,6 +1686,328 @@ def _render_navigation(
             st.rerun()
 
 
+
+
+def _pressing_ids_from_value(
+    value,
+) -> set[int]:
+    """Extract plausible pressing IDs from Streamlit session values."""
+    found: set[int] = set()
+
+    if isinstance(
+        value,
+        bool,
+    ):
+        return found
+
+    if isinstance(
+        value,
+        int,
+    ):
+        if value > 0:
+            found.add(
+                value
+            )
+
+        return found
+
+    if isinstance(
+        value,
+        str,
+    ):
+        for match in re.finditer(
+            r"Pressing\s*#\s*(\d+)",
+            value,
+            re.IGNORECASE,
+        ):
+            found.add(
+                int(
+                    match.group(1)
+                )
+            )
+
+        return found
+
+    if isinstance(
+        value,
+        dict,
+    ):
+        for key, nested_value in value.items():
+            key_text = str(
+                key
+            ).casefold()
+
+            if (
+                "pressing" in key_text
+                or "cohort" in key_text
+            ):
+                found.update(
+                    _pressing_ids_from_value(
+                        nested_value
+                    )
+                )
+
+        return found
+
+    pressing_id = getattr(
+        value,
+        "pressing_id",
+        None,
+    )
+
+    if pressing_id is not None:
+        found.update(
+            _pressing_ids_from_value(
+                pressing_id
+            )
+        )
+
+    label = getattr(
+        value,
+        "label",
+        None,
+    )
+
+    if label is not None:
+        found.update(
+            _pressing_ids_from_value(
+                str(
+                    label
+                )
+            )
+        )
+
+    return found
+
+
+def _current_wizard_pressing_id() -> int | None:
+    """Resolve the currently selected exact pressing."""
+    packet_root = evidence_packet_root()
+
+    packets = discover_packets(
+        packet_root
+    )
+
+    available_ids = {
+        packet.pressing_id
+        for packet in packets
+    }
+
+    explicit_value = st.session_state.get(
+        "cohort_curation_selected_cohort_value"
+    )
+
+    for candidate in sorted(
+        _pressing_ids_from_value(
+            explicit_value
+        )
+    ):
+        if candidate in available_ids:
+            return candidate
+
+    candidates: list[int] = []
+
+    for key, value in st.session_state.items():
+        key_text = str(
+            key
+        ).casefold()
+
+        if (
+            "pressing" not in key_text
+            and "cohort" not in key_text
+        ):
+            continue
+
+        candidates.extend(
+            sorted(
+                _pressing_ids_from_value(
+                    value
+                )
+            )
+        )
+
+    for candidate in candidates:
+        if candidate in available_ids:
+            return candidate
+
+    rendered_candidates: set[int] = set()
+
+    for value in st.session_state.values():
+        rendered_candidates.update(
+            _pressing_ids_from_value(
+                value
+            )
+        )
+
+    for candidate in sorted(
+        rendered_candidates
+    ):
+        if candidate in available_ids:
+            return candidate
+
+    if len(
+        available_ids
+    ) == 1:
+        return next(
+            iter(
+                available_ids
+            )
+        )
+
+    return None
+
+
+def _render_evidence_intake_handoff() -> None:
+    """Render Stage 3 packet handoff and latest review status."""
+    st.markdown(
+        "### Evidence Intake handoff"
+    )
+
+    st.caption(
+        "Create an isolated working packet for this exact pressing, "
+        "open the Evidence Intake page, and return here after its "
+        "read-only safe review."
+    )
+
+    pressing_id = (
+        _current_wizard_pressing_id()
+    )
+
+    if pressing_id is None:
+        st.info(
+            "No exported packet could be matched to the currently "
+            "selected exact pressing."
+        )
+
+        return
+
+    packet = latest_packet_for_pressing(
+        pressing_id,
+        evidence_packet_root(),
+    )
+
+    if packet is None:
+        st.warning(
+            "Export a complete curation packet for this pressing "
+            "before opening Evidence Intake."
+        )
+
+        return
+
+    st.code(
+        str(
+            packet.path
+        ),
+        language=None,
+    )
+
+    latest_result = st.session_state.get(
+        "evidence_intake_last_result"
+    )
+
+    if (
+        isinstance(
+            latest_result,
+            dict,
+        )
+        and latest_result.get(
+            "pressing_id"
+        )
+        == pressing_id
+    ):
+        st.success(
+            "Latest Evidence Intake safe review returned to "
+            "this exact pressing."
+        )
+
+        status_columns = st.columns(
+            4
+        )
+
+        status_columns[0].metric(
+            "Workflow",
+            latest_result.get(
+                "workflow_status",
+                "UNKNOWN",
+            ),
+        )
+
+        status_columns[1].metric(
+            "Safe review",
+            latest_result.get(
+                "review_status",
+                "UNKNOWN",
+            ),
+        )
+
+        status_columns[2].metric(
+            "Planned mutations",
+            latest_result.get(
+                "planned_mutation_count",
+                0,
+            ),
+        )
+
+        status_columns[3].metric(
+            "Database writes",
+            latest_result.get(
+                "database_writes",
+                0,
+            ),
+        )
+
+        blockers = latest_result.get(
+            "blockers",
+            [],
+        )
+
+        if blockers:
+            st.error(
+                "\n".join(
+                    str(
+                        blocker
+                    )
+                    for blocker in blockers
+                )
+            )
+
+    if st.button(
+        "Open Evidence Intake for this pressing",
+        type="primary",
+        use_container_width=True,
+        key=(
+            "open_evidence_intake_"
+            f"{pressing_id}"
+        ),
+    ):
+        working_packet = clone_packet(
+            packet.path,
+            destination_root=
+                evidence_packet_root(),
+        )
+
+        st.session_state[
+            "evidence_intake_packet"
+        ] = str(
+            working_packet
+        )
+
+        st.session_state[
+            "evidence_intake_handoff_pressing_id"
+        ] = pressing_id
+
+        st.session_state[
+            "evidence_intake_handoff_catalog"
+        ] = packet.catalog
+
+        st.session_state[
+            "evidence_intake_return_page"
+        ] = "pages/8_Cohort_Curation_Wizard.py"
+
+        st.switch_page(
+            "pages/9_Evidence_Intake.py"
+        )
+
 def main() -> None:
     """Render the complete eleven-stage cohort wizard."""
     st.title(
@@ -1744,6 +2079,10 @@ def main() -> None:
             ),
         )
     )
+
+    st.session_state[
+        "cohort_curation_selected_cohort_value"
+    ] = selected_pressing_id
 
     cohort = load_cohort(
         engine,
