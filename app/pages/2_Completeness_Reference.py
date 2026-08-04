@@ -33,6 +33,25 @@ from auction_etl.services.pressing_reference_workbench import (
     reference_csv_bytes,
 )
 
+import inspect as _canonical_inspect
+import os as _canonical_os
+
+import pandas as _canonical_pd
+from sqlalchemy import create_engine as _canonical_create_engine
+
+from auction_etl.services.media_aware_reference import (
+    REFERENCE_ACTIONS as _canonical_reference_actions,
+    REFERENCE_STATES as _canonical_reference_states,
+    apply_reference_changes as _canonical_apply_reference_changes,
+    list_assigned_listings as _canonical_list_assigned_listings,
+    list_evidence_sources as _canonical_list_evidence_sources,
+    list_pressings as _canonical_list_pressings,
+    list_reference_audit as _canonical_list_reference_audit,
+    load_media_profile as _canonical_load_media_profile,
+    load_reference_editor_rows as _canonical_load_reference_editor_rows,
+    preview_reference_changes as _canonical_preview_reference_changes,
+)
+
 
 st.set_page_config(
     page_title="Pressing Reference Workbench",
@@ -1172,8 +1191,787 @@ def _render_assigned_listings(
 # pressing-reference-page-compatibility:end
 
 
+# canonical-media-aware-reference:start
+def _canonical_reference_engine():
+    """Return the canonical reference database engine."""
+    database_url = _canonical_os.environ.get(
+        "DATABASE_URL",
+        (
+            "postgresql+psycopg://auction:auction"
+            "@127.0.0.1:5544/auction_warehouse"
+        ),
+    )
+
+    return _canonical_create_engine(
+        database_url,
+        pool_pre_ping=True,
+        future=True,
+    )
+
+
+def _canonical_pressing_label(
+    pressing: dict[str, object],
+) -> str:
+    """Return one exact-pressing selector label."""
+    catalog = (
+        pressing.get(
+            "catalog_number"
+        )
+        or "No catalog"
+    )
+
+    return (
+        f"Pressing #{pressing['pressing_id']} · "
+        f"{pressing['display_artist']} · "
+        f"{pressing['display_title']} · "
+        f"{catalog} · "
+        f"{pressing['media_type']}"
+    )
+
+
+def _canonical_operation_rows(
+    operations: list[dict[str, object]]
+    | tuple[dict[str, object], ...],
+) -> list[dict[str, object]]:
+    """Flatten preview operations for display."""
+    rows = []
+
+    for operation in operations:
+        identity = operation.get(
+            "identity"
+        ) or {}
+
+        before = operation.get(
+            "before"
+        ) or {}
+
+        after = operation.get(
+            "after"
+        ) or {}
+
+        rows.append(
+            {
+                "operation":
+                    operation.get(
+                        "operation"
+                    ),
+                "component_code":
+                    identity.get(
+                        "component_code"
+                    ),
+                "variant_key":
+                    identity.get(
+                        "variant_key"
+                    ),
+                "before_state":
+                    before.get(
+                        "expectation_state"
+                    ),
+                "after_state":
+                    after.get(
+                        "expectation_state"
+                    ),
+                "before_quantity":
+                    before.get(
+                        "expected_quantity"
+                    ),
+                "after_quantity":
+                    after.get(
+                        "expected_quantity"
+                    ),
+                "evidence_source":
+                    after.get(
+                        "evidence_source"
+                    ),
+            }
+        )
+
+    return rows
+
+
+def _canonical_render_create_pressing(
+    engine,
+) -> None:
+    """Render the existing exact-pressing creation workflow."""
+    renderer = globals().get(
+        "_render_create_pressing"
+    )
+
+    if not callable(
+        renderer
+    ):
+        renderer = globals().get(
+            "_create_pressing_panel"
+        )
+
+    if not callable(
+        renderer
+    ):
+        st.info(
+            "Use Reference Record Admin to create a new exact "
+            "pressing before defining its master reference."
+        )
+        return
+
+    signature = _canonical_inspect.signature(
+        renderer
+    )
+
+    required_parameters = [
+        parameter
+        for parameter in signature.parameters.values()
+        if (
+            parameter.default
+            is _canonical_inspect.Parameter.empty
+            and parameter.kind
+            not in (
+                _canonical_inspect.Parameter.VAR_POSITIONAL,
+                _canonical_inspect.Parameter.VAR_KEYWORD,
+            )
+        )
+    ]
+
+    if len(
+        required_parameters
+    ) == 0:
+        renderer()
+    elif len(
+        required_parameters
+    ) == 1:
+        renderer(
+            engine
+        )
+    else:
+        st.info(
+            "The legacy pressing creator has a newer contract. "
+            "Use Reference Record Admin for creation."
+        )
+
+
+def _render_canonical_media_reference() -> None:
+    """Render the authoritative exact-pressing master page."""
+    st.title(
+        "Pressing Completeness Reference"
+    )
+
+    st.caption(
+        "The master definition of what a complete example of one "
+        "exact pressing should contain."
+    )
+
+    st.info(
+        "Auction observations describe individual copies. They never "
+        "become shared pressing requirements automatically."
+    )
+
+    engine = _canonical_reference_engine()
+
+    pressings = _canonical_list_pressings(
+        engine
+    )
+
+    if not pressings:
+        st.warning(
+            "No exact pressings exist yet."
+        )
+
+        _canonical_render_create_pressing(
+            engine
+        )
+        return
+
+    pressing_map = {
+        int(
+            row[
+                "pressing_id"
+            ]
+        ):
+            row
+        for row in pressings
+    }
+
+    selected_pressing_id = st.selectbox(
+        "Exact pressing",
+        options=list(
+            pressing_map
+        ),
+        format_func=lambda value:
+            _canonical_pressing_label(
+                pressing_map[
+                    int(
+                        value
+                    )
+                ]
+            ),
+        key=(
+            "canonical_media_reference_pressing"
+        ),
+    )
+
+    selected_pressing = pressing_map[
+        int(
+            selected_pressing_id
+        )
+    ]
+
+    profile = _canonical_load_media_profile(
+        engine,
+        int(
+            selected_pressing_id
+        ),
+    )
+
+    applicable_components = profile[
+        "applicable_components"
+    ]
+
+    applicable_codes = [
+        str(
+            row[
+                "code"
+            ]
+        )
+        for row in applicable_components
+    ]
+
+    evidence_sources = (
+        _canonical_list_evidence_sources(
+            engine
+        )
+    )
+
+    source_options = [
+        "",
+        *[
+            str(
+                row[
+                    "source_key"
+                ]
+            )
+            for row in evidence_sources
+        ],
+    ]
+
+    metric_columns = st.columns(
+        4
+    )
+
+    metric_columns[0].metric(
+        "Media type",
+        selected_pressing[
+            "media_type"
+        ],
+    )
+
+    metric_columns[1].metric(
+        "Applicable fields",
+        profile[
+            "applicable_component_count"
+        ],
+    )
+
+    metric_columns[2].metric(
+        "Assigned auctions",
+        selected_pressing[
+            "assigned_listing_count"
+        ],
+    )
+
+    metric_columns[3].metric(
+        "Persisted reference rows",
+        selected_pressing[
+            "reference_row_count"
+        ],
+    )
+
+    st.caption(
+        "PROFILE_CONTRACT "
+        f"pressing_id={selected_pressing_id} "
+        f"media_type={selected_pressing['media_type']} "
+        "applicable_components="
+        f"{profile['applicable_component_count']}"
+    )
+
+    with st.expander(
+        "Reference-state definitions",
+        expanded=False,
+    ):
+        st.markdown(
+            """
+**Not applicable** — hidden because the component registry does
+not apply it to this medium. No master row is created.
+
+**UNKNOWN** — applicable to the medium, but inclusion for this
+exact pressing is unresolved.
+
+**NOT_INCLUDED** — reviewed evidence confirms this exact pressing
+did not include the component.
+
+**REQUIRED** — reviewed evidence confirms that a complete copy of
+this exact pressing should contain the component.
+            """
+        )
+
+    tabs = st.tabs(
+        [
+            "Master reference",
+            "Create exact pressing",
+            "Assigned listings",
+            "Audit history",
+        ]
+    )
+
+    with tabs[0]:
+        st.subheader(
+            "Media-aware master worksheet"
+        )
+
+        st.write(
+            f"{selected_pressing['media_type']} exposes "
+            f"{profile['applicable_component_count']} applicable "
+            "standard component fields."
+        )
+
+        non_applicable = profile[
+            "non_applicable_components"
+        ]
+
+        with st.expander(
+            "Fields excluded by this media profile",
+            expanded=False,
+        ):
+            excluded_names = [
+                (
+                    f"{row['code']} — "
+                    f"{row['display_name']}"
+                )
+                for row in non_applicable
+            ]
+
+            if excluded_names:
+                st.write(
+                    ", ".join(
+                        excluded_names
+                    )
+                )
+            else:
+                st.write(
+                    "No active component fields are excluded."
+                )
+
+        editor_rows = (
+            _canonical_load_reference_editor_rows(
+                engine,
+                int(
+                    selected_pressing_id
+                ),
+            )
+        )
+
+        component_options = sorted(
+            {
+                *applicable_codes,
+                *[
+                    str(
+                        row[
+                            "component_code"
+                        ]
+                    )
+                    for row in editor_rows
+                    if row.get(
+                        "component_code"
+                    )
+                ],
+            }
+        )
+
+        editor_frame = _canonical_pd.DataFrame(
+            editor_rows
+        )
+
+        edited_frame = st.data_editor(
+            editor_frame,
+            key=(
+                "canonical_media_reference_editor_"
+                f"{selected_pressing_id}"
+            ),
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            column_order=[
+                "action",
+                "group",
+                "component_code",
+                "display_name",
+                "variant_key",
+                "variant_label",
+                "expectation_state",
+                "expected_quantity",
+                "evidence_source",
+                "confidence",
+                "notes",
+                "persisted",
+                "applicable",
+            ],
+            disabled=[
+                "group",
+                "display_name",
+                "persisted",
+                "applicable",
+            ],
+            column_config={
+                "action":
+                    st.column_config.SelectboxColumn(
+                        "Reviewed action",
+                        options=list(
+                            _canonical_reference_actions
+                        ),
+                        required=True,
+                    ),
+                "group":
+                    st.column_config.TextColumn(
+                        "Media-specific group"
+                    ),
+                "component_code":
+                    st.column_config.SelectboxColumn(
+                        "Component",
+                        options=component_options,
+                        required=True,
+                    ),
+                "display_name":
+                    st.column_config.TextColumn(
+                        "Display name"
+                    ),
+                "variant_key":
+                    st.column_config.TextColumn(
+                        "Variant key"
+                    ),
+                "variant_label":
+                    st.column_config.TextColumn(
+                        "Variant label"
+                    ),
+                "expectation_state":
+                    st.column_config.SelectboxColumn(
+                        "Master state",
+                        options=list(
+                            _canonical_reference_states
+                        ),
+                        required=True,
+                    ),
+                "expected_quantity":
+                    st.column_config.NumberColumn(
+                        "Required quantity",
+                        min_value=1,
+                        step=1,
+                    ),
+                "evidence_source":
+                    st.column_config.SelectboxColumn(
+                        "Evidence source",
+                        options=source_options,
+                    ),
+                "confidence":
+                    st.column_config.NumberColumn(
+                        "Confidence",
+                        min_value=0.0,
+                        max_value=1.0,
+                        step=0.01,
+                        format="%.4f",
+                    ),
+                "notes":
+                    st.column_config.TextColumn(
+                        "Reference notes"
+                    ),
+                "persisted":
+                    st.column_config.CheckboxColumn(
+                        "Persisted"
+                    ),
+                "applicable":
+                    st.column_config.CheckboxColumn(
+                        "Applicable"
+                    ),
+            },
+        )
+
+        edited_rows = edited_frame.to_dict(
+            orient="records"
+        )
+
+        preview_key = (
+            "canonical_reference_preview_"
+            f"{selected_pressing_id}"
+        )
+
+        if st.button(
+            "Preview reviewed changes",
+            type="primary",
+            key=(
+                "canonical_reference_preview_button_"
+                f"{selected_pressing_id}"
+            ),
+        ):
+            preview = (
+                _canonical_preview_reference_changes(
+                    engine,
+                    int(
+                        selected_pressing_id
+                    ),
+                    edited_rows,
+                )
+            )
+
+            st.session_state[
+                preview_key
+            ] = {
+                "preview":
+                    preview.to_dict(),
+                "rows":
+                    edited_rows,
+            }
+
+        stored_preview = st.session_state.get(
+            preview_key
+        )
+
+        if stored_preview:
+            preview_data = stored_preview[
+                "preview"
+            ]
+
+            status = preview_data[
+                "status"
+            ]
+
+            if status == "READY":
+                st.success(
+                    "Preview is ready for reviewed application."
+                )
+            elif status == "NO_CHANGES":
+                st.info(
+                    "No master-reference mutations were requested."
+                )
+            else:
+                st.error(
+                    "Preview is blocked."
+                )
+
+            for blocker in preview_data[
+                "blockers"
+            ]:
+                st.error(
+                    blocker
+                )
+
+            for warning in preview_data[
+                "warnings"
+            ]:
+                st.warning(
+                    warning
+                )
+
+            operation_rows = (
+                _canonical_operation_rows(
+                    preview_data[
+                        "operations"
+                    ]
+                )
+            )
+
+            if operation_rows:
+                st.dataframe(
+                    _canonical_pd.DataFrame(
+                        operation_rows
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            st.code(
+                preview_data[
+                    "confirmation_token"
+                ],
+                language=None,
+            )
+
+            st.caption(
+                "Preview digest: "
+                + preview_data[
+                    "digest"
+                ]
+            )
+
+            actor = st.text_input(
+                "Reviewer",
+                key=(
+                    "canonical_reference_actor_"
+                    f"{selected_pressing_id}"
+                ),
+            )
+
+            reason = st.text_area(
+                "Review reason",
+                key=(
+                    "canonical_reference_reason_"
+                    f"{selected_pressing_id}"
+                ),
+            )
+
+            scope_confirmed = st.checkbox(
+                (
+                    "I confirm this master reference applies only "
+                    "to exact pressing "
+                    f"#{selected_pressing_id} · "
+                    f"{selected_pressing.get('catalog_number') or 'No catalog'}."
+                ),
+                key=(
+                    "canonical_reference_scope_"
+                    f"{selected_pressing_id}"
+                ),
+            )
+
+            token_value = st.text_input(
+                "Confirmation token",
+                key=(
+                    "canonical_reference_token_"
+                    f"{selected_pressing_id}"
+                ),
+            )
+
+            apply_disabled = not (
+                preview_data[
+                    "ready"
+                ]
+                and actor.strip()
+                and reason.strip()
+                and scope_confirmed
+                and token_value.strip()
+            )
+
+            if st.button(
+                "Apply reviewed master reference",
+                type="primary",
+                disabled=apply_disabled,
+                key=(
+                    "canonical_reference_apply_"
+                    f"{selected_pressing_id}"
+                ),
+            ):
+                result = (
+                    _canonical_apply_reference_changes(
+                        engine,
+                        int(
+                            selected_pressing_id
+                        ),
+                        stored_preview[
+                            "rows"
+                        ],
+                        actor=actor,
+                        reason=reason,
+                        confirmation_token=token_value,
+                        confirmed_catalog=str(
+                            selected_pressing.get(
+                                "catalog_number"
+                            )
+                            or ""
+                        ),
+                        scope_confirmed=scope_confirmed,
+                    )
+                )
+
+                st.success(
+                    "Master reference applied: "
+                    f"{result['applied_operation_count']} "
+                    "reviewed mutation(s)."
+                )
+
+                st.session_state.pop(
+                    preview_key,
+                    None,
+                )
+
+                st.rerun()
+
+    with tabs[1]:
+        st.subheader(
+            "Create an exact pressing"
+        )
+
+        st.write(
+            "Create the exact pressing first, then return to the "
+            "Master reference tab to define its media-aware contents."
+        )
+
+        _canonical_render_create_pressing(
+            engine
+        )
+
+    with tabs[2]:
+        st.subheader(
+            "Assigned listings and derived completeness"
+        )
+
+        assigned_rows = (
+            _canonical_list_assigned_listings(
+                engine,
+                int(
+                    selected_pressing_id
+                ),
+            )
+        )
+
+        if assigned_rows:
+            st.dataframe(
+                _canonical_pd.DataFrame(
+                    assigned_rows
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info(
+                "No auction listings are assigned to this exact pressing."
+            )
+
+        st.caption(
+            "New auction observations remain listing-specific. "
+            "Completeness is evaluated against this master reference."
+        )
+
+    with tabs[3]:
+        st.subheader(
+            "Immutable reference audit history"
+        )
+
+        audit_rows = (
+            _canonical_list_reference_audit(
+                engine,
+                int(
+                    selected_pressing_id
+                ),
+            )
+        )
+
+        if audit_rows:
+            st.dataframe(
+                _canonical_pd.DataFrame(
+                    audit_rows
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info(
+                "No audited master-reference mutation exists yet."
+            )
+
+
+# canonical-media-aware-reference:end
+
+
 def main() -> None:
     """Render the general pressing-reference workbench."""
+    _render_canonical_media_reference()
+    return
+
     st.title(
         "📦 Pressing Reference Workbench"
     )
