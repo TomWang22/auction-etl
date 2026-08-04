@@ -546,30 +546,129 @@ def _profile_components(
     list[dict[str, Any]],
     list[dict[str, Any]],
 ]:
-    """Load applicable and non-applicable component definitions."""
+    """Load authoritative applicable and excluded components."""
     pressing = _pressing_identity(
         connection,
         pressing_id,
     )
 
-    all_rows = connection.execute(
-        text(
-            """
-            SELECT
-                code,
-                display_name,
-                applicable_media,
-                active
-            FROM system.component_type
-            WHERE active
-            ORDER BY code
-            """
-        )
-    ).mappings().all()
-
     media_type = str(
-        pressing["media_type"]
+        pressing[
+            "media_type"
+        ]
     )
+
+    profile_table_exists = (
+        connection.execute(
+            text(
+                """
+                SELECT to_regclass(
+                    'system.media_profile_component'
+                )
+                """
+            )
+        ).scalar_one()
+        is not None
+    )
+
+    if profile_table_exists:
+        all_rows = connection.execute(
+            text(
+                """
+                SELECT
+                    component.code,
+                    component.display_name,
+                    component.active,
+                    profile.field_group,
+                    profile.sort_order,
+                    COALESCE(
+                        profile.active,
+                        false
+                    ) AS applicable
+                FROM system.component_type AS component
+                LEFT JOIN system.media_profile_component
+                    AS profile
+                  ON profile.component_code =
+                        component.code
+                 AND profile.media_type =
+                        :media_type
+                WHERE component.active
+                ORDER BY
+                    COALESCE(
+                        profile.sort_order,
+                        99999
+                    ),
+                    component.code
+                """
+            ),
+            {
+                "media_type":
+                    media_type,
+            },
+        ).mappings().all()
+    else:
+        legacy_rows = connection.execute(
+            text(
+                """
+                SELECT
+                    code,
+                    display_name,
+                    applicable_media,
+                    active
+                FROM system.component_type
+                WHERE active
+                ORDER BY code
+                """
+            )
+        ).mappings().all()
+
+        all_rows = []
+
+        for row in legacy_rows:
+            media_values = {
+                str(
+                    value
+                )
+                for value in (
+                    row[
+                        "applicable_media"
+                    ]
+                    or []
+                )
+            }
+
+            all_rows.append(
+                {
+                    "code":
+                        row[
+                            "code"
+                        ],
+                    "display_name":
+                        row[
+                            "display_name"
+                        ],
+                    "active":
+                        row[
+                            "active"
+                        ],
+                    "field_group":
+                        group_for_component(
+                            media_type,
+                            str(
+                                row[
+                                    "code"
+                                ]
+                            ),
+                        ),
+                    "sort_order":
+                        99999,
+                    "applicable":
+                        (
+                            media_type
+                            in media_values
+                        ),
+                }
+            )
 
     applicable: list[
         dict[str, Any]
@@ -584,30 +683,37 @@ def _profile_components(
             row
         )
 
-        media_values = {
-            str(
-                value
-            )
-            for value in (
-                row["applicable_media"]
-                or []
-            )
-        }
-
         payload[
             "applicable"
-        ] = (
-            media_type
-            in media_values
+        ] = bool(
+            row[
+                "applicable"
+            ]
         )
 
         payload[
             "group"
-        ] = group_for_component(
-            media_type,
-            str(
-                row["code"]
-            ),
+        ] = (
+            row.get(
+                "field_group"
+            )
+            or group_for_component(
+                media_type,
+                str(
+                    row[
+                        "code"
+                    ]
+                ),
+            )
+        )
+
+        payload[
+            "sort_order"
+        ] = int(
+            row.get(
+                "sort_order"
+            )
+            or 99999
         )
 
         if payload[
@@ -620,6 +726,30 @@ def _profile_components(
             non_applicable.append(
                 payload
             )
+
+    applicable.sort(
+        key=lambda row: (
+            int(
+                row[
+                    "sort_order"
+                ]
+            ),
+            str(
+                row[
+                    "code"
+                ]
+            ),
+        )
+    )
+
+    non_applicable.sort(
+        key=lambda row:
+            str(
+                row[
+                    "code"
+                ]
+            )
+    )
 
     return (
         pressing,

@@ -52,8 +52,196 @@ from auction_etl.services.collector_evidence import (
     apply_evidence_report,
     build_evidence_report,
 )
+
+from sqlalchemy import create_engine as _state_safe_create_engine
+
+from auction_etl.services.state_safe_completeness import (
+    evaluate_listing as _state_safe_evaluate_listing,
+)
 # collector-evidence-assistant:import-end
 
+
+
+# state-safe-master-comparison:start
+def _state_safe_listing_identity(
+    local_values: dict[str, object],
+) -> tuple[str, str] | None:
+    """Extract a listing identity from the current review context."""
+    marketplace = local_values.get(
+        "marketplace"
+    )
+
+    listing_id = local_values.get(
+        "listing_id"
+    )
+
+    if marketplace and listing_id:
+        return (
+            str(
+                marketplace
+            ),
+            str(
+                listing_id
+            ),
+        )
+
+    for candidate_name in (
+        "listing",
+        "selected_listing",
+        "selected_row",
+        "auction_row",
+        "row",
+    ):
+        candidate = local_values.get(
+            candidate_name
+        )
+
+        if not isinstance(
+            candidate,
+            dict,
+        ):
+            continue
+
+        marketplace = candidate.get(
+            "marketplace"
+        )
+
+        listing_id = candidate.get(
+            "listing_id"
+        )
+
+        if marketplace and listing_id:
+            return (
+                str(
+                    marketplace
+                ),
+                str(
+                    listing_id
+                ),
+            )
+
+    return None
+
+
+def _render_state_safe_master_comparison(
+    local_values: dict[str, object],
+) -> None:
+    """Render deterministic copy-versus-master completeness."""
+    identity = _state_safe_listing_identity(
+        local_values
+    )
+
+    if identity is None:
+        return
+
+    engine = local_values.get(
+        "engine"
+    )
+
+    if engine is None:
+        database_url = os.environ.get(
+            "DATABASE_URL",
+            (
+                "postgresql+psycopg://auction:auction"
+                "@127.0.0.1:5544/auction_warehouse"
+            ),
+        )
+
+        engine = _state_safe_create_engine(
+            database_url,
+            pool_pre_ping=True,
+            future=True,
+        )
+
+    try:
+        result = _state_safe_evaluate_listing(
+            engine,
+            identity[0],
+            identity[1],
+        )
+    except Exception as error:
+        st.warning(
+            "State-safe master comparison is unavailable: "
+            f"{error}"
+        )
+        return
+
+    with st.expander(
+        "State-safe exact-pressing master comparison",
+        expanded=True,
+    ):
+        columns = st.columns(
+            4
+        )
+
+        columns[0].metric(
+            "Status",
+            result.status,
+        )
+
+        columns[1].metric(
+            "Required units",
+            result.required_unit_count,
+        )
+
+        columns[2].metric(
+            "Verified units",
+            result.satisfied_unit_count,
+        )
+
+        columns[3].metric(
+            "Structural ratio",
+            result.completeness_ratio
+            or "—",
+        )
+
+        st.caption(
+            result.explanation
+        )
+
+        st.caption(
+            "Only REQUIRED master rows participate in arithmetic. "
+            "UNKNOWN, NOT_INCLUDED, and storage sentinels do not score."
+        )
+
+        detail_groups = (
+            (
+                "Missing components",
+                result.missing_components,
+            ),
+            (
+                "Quantity shortfalls",
+                result.quantity_shortfalls,
+            ),
+            (
+                "Unverified components",
+                result.unverified_components,
+            ),
+            (
+                "Contradictory observations",
+                result.contradictory_components,
+            ),
+            (
+                "Explicit damage",
+                result.damaged_components,
+            ),
+        )
+
+        for label, rows in detail_groups:
+            if rows:
+                st.write(
+                    f"**{label}**"
+                )
+                st.dataframe(
+                    list(
+                        rows
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+
+# state-safe-master-comparison:end
 
 
 def _clean(value: Any) -> str:
@@ -836,6 +1024,7 @@ def _render_component_editor(
         st.warning(
             "Assign an exact pressing before editing completeness."
         )
+        _render_state_safe_master_comparison(locals())
         return
 
     pressing_id = int(
