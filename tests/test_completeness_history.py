@@ -65,3 +65,20 @@ def test_history_queries_are_identity_scoped() -> None:
         "listing_id = :listing_id"
         in source
     )
+
+
+def test_assignment_query_uses_release_family_identity() -> None:
+    """Assignment labels do not require display fields on pressings."""
+    source = SERVICE.read_text(
+        encoding="utf-8"
+    )
+
+    assert "pressing.display_artist" not in source
+    assert "pressing.display_title" not in source
+    assert "warehouse.release_family" in source
+    assert "to_jsonb(" in source
+    assert "family_payload" in source
+    assert "display_artist" in source
+    assert "display_title" in source
+    assert "Unknown artist" in source
+    assert "Unknown title" in source

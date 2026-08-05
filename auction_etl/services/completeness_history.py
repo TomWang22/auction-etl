@@ -46,24 +46,124 @@ def list_assigned_listings(
         rows = connection.execute(
             text(
                 """
+                WITH assignment_identity AS (
+                    SELECT
+                        assignment.marketplace,
+                        assignment.listing_id,
+                        assignment.pressing_id,
+                        pressing.catalog_number,
+                        pressing.media_type,
+                        to_jsonb(
+                            pressing
+                        ) AS pressing_payload,
+                        to_jsonb(
+                            family
+                        ) AS family_payload
+                    FROM warehouse.auction_pressing_assignment
+                        AS assignment
+                    JOIN warehouse.pressing_identity AS pressing
+                      ON pressing.id =
+                            assignment.pressing_id
+                    LEFT JOIN warehouse.release_family AS family
+                      ON (
+                          to_jsonb(
+                              family
+                          ) ->> 'id'
+                      ) = (
+                          to_jsonb(
+                              pressing
+                          ) ->> 'release_family_id'
+                      )
+                )
                 SELECT
-                    assignment.marketplace,
-                    assignment.listing_id,
-                    assignment.pressing_id,
-                    pressing.catalog_number,
-                    pressing.display_artist,
-                    pressing.display_title,
-                    pressing.media_type
-                FROM warehouse.auction_pressing_assignment
-                    AS assignment
-                JOIN warehouse.pressing_identity AS pressing
-                  ON pressing.id = assignment.pressing_id
+                    marketplace,
+                    listing_id,
+                    pressing_id,
+                    catalog_number,
+                    COALESCE(
+                        NULLIF(
+                            pressing_payload
+                                ->> 'display_artist',
+                            ''
+                        ),
+                        NULLIF(
+                            family_payload
+                                ->> 'display_artist',
+                            ''
+                        ),
+                        NULLIF(
+                            pressing_payload
+                                ->> 'canonical_artist',
+                            ''
+                        ),
+                        NULLIF(
+                            family_payload
+                                ->> 'canonical_artist',
+                            ''
+                        ),
+                        NULLIF(
+                            pressing_payload
+                                ->> 'artist',
+                            ''
+                        ),
+                        NULLIF(
+                            family_payload
+                                ->> 'artist',
+                            ''
+                        ),
+                        NULLIF(
+                            family_payload
+                                ->> 'artist_name',
+                            ''
+                        ),
+                        'Unknown artist'
+                    ) AS display_artist,
+                    COALESCE(
+                        NULLIF(
+                            pressing_payload
+                                ->> 'display_title',
+                            ''
+                        ),
+                        NULLIF(
+                            family_payload
+                                ->> 'display_title',
+                            ''
+                        ),
+                        NULLIF(
+                            pressing_payload
+                                ->> 'canonical_title',
+                            ''
+                        ),
+                        NULLIF(
+                            family_payload
+                                ->> 'canonical_title',
+                            ''
+                        ),
+                        NULLIF(
+                            pressing_payload
+                                ->> 'title',
+                            ''
+                        ),
+                        NULLIF(
+                            family_payload
+                                ->> 'title',
+                            ''
+                        ),
+                        NULLIF(
+                            family_payload
+                                ->> 'release_title',
+                            ''
+                        ),
+                        'Unknown title'
+                    ) AS display_title,
+                    media_type
+                FROM assignment_identity
                 ORDER BY
-                    pressing.display_artist,
-                    pressing.display_title,
-                    pressing.catalog_number,
-                    assignment.marketplace,
-                    assignment.listing_id
+                    display_artist,
+                    display_title,
+                    catalog_number,
+                    marketplace,
+                    listing_id
                 """
             )
         ).mappings().all()

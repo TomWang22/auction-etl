@@ -10,6 +10,9 @@ import sys
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+import re
+import time
+from typing import Any
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,6 +71,294 @@ def _navigator_module():
     )
 
     return module
+
+
+def _assigned_listing_selector(
+    page: Any,
+    timeout_ms: int,
+    output_dir: Path,
+) -> Any:
+    """Return the visible Streamlit assignment selector."""
+    label_pattern = re.compile(
+        r"Assigned\s+auction\s+listing",
+        re.IGNORECASE,
+    )
+
+    deadline = (
+        time.monotonic()
+        + timeout_ms / 1000
+    )
+
+    while time.monotonic() < deadline:
+        preferred_candidates = (
+            page.get_by_role(
+                "combobox",
+                name=label_pattern,
+            ),
+            page.locator(
+                '[data-testid="stSelectbox"]'
+            ).filter(
+                has_text=label_pattern
+            ).locator(
+                '[role="combobox"]'
+            ),
+            page.locator(
+                '[data-testid="stSelectbox"]'
+            ).filter(
+                has_text=label_pattern
+            ).locator(
+                'input[aria-autocomplete="list"]'
+            ),
+            page.locator(
+                '[data-baseweb="select"]'
+            ).filter(
+                has_text=label_pattern
+            ).locator(
+                '[role="combobox"]'
+            ),
+        )
+
+        for candidates in preferred_candidates:
+            for index in range(
+                candidates.count()
+            ):
+                candidate = candidates.nth(
+                    index
+                )
+
+                try:
+                    if candidate.is_visible():
+                        return candidate
+                except Exception:
+                    continue
+
+        all_candidates = page.locator(
+            (
+                '[role="combobox"], '
+                'input[aria-autocomplete="list"]'
+            )
+        )
+
+        for index in range(
+            all_candidates.count()
+        ):
+            candidate = all_candidates.nth(
+                index
+            )
+
+            try:
+                if not candidate.is_visible():
+                    continue
+
+                aria_label = (
+                    candidate.get_attribute(
+                        "aria-label"
+                    )
+                    or ""
+                )
+
+                labelled_by = (
+                    candidate.get_attribute(
+                        "aria-labelledby"
+                    )
+                    or ""
+                )
+
+                value = (
+                    candidate.get_attribute(
+                        "value"
+                    )
+                    or ""
+                )
+
+                container = candidate.locator(
+                    (
+                        "xpath=ancestor::*"
+                        "[@data-testid='stSelectbox'][1]"
+                    )
+                )
+
+                container_text = ""
+
+                if container.count() > 0:
+                    container_text = (
+                        container.inner_text()
+                        or ""
+                    ).strip()
+
+                semantic_text = " ".join(
+                    (
+                        aria_label,
+                        labelled_by,
+                        value,
+                        container_text,
+                    )
+                )
+
+                if label_pattern.search(
+                    semantic_text
+                ):
+                    return candidate
+            except Exception:
+                continue
+
+        page.wait_for_timeout(
+            250
+        )
+
+    combobox_diagnostics = []
+
+    all_candidates = page.locator(
+        (
+            '[role="combobox"], '
+            'input[aria-autocomplete="list"]'
+        )
+    )
+
+    for index in range(
+        all_candidates.count()
+    ):
+        candidate = all_candidates.nth(
+            index
+        )
+
+        try:
+            container = candidate.locator(
+                (
+                    "xpath=ancestor::*"
+                    "[@data-testid='stSelectbox'][1]"
+                )
+            )
+
+            container_text = ""
+
+            if container.count() > 0:
+                container_text = (
+                    container.inner_text()
+                    or ""
+                ).strip()
+
+            combobox_diagnostics.append(
+                {
+                    "index":
+                        index,
+                    "visible":
+                        candidate.is_visible(),
+                    "aria_label":
+                        candidate.get_attribute(
+                            "aria-label"
+                        )
+                        or "",
+                    "aria_labelledby":
+                        candidate.get_attribute(
+                            "aria-labelledby"
+                        )
+                        or "",
+                    "value":
+                        candidate.get_attribute(
+                            "value"
+                        )
+                        or "",
+                    "container_text":
+                        container_text,
+                }
+            )
+        except Exception as error:
+            combobox_diagnostics.append(
+                {
+                    "index":
+                        index,
+                    "error":
+                        str(
+                            error
+                        ),
+                }
+            )
+
+    heading_texts = []
+
+    headings = page.locator(
+        "h1, h2, h3"
+    )
+
+    for index in range(
+        headings.count()
+    ):
+        heading = headings.nth(
+            index
+        )
+
+        try:
+            if heading.is_visible():
+                text_value = (
+                    heading.inner_text()
+                    or ""
+                ).strip()
+
+                if text_value:
+                    heading_texts.append(
+                        text_value
+                    )
+        except Exception:
+            continue
+
+    application_excerpt = ""
+
+    application = page.locator(
+        '[data-testid="stAppViewContainer"]'
+    ).first
+
+    try:
+        if (
+            application.count() > 0
+            and application.is_visible()
+        ):
+            application_excerpt = (
+                application.inner_text()
+                or ""
+            ).strip()[
+                :6000
+            ]
+    except Exception:
+        application_excerpt = ""
+
+    diagnostic_screenshot = (
+        output_dir
+        / "assigned-listing-selector-timeout.png"
+    )
+
+    try:
+        page.screenshot(
+            path=str(
+                diagnostic_screenshot
+            ),
+            full_page=True,
+        )
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "Assigned auction listing selector was not rendered.\n"
+        f"Current URL: {page.url}\n"
+        "Visible headings:\n"
+        + json.dumps(
+            heading_texts,
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\nVisible comboboxes:\n"
+        + json.dumps(
+            combobox_diagnostics,
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\nRendered application excerpt:\n"
+        + application_excerpt
+        + "\nDiagnostic screenshot:\n"
+        + str(
+            diagnostic_screenshot
+        )
+    )
 
 
 def main() -> int:
@@ -163,14 +454,23 @@ def main() -> int:
                 args.timeout_ms,
         )
 
-        selector = page.get_by_role(
-            "combobox",
-            name="Assigned auction listing",
+        history_heading = page.get_by_role(
+            "heading",
+            name=re.compile(
+                r"Completeness\s+Snapshot\s+History",
+                re.IGNORECASE,
+            ),
         ).first
 
-        selector.wait_for(
+        history_heading.wait_for(
             state="visible",
             timeout=args.timeout_ms,
+        )
+
+        selector = _assigned_listing_selector(
+            page,
+            args.timeout_ms,
+            args.output_dir,
         )
 
         timeline_heading = page.get_by_role(
