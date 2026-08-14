@@ -11,6 +11,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
@@ -108,35 +109,66 @@ def validate_job_id(job_id: str) -> None:
         )
 
 
+
 def atomic_write_json(
     path: Path,
     payload: dict[str, Any],
 ) -> None:
-    """Persist status without exposing partially written JSON."""
+    """Persist JSON atomically using a private temporary file per writer."""
 
     path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    temporary_path = path.with_suffix(
-        path.suffix + ".tmp"
-    )
+    temporary_path: Path | None = None
 
-    temporary_path.write_text(
-        json.dumps(
-            payload,
-            indent=2,
-            sort_keys=True,
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_handle:
+            temporary_path = Path(
+                temporary_handle.name
+            )
+
+            json.dump(
+                payload,
+                temporary_handle,
+                indent=2,
+                sort_keys=True,
+            )
+
+            temporary_handle.write(
+                "\n"
+            )
+
+            temporary_handle.flush()
+
+            os.fsync(
+                temporary_handle.fileno()
+            )
+
+        os.replace(
+            temporary_path,
+            path,
         )
-        + "\n",
-        encoding="utf-8",
-    )
 
-    os.replace(
-        temporary_path,
-        path,
-    )
+        temporary_path = None
+
+    finally:
+        if (
+            temporary_path is not None
+            and temporary_path.exists()
+        ):
+            temporary_path.unlink(
+                missing_ok=True,
+            )
+
 
 
 def read_json(
@@ -399,26 +431,34 @@ def start_job() -> dict[str, Any]:
             status
         )
 
-        worker = subprocess.Popen(
-            [
-                sys.executable,
-                str(
-                    Path(
-                        __file__
-                    ).resolve()
-                ),
-                "worker",
-                job_id,
-            ],
-            cwd=str(
-                REPOSITORY_ROOT
-            ),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
+        worker_output_path = log_path(
+            job_id
         )
+
+        with worker_output_path.open(
+            "ab",
+            buffering=0,
+        ) as worker_log:
+            worker = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(
+                        Path(
+                            __file__
+                        ).resolve()
+                    ),
+                    "worker",
+                    job_id,
+                ],
+                cwd=str(
+                    REPOSITORY_ROOT
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=worker_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
 
         status["worker_pid"] = worker.pid
         status["message"] = (
@@ -430,6 +470,7 @@ def start_job() -> dict[str, Any]:
         )
 
         return status
+
 
 
 def strip_terminal_codes(
@@ -647,6 +688,59 @@ def mark_active_sources_failed(
     status["source_states"] = states
 
 
+
+def wait_for_worker_registration(
+    job_id: str,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """Wait until the parent records this worker PID before changing status."""
+
+    validate_job_id(
+        job_id
+    )
+
+    deadline = (
+        time.monotonic()
+        + timeout_seconds
+    )
+
+    observed_worker_pid: object = None
+
+    while True:
+        status = read_json(
+            job_path(
+                job_id
+            )
+        )
+
+        if status is not None:
+            observed_worker_pid = status.get(
+                "worker_pid"
+            )
+
+            if (
+                isinstance(
+                    observed_worker_pid,
+                    int,
+                )
+                and observed_worker_pid
+                == os.getpid()
+            ):
+                return status
+
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "Parent did not register the ingestion worker "
+                f"within {timeout_seconds:.1f} seconds. "
+                f"Expected PID {os.getpid()}, "
+                f"observed {observed_worker_pid!r}."
+            )
+
+        time.sleep(
+            0.02
+        )
+
+
 def run_worker(
     job_id: str,
 ) -> int:
@@ -657,16 +751,9 @@ def run_worker(
     )
     ensure_runtime_directories()
 
-    status = read_json(
-        job_path(
-            job_id
-        )
+    status = wait_for_worker_registration(
+        job_id
     )
-
-    if status is None:
-        raise RuntimeError(
-            f"Missing queued job: {job_id}"
-        )
 
     command = build_runner_command()
 
@@ -789,6 +876,7 @@ def run_worker(
     )
 
     return return_code
+
 
 
 def tail_log(
