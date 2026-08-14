@@ -1,4 +1,4 @@
-"""Streamlit page for user-triggered multisource auction ingestion."""
+"""Streamlit page for user-triggered marketplace refreshes."""
 
 from __future__ import annotations
 
@@ -11,13 +11,20 @@ from typing import Any
 import streamlit as st
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_ROOT = Path(
+    __file__
+).resolve().parents[2]
 
-if str(REPOSITORY_ROOT) not in sys.path:
+if str(
+    REPOSITORY_ROOT
+) not in sys.path:
     sys.path.insert(
         0,
-        str(REPOSITORY_ROOT),
+        str(
+            REPOSITORY_ROOT
+        ),
     )
+
 
 from auction_etl.services.auction_ingest_job import (  # noqa: E402
     PLANNED_SOURCES,
@@ -49,27 +56,72 @@ SOURCE_ICONS = {
 def format_timestamp(
     value: Any,
 ) -> str:
-    """Format persisted ISO timestamps for display."""
+    """Format a persisted ISO timestamp in local time."""
 
     if not value:
         return "—"
 
     try:
         parsed = datetime.fromisoformat(
-            str(value)
+            str(
+                value
+            )
         )
     except ValueError:
-        return str(value)
+        return str(
+            value
+        )
 
     return parsed.astimezone().strftime(
         "%Y-%m-%d %H:%M:%S"
     )
 
 
+def source_state_label(
+    source_state: str,
+    overall_state: str,
+) -> str:
+    """Return concise product copy for one marketplace state."""
+
+    if source_state == "waiting":
+        return "Waiting"
+
+    if source_state == "running":
+        return "Refreshing"
+
+    if source_state == "done":
+        return "Complete"
+
+    if source_state == "failed":
+        return "Failed"
+
+    if source_state == "observed":
+        if overall_state == "failed":
+            return "Reached before failure"
+
+        return "Processing"
+
+    return source_state.replace(
+        "_",
+        " ",
+    ).title()
+
+
 def render_source_progress(
     status: dict[str, Any] | None,
 ) -> None:
-    """Show the three multisource ingestion states."""
+    """Show one compact status card per marketplace."""
+
+    overall_state = (
+        str(
+            status.get(
+                "status",
+                "",
+            )
+        )
+        if status
+        else ""
+    )
 
     source_states = (
         status.get(
@@ -107,18 +159,74 @@ def render_source_progress(
             st.markdown(
                 f"### {icon} {source}"
             )
+
             st.caption(
-                state.replace(
-                    "_",
-                    " ",
-                ).title()
+                source_state_label(
+                    state,
+                    overall_state,
+                )
+            )
+
+
+def failed_sources(
+    status: dict[str, Any],
+) -> list[str]:
+    """Return marketplace names currently marked failed."""
+
+    source_states = status.get(
+        "source_states",
+        {},
+    )
+
+    return [
+        source
+        for source in PLANNED_SOURCES
+        if source_states.get(
+            source
+        ) == "failed"
+    ]
+
+
+def render_technical_details(
+    status: dict[str, Any],
+) -> None:
+    """Keep operational details available without dominating the UI."""
+
+    with st.expander(
+        "Technical details",
+        expanded=False,
+    ):
+        job_id = status.get(
+            "job_id"
+        )
+
+        if job_id:
+            st.caption(
+                f"Refresh ID: {job_id}"
+            )
+
+        log_text = tail_log(
+            status.get(
+                "log_path"
+            ),
+            line_count=120,
+        )
+
+        if log_text:
+            st.code(
+                log_text,
+                language="text",
+            )
+        else:
+            st.caption(
+                "No technical output is available yet."
             )
 
 
 def render_status(
     status: dict[str, Any],
 ) -> None:
-    """Render persisted background-job state."""
+    """Render the current persisted background refresh."""
 
     state = str(
         status.get(
@@ -127,11 +235,17 @@ def render_status(
         )
     )
 
-    progress = int(
-        status.get(
-            "progress",
-            0,
-        )
+    progress = max(
+        0,
+        min(
+            int(
+                status.get(
+                    "progress",
+                    0,
+                )
+            ),
+            100,
+        ),
     )
 
     phase = str(
@@ -148,15 +262,12 @@ def render_status(
         )
     )
 
+    st.subheader(
+        "Refresh status"
+    )
+
     st.progress(
-        max(
-            0,
-            min(
-                progress,
-                100,
-            ),
-        )
-        / 100.0,
+        progress / 100.0,
         text=(
             f"{progress}% — {phase}"
         ),
@@ -168,104 +279,125 @@ def render_status(
 
     if state in RUNNING_STATES:
         st.info(
-            message,
+            "Marketplace data is refreshing in the background. "
+            "You can leave this page and come back later.",
             icon="⏳",
         )
 
     elif state == "completed":
         st.success(
-            "Auction ingestion completed. "
-            "The refreshed auction data is ready.",
+            "Marketplace sales are up to date.",
             icon="✅",
         )
 
     elif state == "failed":
-        st.error(
-            message,
-            icon="❌",
+        sources = failed_sources(
+            status
         )
 
-    else:
+        if sources:
+            source_text = ", ".join(
+                sources
+            )
+
+            st.error(
+                "The refresh stopped while updating "
+                f"{source_text}. You can retry when ready.",
+                icon="❌",
+            )
+        else:
+            st.error(
+                "The marketplace refresh did not finish. "
+                "You can retry when ready.",
+                icon="❌",
+            )
+
+        if message:
+            st.caption(
+                message
+            )
+
+    elif message:
         st.info(
-            message or "Waiting.",
+            message
         )
 
-    metadata_columns = st.columns(
-        3
+    detail_columns = st.columns(
+        2
     )
 
-    with metadata_columns[0]:
-        st.metric(
-            "State",
-            state.title(),
+    with detail_columns[0]:
+        st.caption(
+            "Started"
         )
 
-    with metadata_columns[1]:
-        st.metric(
-            "Started",
+        st.write(
             format_timestamp(
                 status.get(
                     "started_at"
                 )
-            ),
+            )
         )
 
-    with metadata_columns[2]:
-        st.metric(
-            "Finished",
+    with detail_columns[1]:
+        st.caption(
+            "Finished"
+        )
+
+        st.write(
             format_timestamp(
                 status.get(
                     "finished_at"
                 )
-            ),
+            )
         )
 
-    latest_output = status.get(
-        "last_output"
+    render_technical_details(
+        status
     )
 
-    if latest_output:
-        st.caption(
-            f"Latest: {latest_output}"
+
+def start_refresh() -> dict[str, Any] | None:
+    """Start the background refresh and report launch errors."""
+
+    try:
+        status = start_job()
+    except Exception as exc:
+        st.error(
+            "Could not start the marketplace refresh. "
+            f"{exc}",
+            icon="❌",
         )
 
-    with st.expander(
-        "Live ingestion log",
-        expanded=(
-            state == "failed"
-        ),
-    ):
-        log_text = tail_log(
-            status.get(
-                "log_path"
-            ),
-            line_count=120,
-        )
+        return None
 
-        if log_text:
-            st.code(
-                log_text,
-                language="text",
-            )
-        else:
-            st.caption(
-                "The job has not emitted log output yet."
-            )
+    st.session_state[
+        "auction_ingest_started_job"
+    ] = status.get(
+        "job_id"
+    )
+
+    st.toast(
+        "Marketplace refresh started.",
+        icon="🔄",
+    )
+
+    return status
 
 
 st.set_page_config(
-    page_title="Ingest New Auctions",
+    page_title="Refresh Marketplace Sales",
     page_icon="🔄",
     layout="wide",
 )
 
 st.title(
-    "🔄 Ingest New Auctions"
+    "🔄 Refresh Marketplace Sales"
 )
 
 st.caption(
-    "Run one background refresh across eBay, Buyee, and Gripsweat. "
-    "You can leave this page while it runs."
+    "Bring in the latest available sales from eBay, Buyee, "
+    "and Gripsweat. The refresh continues in the background."
 )
 
 status = get_latest_status()
@@ -278,11 +410,29 @@ is_running = bool(
     in RUNNING_STATES
 )
 
-button_label = (
-    "Auction ingestion is running…"
-    if is_running
-    else "Ingest new auctions across all sites"
+current_state = (
+    str(
+        status.get(
+            "status",
+            "",
+        )
+    )
+    if status
+    else ""
 )
+
+if is_running:
+    button_label = (
+        "Marketplace refresh is running…"
+    )
+elif current_state == "failed":
+    button_label = (
+        "Retry marketplace refresh"
+    )
+else:
+    button_label = (
+        "Refresh marketplace sales"
+    )
 
 button_clicked = st.button(
     button_label,
@@ -292,25 +442,9 @@ button_clicked = st.button(
 )
 
 if button_clicked:
-    try:
-        status = start_job()
-    except Exception as exc:
-        st.error(
-            f"Could not start auction ingestion: {exc}",
-            icon="❌",
-        )
-    else:
-        st.session_state[
-            "auction_ingest_started_job"
-        ] = status.get(
-            "job_id"
-        )
+    started_status = start_refresh()
 
-        st.toast(
-            "Auction ingestion started.",
-            icon="🔄",
-        )
-
+    if started_status is not None:
         st.rerun()
 
 st.divider()
@@ -321,8 +455,8 @@ if status is None:
     )
 
     st.info(
-        "No auction-ingestion job has been started yet. "
-        "Press the button above when you want fresh marketplace data.",
+        "Ready when you are. Start a refresh to check "
+        "all three marketplaces for new sales.",
         icon="ℹ️",
     )
 
@@ -353,15 +487,19 @@ else:
         f"{job_id}:{state}"
     )
 
-    if (
-        state == "completed"
-        and st.session_state.get(
+    previous_notification = (
+        st.session_state.get(
             notification_key
         )
+    )
+
+    if (
+        state == "completed"
+        and previous_notification
         != notification_value
     ):
         st.toast(
-            "New auctions are ready.",
+            "Marketplace sales are up to date.",
             icon="✅",
         )
 
@@ -371,13 +509,11 @@ else:
 
     elif (
         state == "failed"
-        and st.session_state.get(
-            notification_key
-        )
+        and previous_notification
         != notification_value
     ):
         st.toast(
-            "Auction ingestion failed. Open the log for details.",
+            "Marketplace refresh stopped before completion.",
             icon="❌",
         )
 
@@ -387,7 +523,7 @@ else:
 
     if state in RUNNING_STATES:
         st.caption(
-            "This page refreshes automatically every 2 seconds."
+            "Status updates automatically while the refresh runs."
         )
 
         time.sleep(
@@ -395,10 +531,3 @@ else:
         )
 
         st.rerun()
-
-st.divider()
-
-st.caption(
-    "This control uses scripts/run_auction_refresh_on_demand.sh. "
-    "It does not rerun the old release/finalization chain."
-)
