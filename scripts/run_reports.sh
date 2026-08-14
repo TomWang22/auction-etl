@@ -40,19 +40,39 @@ echo "============================================================"
 uv sync --quiet
 
 echo
-echo "eBay crawl skipped:"
-echo "Automated Chromium is currently redirected to eBay sign-in."
-echo "Existing eBay raw pages and reports are preserved."
+echo "Running the canonical ingestion round:"
+echo "  cron -> launch_latest_refresh_job.py -> guarded ingestion runner"
 echo
 
-uv run python -m auction_etl.cli.main \
-    parse latest
+set +e
 
-uv run python -m auction_etl.cli.main \
-    normalize staging
+uv run python scripts/launch_latest_refresh_job.py \
+    --trigger cron
 
-uv run python -m auction_etl.cli.main \
-    sync warehouse
+refresh_status="$?"
+
+set -e
+
+if [[ "${refresh_status}" -eq 2 ]]; then
+    echo
+    echo "Another ingestion round is already running."
+    echo "The scheduled round will exit without overlap."
+    exit 0
+fi
+
+if [[ "${refresh_status}" -ne 0 ]]; then
+    echo
+    echo "Canonical ingestion round failed with status ${refresh_status}." >&2
+    exit "${refresh_status}"
+fi
+
+echo
+echo "Canonical ingestion round completed."
+
+if [[ "${AUCTION_REPORTS_REFRESH_ONLY:-0}" == "1" ]]; then
+    echo "AUCTION_REPORTS_REFRESH_ONLY=1; report generation skipped."
+    exit 0
+fi
 
 uv run python scripts/enrich_buyee_details.py \
     --profile anonymous \

@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+
+    ports:
+      - "127.0.0.1:${AUCTION_DB_PORT}:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+    stop_grace_period: 60s
+
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.auction-etl
+
+    environment:
+      DATABASE_URL: >-
+        postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PYTHONPATH: /app
+      HOME: /app/profiles/container-home
+
+    ports:
+      - "127.0.0.1:${AUCTION_UI_PORT}:8501"
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    volumes:
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+      - ./profiles:/app/profiles
+      - ./reports:/app/reports
+      - ./review:/app/review
+
+    shm_size: "1gb"
+
+    stop_grace_period: 30s
+
+volumes:
+  postgres_data:
+    name: auction-etl_postgres_data

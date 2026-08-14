@@ -41,8 +41,24 @@ DATABASE_URL = os.environ.get(
     ),
 )
 
+_state_dir_value = os.environ.get(
+    "AUCTION_REFRESH_STATE_DIR"
+)
+
+if _state_dir_value:
+    _state_dir = Path(
+        _state_dir_value
+    ).expanduser()
+
+    if not _state_dir.is_absolute():
+        _state_dir = ROOT / _state_dir
+else:
+    _state_dir = (
+        ROOT / "logs/latest-refresh"
+    )
+
 STATUS_PATH = (
-    ROOT / "logs/latest-refresh/status.json"
+    _state_dir / "status.json"
 )
 LAUNCHER_PATH = (
     ROOT / "scripts/launch_latest_refresh_job.py"
@@ -211,6 +227,8 @@ def launch_job(
         str(LAUNCHER_PATH),
         "--database-url",
         DATABASE_URL,
+        "--trigger",
+        "ui",
     ]
 
     if inspect_only:
@@ -252,7 +270,7 @@ st.set_page_config(
 
 st.title("Latest Auction Refresh")
 st.caption(
-    "Inspect recent additions, safely launch source refreshes, "
+    "Inspect recent additions, launch one guarded ingestion round, "
     "filter collector data, and create formatted exports."
 )
 
@@ -328,6 +346,15 @@ st.info(
     )
 )
 
+trigger = status.get("trigger")
+
+if trigger:
+    st.caption(
+        "Latest trigger: "
+        + str(trigger).upper()
+        + ". Cron and this page share the same launcher and lock."
+    )
+
 refresh_tab, report_tab, history_tab = st.tabs(
     (
         "Refresh controls",
@@ -340,8 +367,15 @@ with refresh_tab:
     st.subheader("Safe refresh controls")
 
     st.write(
-        "Inspection is read-only. A full refresh uses saved "
-        "Buyee and eBay sessions and runs in the background."
+        "Inspection is read-only. A new ingestion round performs "
+        "one fresh FaceRecords eBay crawl, parses and normalizes "
+        "that cohort, and guarded-ingests only identities that are "
+        "new to the warehouse."
+    )
+
+    job_running = (
+        str(status.get("state", "")).lower()
+        == "running"
     )
 
     control_columns = st.columns(2)
@@ -349,6 +383,7 @@ with refresh_tab:
     if control_columns[0].button(
         "Inspect recent ingestion",
         type="secondary",
+        disabled=job_running,
         width="stretch",
     ):
         launch_job(
@@ -359,7 +394,7 @@ with refresh_tab:
         )
 
     confirmation = control_columns[1].text_input(
-        "Type RUN to enable a complete source refresh",
+        "Type RUN to enable a new ingestion round",
         key="refresh_confirmation",
     )
 
@@ -368,21 +403,25 @@ with refresh_tab:
     )
 
     if control_columns[1].button(
-        "Run Buyee, eBay, and Gripsweat",
+        "Run new ingestion round",
         type="primary",
-        disabled=not refresh_enabled,
+        disabled=(
+            not refresh_enabled
+            or job_running
+        ),
         width="stretch",
     ):
         launch_job(
             inspect_only=False,
         )
         st.success(
-            "The complete refresh started in the background."
+            "The new ingestion round started in the background."
         )
 
     st.warning(
-        "The full refresh never prunes globally. "
-        "Expired login or verification sessions stop safely."
+        "The ingestion round never prunes globally. "
+        "It stops before another crawl if staging already contains "
+        "un-ingested eBay identities."
     )
 
     if st.button(

@@ -1,0 +1,25 @@
+services:
+  refresh:
+    build:
+      context: .
+      dockerfile: Dockerfile.auction-etl.refresh
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    environment:
+      DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-auction}:${POSTGRES_PASSWORD:-auction}@db:5432/${POSTGRES_DB:-auction_warehouse}
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      PYTHONUNBUFFERED: "1"
+
+    shm_size: 2gb
+
+    volumes:
+      - ./logs:/app/logs
+      - ./exports:/app/exports
+      - ./backups:/app/backups
+      - ./profiles:/app/profiles
+      - ./config:/app/config:ro
+      - ./recovery-input:/app/recovery-input:ro

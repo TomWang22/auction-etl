@@ -42,3 +42,5 @@ logs/collector-ui/
 logs/reconstruction/
 scripts/*.backup.*
 app/*.backup.*
+.env.auction-etl.private
+/backups/private/

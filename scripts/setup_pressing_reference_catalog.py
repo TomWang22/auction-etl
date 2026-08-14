@@ -1,0 +1,595 @@
+#!/usr/bin/env python3
+"""Install the physical pressing-reference persistence layer."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+
+
+RELEASE_FORMATS = (
+    "LP",
+    "EP",
+    '7"',
+    '10"',
+    '12"',
+    "CD",
+    "CASSETTE",
+    "OTHER",
+)
+
+RELEASE_TYPES = (
+    "STUDIO",
+    "COMPILATION",
+    "LIVE",
+    "SOUNDTRACK",
+    "SINGLE",
+    "EP",
+    "PROMO",
+    "BOX_SET",
+    "OTHER",
+    "UNKNOWN",
+)
+
+
+def parse_arguments() -> argparse.Namespace:
+    """Parse migration arguments."""
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--database-url",
+        default=(
+            os.environ.get("DATABASE_URL")
+            or os.environ.get("PSQL_URL")
+        ),
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+    )
+
+    arguments = parser.parse_args()
+
+    if not arguments.database_url:
+        parser.error(
+            "--database-url or DATABASE_URL is required"
+        )
+
+    return arguments
+
+
+def protected_state(
+    connection: psycopg.Connection[Any],
+) -> dict[str, int]:
+    """Capture tables that this migration must not mutate."""
+
+    row = connection.execute(
+        """
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM warehouse.auction
+            ) AS auctions,
+            (
+                SELECT COUNT(*)
+                FROM warehouse.auction_pressing_assignment
+            ) AS assignments,
+            (
+                SELECT COUNT(*)
+                FROM warehouse.pressing_identity
+            ) AS pressings,
+            (
+                SELECT COUNT(*)
+                FROM warehouse.release_family
+            ) AS families
+        """
+    ).fetchone()
+
+    if row is None:
+        raise RuntimeError(
+            "protected-state query returned no row"
+        )
+
+    return {
+        key: int(value)
+        for key, value in row.items()
+    }
+
+
+def execute_schema(
+    connection: psycopg.Connection[Any],
+) -> None:
+    """Apply idempotent pressing-reference schema changes."""
+
+    connection.execute(
+        """
+        ALTER TABLE warehouse.pressing_identity
+        ADD COLUMN IF NOT EXISTS release_language text
+        NOT NULL DEFAULT ''
+        """
+    )
+
+    connection.execute(
+        """
+        ALTER TABLE warehouse.pressing_identity
+        ADD COLUMN IF NOT EXISTS release_format text
+        NOT NULL DEFAULT 'OTHER'
+        """
+    )
+
+    connection.execute(
+        """
+        ALTER TABLE warehouse.pressing_identity
+        ADD COLUMN IF NOT EXISTS release_type text
+        NOT NULL DEFAULT 'UNKNOWN'
+        """
+    )
+
+    connection.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname =
+                    'pressing_identity_release_format_valid'
+                  AND conrelid =
+                    'warehouse.pressing_identity'::regclass
+            ) THEN
+                ALTER TABLE warehouse.pressing_identity
+                ADD CONSTRAINT
+                    pressing_identity_release_format_valid
+                CHECK (
+                    release_format = ANY (
+                        ARRAY[
+                            'LP',
+                            'EP',
+                            '7"',
+                            '10"',
+                            '12"',
+                            'CD',
+                            'CASSETTE',
+                            'OTHER'
+                        ]::text[]
+                    )
+                );
+            END IF;
+        END
+        $$
+        """
+    )
+
+    connection.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname =
+                    'pressing_identity_release_type_valid'
+                  AND conrelid =
+                    'warehouse.pressing_identity'::regclass
+            ) THEN
+                ALTER TABLE warehouse.pressing_identity
+                ADD CONSTRAINT
+                    pressing_identity_release_type_valid
+                CHECK (
+                    release_type = ANY (
+                        ARRAY[
+                            'STUDIO',
+                            'COMPILATION',
+                            'LIVE',
+                            'SOUNDTRACK',
+                            'SINGLE',
+                            'EP',
+                            'PROMO',
+                            'BOX_SET',
+                            'OTHER',
+                            'UNKNOWN'
+                        ]::text[]
+                    )
+                );
+            END IF;
+        END
+        $$
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS
+            warehouse.pressing_matrix_runout (
+                id bigint GENERATED BY DEFAULT AS IDENTITY
+                    PRIMARY KEY,
+                pressing_id bigint NOT NULL
+                    REFERENCES warehouse.pressing_identity(id)
+                    ON DELETE CASCADE,
+                side text NOT NULL DEFAULT '',
+                value text NOT NULL,
+                normalized_value text GENERATED ALWAYS AS (
+                    lower(
+                        regexp_replace(
+                            btrim(value),
+                            '\\s+',
+                            ' ',
+                            'g'
+                        )
+                    )
+                ) STORED,
+                notes text,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                updated_at timestamptz NOT NULL DEFAULT now(),
+                CONSTRAINT pressing_matrix_value_not_blank
+                    CHECK (btrim(value) <> ''),
+                CONSTRAINT pressing_matrix_unique
+                    UNIQUE (
+                        pressing_id,
+                        side,
+                        normalized_value
+                    )
+            )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+            pressing_matrix_pressing_idx
+        ON warehouse.pressing_matrix_runout (
+            pressing_id
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+            pressing_matrix_normalized_idx
+        ON warehouse.pressing_matrix_runout (
+            normalized_value
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        COMMENT ON TABLE warehouse.pressing_matrix_runout IS
+        'Side-aware matrix/runout identity evidence for a physical pressing.'
+        """
+    )
+
+    connection.execute(
+        """
+        COMMENT ON COLUMN
+            warehouse.pressing_identity.release_language IS
+        'Release language metadata; blank means unknown.'
+        """
+    )
+
+    connection.execute(
+        """
+        COMMENT ON COLUMN
+            warehouse.pressing_identity.release_format IS
+        'Physical carrier: LP, EP, 7-inch, 10-inch, 12-inch, CD, cassette, or other.'
+        """
+    )
+
+    connection.execute(
+        """
+        COMMENT ON COLUMN
+            warehouse.pressing_identity.release_type IS
+        'Semantic release type such as studio, compilation, live, soundtrack, single, EP, promo, or box set.'
+        """
+    )
+
+
+def execute_backfill(
+    connection: psycopg.Connection[Any],
+) -> None:
+    """Backfill only deterministic existing pressing metadata."""
+
+    connection.execute(
+        """
+        UPDATE warehouse.pressing_identity
+        SET release_format =
+            CASE
+                WHEN upper(btrim(media_type)) LIKE 'LP%'
+                    THEN 'LP'
+                WHEN upper(btrim(media_type)) = 'EP'
+                    THEN 'EP'
+                WHEN upper(btrim(media_type)) IN (
+                    '7"',
+                    '7-INCH',
+                    '7 INCH',
+                    '7IN'
+                )
+                    THEN '7"'
+                WHEN upper(btrim(media_type)) IN (
+                    '10"',
+                    '10-INCH',
+                    '10 INCH',
+                    '10IN'
+                )
+                    THEN '10"'
+                WHEN upper(btrim(media_type)) IN (
+                    '12"',
+                    '12-INCH',
+                    '12 INCH',
+                    '12IN'
+                )
+                    THEN '12"'
+                WHEN upper(btrim(media_type)) LIKE 'CD%'
+                    THEN 'CD'
+                WHEN upper(btrim(media_type)) LIKE 'CASSETTE%'
+                    THEN 'CASSETTE'
+                ELSE 'OTHER'
+            END
+        WHERE release_format = 'OTHER'
+        """
+    )
+
+    connection.execute(
+        """
+        UPDATE warehouse.pressing_identity
+        SET release_type =
+            CASE
+                WHEN generation = 'PROMO'
+                    THEN 'PROMO'
+                WHEN release_format = 'EP'
+                    THEN 'EP'
+                ELSE release_type
+            END
+        WHERE release_type = 'UNKNOWN'
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO warehouse.pressing_matrix_runout (
+            pressing_id,
+            side,
+            value
+        )
+        SELECT
+            id,
+            '',
+            btrim(matrix_number)
+        FROM warehouse.pressing_identity
+        WHERE btrim(matrix_number) <> ''
+        ON CONFLICT DO NOTHING
+        """
+    )
+
+
+def install_view(
+    connection: psycopg.Connection[Any],
+) -> None:
+    """Create the auction-independent pressing-reference view."""
+
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW
+            warehouse.pressing_reference_catalog AS
+        SELECT
+            pressing.id AS pressing_reference_id,
+            family.id AS release_family_id,
+            family.display_artist AS artist,
+            family.display_title AS canonical_title,
+            NULLIF(
+                btrim(pressing.catalog_number),
+                ''
+            ) AS catalog_number,
+            NULLIF(
+                btrim(pressing.label_name),
+                ''
+            ) AS label,
+            NULLIF(
+                btrim(pressing.country),
+                ''
+            ) AS release_country,
+            NULLIF(
+                btrim(pressing.release_language),
+                ''
+            ) AS release_language,
+            pressing.release_year,
+            pressing.release_format,
+            pressing.release_type,
+            pressing.media_type AS legacy_media_type,
+            NULLIF(
+                btrim(pressing.format_detail),
+                ''
+            ) AS format_detail,
+            pressing.disc_count,
+            pressing.generation,
+            NULLIF(
+                btrim(pressing.pressing_variant_key),
+                ''
+            ) AS pressing_variant_key,
+            pressing.pressing_variant_label,
+            pressing.is_first_press,
+            pressing.is_modern_repress,
+            pressing.parent_first_press_id,
+            pressing.notes AS edition_notes,
+            COALESCE(
+                matrix_data.matrices,
+                '[]'::jsonb
+            ) AS matrices,
+            COALESCE(
+                matrix_data.matrix_count,
+                0
+            ) AS matrix_count
+        FROM warehouse.pressing_identity AS pressing
+        JOIN warehouse.release_family AS family
+          ON family.id =
+             pressing.release_family_id
+        LEFT JOIN LATERAL (
+            SELECT
+                jsonb_agg(
+                    jsonb_build_object(
+                        'id',
+                        matrix.id,
+                        'side',
+                        NULLIF(
+                            btrim(matrix.side),
+                            ''
+                        ),
+                        'value',
+                        matrix.value
+                    )
+                    ORDER BY
+                        matrix.side,
+                        matrix.id
+                ) AS matrices,
+                COUNT(*) AS matrix_count
+            FROM warehouse.pressing_matrix_runout AS matrix
+            WHERE matrix.pressing_id =
+                  pressing.id
+        ) AS matrix_data
+          ON true
+        """
+    )
+
+    connection.execute(
+        """
+        COMMENT ON VIEW
+            warehouse.pressing_reference_catalog IS
+        'Stable physical pressing identity only; auction price, seller, bids, condition, and completeness are intentionally excluded.'
+        """
+    )
+
+
+def verify_schema(
+    connection: psycopg.Connection[Any],
+) -> dict[str, int]:
+    """Verify the installed contract."""
+
+    row = connection.execute(
+        """
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_schema = 'warehouse'
+                  AND table_name = 'pressing_identity'
+                  AND column_name IN (
+                      'release_language',
+                      'release_format',
+                      'release_type'
+                  )
+            ) AS identity_columns,
+            (
+                SELECT COUNT(*)
+                FROM warehouse.pressing_matrix_runout
+            ) AS matrix_rows,
+            (
+                SELECT COUNT(*)
+                FROM warehouse.pressing_reference_catalog
+            ) AS catalog_rows
+        """
+    ).fetchone()
+
+    if row is None:
+        raise RuntimeError(
+            "schema-verification query returned no row"
+        )
+
+    result = {
+        key: int(value)
+        for key, value in row.items()
+    }
+
+    if result["identity_columns"] != 3:
+        raise RuntimeError(
+            "pressing identity columns are incomplete"
+        )
+
+    return result
+
+
+def main() -> int:
+    """Run dry-run inspection or apply the migration."""
+
+    arguments = parse_arguments()
+
+    with psycopg.connect(
+        arguments.database_url,
+        row_factory=dict_row,
+    ) as connection:
+        before = protected_state(
+            connection
+        )
+
+        print(
+            "PROTECTED_BEFORE="
+            f"{before}"
+        )
+
+        if not arguments.apply:
+            print(
+                "RESULT=PRESSING_REFERENCE_MIGRATION_READY"
+            )
+            print(
+                "No database mutation performed."
+            )
+            return 0
+
+        with connection.transaction():
+            execute_schema(
+                connection
+            )
+            execute_backfill(
+                connection
+            )
+            install_view(
+                connection
+            )
+
+            after = protected_state(
+                connection
+            )
+            schema = verify_schema(
+                connection
+            )
+
+            if after != before:
+                raise RuntimeError(
+                    "protected table counts changed: "
+                    f"{before!r} -> {after!r}"
+                )
+
+        print(
+            "PROTECTED_AFTER="
+            f"{after}"
+        )
+        print(
+            "SCHEMA="
+            f"{schema}"
+        )
+        print(
+            "RESULT=PRESSING_REFERENCE_MIGRATION_APPLIED"
+        )
+        print(
+            "AUCTION_ROWS_UNCHANGED=true"
+        )
+        print(
+            "ASSIGNMENTS_UNCHANGED=true"
+        )
+        print(
+            "PRESSING_ROWS_UNCHANGED=true"
+        )
+        print(
+            "RELEASE_FAMILY_ROWS_UNCHANGED=true"
+        )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

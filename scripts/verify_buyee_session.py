@@ -37,6 +37,13 @@ AUTH_MARKERS = (
 )
 
 
+# BUYEE_VERIFIER_DEADLINE_CONTRACT_V1
+MAX_NAVIGATION_TIMEOUT_MS = 15_000
+VERIFICATION_TIMEOUT_EXIT_CODE = 3
+ACCESS_BLOCKED_EXIT_CODE = 4
+# BUYEE_VERIFIER_ACCESS_BLOCKED_CONTRACT_V2
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     root = Path(__file__).resolve().parents[1]
@@ -149,6 +156,55 @@ def is_closed_watchlist(url: str) -> bool:
         "/myorders/watchlist/closed"
         in url.casefold()
     )
+
+
+
+def navigation_timeout_ms(deadline: float) -> int:
+    """Return a navigation timeout bounded by the verifier deadline."""
+    remaining_seconds = max(
+        0.0,
+        deadline - time.monotonic(),
+    )
+    remaining_ms = max(
+        1,
+        int(remaining_seconds * 1_000),
+    )
+
+    return min(
+        MAX_NAVIGATION_TIMEOUT_MS,
+        remaining_ms,
+    )
+
+
+
+def access_block_reason(page: Page) -> str | None:
+    """Return a stable reason for a rendered Buyee access-denied page."""
+    try:
+        title = page.title().strip()
+    except Exception:
+        title = ""
+
+    try:
+        document = page.content()
+    except Exception:
+        document = ""
+
+    combined = (
+        title
+        + "\n"
+        + document
+    ).casefold()
+
+    markers = (
+        "403 forbidden",
+        "access denied",
+    )
+
+    for blocked_marker in markers:
+        if blocked_marker in combined:
+            return blocked_marker
+
+    return None
 
 
 def auction_links(page: Page) -> list[str]:
@@ -312,11 +368,48 @@ def main() -> int:
             try:
                 page = current_page(context)
 
+                blocked_reason = access_block_reason(
+                    page
+                )
+
+                if blocked_reason is not None:
+                    blocked_message = (
+                        "Buyee access was blocked before "
+                        "authentication state could be determined."
+                    )
+
+                    save_evidence(
+                        page,
+                        evidence_dir,
+                        [],
+                        "access-blocked",
+                    )
+
+                    write_json_atomic(
+                        status_file,
+                        status_payload(
+                            state="access_blocked",
+                            message=blocked_message,
+                            evidence_dir=evidence_dir,
+                            url=page.url,
+                            error=blocked_reason,
+                        ),
+                    )
+
+                    print(
+                        "ERROR: "
+                        + blocked_message
+                        + " "
+                        + f"Reason: {blocked_reason}"
+                    )
+
+                    return ACCESS_BLOCKED_EXIT_CODE
+
                 try:
                     page.goto(
                         arguments.target_url,
                         wait_until="domcontentloaded",
-                        timeout=90_000,
+                        timeout=navigation_timeout_ms(deadline),
                     )
                 except PlaywrightTimeoutError:
                     pass
@@ -326,6 +419,43 @@ def main() -> int:
 
                 while time.monotonic() < deadline:
                     page = current_page(context)
+
+                    blocked_reason = access_block_reason(
+                        page
+                    )
+
+                    if blocked_reason is not None:
+                        blocked_message = (
+                            "Buyee access was blocked before "
+                            "authentication state could be determined."
+                        )
+
+                        save_evidence(
+                            page,
+                            evidence_dir,
+                            [],
+                            "access-blocked",
+                        )
+
+                        write_json_atomic(
+                            status_file,
+                            status_payload(
+                                state="access_blocked",
+                                message=blocked_message,
+                                evidence_dir=evidence_dir,
+                                url=page.url,
+                                error=blocked_reason,
+                            ),
+                        )
+
+                        print(
+                            "ERROR: "
+                            + blocked_message
+                            + " "
+                            + f"Reason: {blocked_reason}"
+                        )
+
+                        return ACCESS_BLOCKED_EXIT_CODE
 
                     if page.is_closed():
                         raise RuntimeError(
@@ -378,7 +508,7 @@ def main() -> int:
                                     wait_until=(
                                         "domcontentloaded"
                                     ),
-                                    timeout=90_000,
+                                    timeout=navigation_timeout_ms(deadline),
                                 )
                             except PlaywrightTimeoutError:
                                 pass
@@ -467,10 +597,30 @@ def main() -> int:
 
                     page.wait_for_timeout(3_000)
 
-                raise TimeoutError(
-                    "Buyee authentication verification "
-                    "timed out."
+                timeout_message = (
+                    "Buyee authentication verification timed out."
                 )
+
+                save_evidence(
+                    page,
+                    evidence_dir,
+                    [],
+                    "verification-timeout",
+                )
+
+                write_json_atomic(
+                    status_file,
+                    status_payload(
+                        state="timeout",
+                        message=timeout_message,
+                        evidence_dir=evidence_dir,
+                        url=page.url,
+                        error=timeout_message,
+                    ),
+                )
+
+                print(f"ERROR: {timeout_message}")
+                return VERIFICATION_TIMEOUT_EXIT_CODE
             finally:
                 context.close()
     except Exception as exc:

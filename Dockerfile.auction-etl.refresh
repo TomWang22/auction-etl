@@ -1,0 +1,32 @@
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV UV_LINK_MODE=copy
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install \
+        --yes \
+        --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        libpq-dev \
+        postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /app
+
+RUN python -m pip install --upgrade pip uv \
+    && uv sync --frozen --no-dev \
+    && .venv/bin/python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright
+
+ENV PATH="/app/.venv/bin:${PATH}"
+
+CMD ["bash"]

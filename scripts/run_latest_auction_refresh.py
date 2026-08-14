@@ -34,6 +34,20 @@ BUYEE_URL = (
 )
 
 
+BUYEE_AUTHENTICATION_REQUIRED_EXIT_CODE = 2
+BUYEE_VERIFICATION_TIMEOUT_EXIT_CODE = 3
+BUYEE_ACCESS_BLOCKED_EXIT_CODE = 4
+
+BUYEE_SOURCE_AVAILABLE = (
+    "BUYEE_SOURCE_AVAILABLE"
+)
+BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED = (
+    "BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
+)
+
+# BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED_CONTRACT_V2
+
+
 class CommandFailure(RuntimeError):
     """Raised when a child command fails."""
 
@@ -547,10 +561,25 @@ def main() -> int:
     timestamp = datetime.now().strftime(
         "%Y%m%d-%H%M%S"
     )
+    state_root = Path(
+        os.environ.get(
+            "AUCTION_SOURCE_REFRESH_STATE_DIR",
+            str(
+                root
+                / "logs"
+                / "latest-refresh"
+            ),
+        )
+    ).expanduser()
+
+    if not state_root.is_absolute():
+        state_root = (
+            root
+            / state_root
+        )
+
     run_dir = (
-        root
-        / "logs"
-        / "latest-refresh"
+        state_root
         / "runs"
         / timestamp
     )
@@ -561,15 +590,11 @@ def main() -> int:
         / timestamp
     )
     status_file = (
-        root
-        / "logs"
-        / "latest-refresh"
+        state_root
         / "status.json"
     )
     lock_path = (
-        root
-        / "logs"
-        / "latest-refresh"
+        state_root
         / "refresh.lock"
     )
     log_path = run_dir / "refresh.log"
@@ -745,11 +770,96 @@ def main() -> int:
             allow_failure=True,
         )
 
-        if auth_status != 0:
+        status["buyee_verifier_exit_code"] = auth_status
+        status["authentication_required"] = False
+        status["degraded"] = False
+
+        buyee_available = auth_status == 0
+
+        if auth_status == 0:
+            status["buyee_source_state"] = "available"
+            status["buyee_runtime_semantics"] = (
+                BUYEE_SOURCE_AVAILABLE
+            )
+        elif (
+            auth_status
+            == BUYEE_AUTHENTICATION_REQUIRED_EXIT_CODE
+        ):
             status["authentication_required"] = True
+            status["buyee_source_state"] = (
+                "authentication_required"
+            )
+            status["buyee_runtime_semantics"] = (
+                "BUYEE_AUTHENTICATION_REQUIRED"
+            )
+
             raise RuntimeError(
                 "Buyee authentication is required. "
                 "Use the UI authentication button first."
+            )
+        elif (
+            auth_status
+            == BUYEE_VERIFICATION_TIMEOUT_EXIT_CODE
+        ):
+            status["buyee_source_state"] = (
+                "verification_timeout"
+            )
+            status["buyee_runtime_semantics"] = (
+                "BUYEE_AUTHENTICATION_STATE_"
+                "INDETERMINATE_TIMEOUT"
+            )
+
+            raise RuntimeError(
+                "Buyee authentication verification timed out; "
+                "authentication state remains indeterminate."
+            )
+        elif (
+            auth_status
+            == BUYEE_ACCESS_BLOCKED_EXIT_CODE
+        ):
+            status["buyee_source_state"] = (
+                "unavailable_access_blocked"
+            )
+            status["buyee_runtime_semantics"] = (
+                BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED
+            )
+            status["degraded"] = True
+            status["message"] = (
+                "Buyee programmatic access is blocked; "
+                "continuing the remaining sources."
+            )
+            status["updated_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+
+            write_json_atomic(
+                status_file,
+                status,
+            )
+
+            logger.warning("")
+            logger.warning(
+                "Buyee source unavailable: programmatic "
+                "access is blocked."
+            )
+            logger.warning(
+                "Skipping Buyee crawl, parse, synchronization, "
+                "and detail enrichment."
+            )
+            logger.warning(
+                "Continuing eBay and Gripsweat refreshes."
+            )
+        else:
+            status["buyee_source_state"] = (
+                "verifier_error"
+            )
+            status["buyee_runtime_semantics"] = (
+                "BUYEE_VERIFIER_ERROR"
+            )
+
+            raise RuntimeError(
+                "Buyee authentication verifier failed with "
+                f"unexpected exit status {auth_status}."
             )
 
         create_backup(
@@ -766,127 +876,128 @@ def main() -> int:
             logger=logger,
         )
 
-        _, buyee_crawl_output = run_command(
-            [
-                sys.executable,
-                "-m",
-                "auction_etl.cli.main",
-                "crawl",
-                "url",
-                BUYEE_URL,
-                "--profile",
-                arguments.buyee_profile,
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Crawl authenticated Buyee closed watchlist",
-            status_file=status_file,
-            status=status,
-        )
-
-        fetched_match = re.search(
-            r"Fetched\s+(\d+)\s+page",
-            buyee_crawl_output,
-            re.IGNORECASE,
-        )
-
-        if (
-            fetched_match is not None
-            and int(fetched_match.group(1)) < 1
-        ):
-            status["authentication_required"] = True
-            raise RuntimeError(
-                "Buyee returned zero fetched pages."
+        if buyee_available:
+            _, buyee_crawl_output = run_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "auction_etl.cli.main",
+                    "crawl",
+                    "url",
+                    BUYEE_URL,
+                    "--profile",
+                    arguments.buyee_profile,
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Crawl authenticated Buyee closed watchlist",
+                status_file=status_file,
+                status=status,
             )
 
-        run_command(
-            [
-                sys.executable,
-                "-m",
-                "auction_etl.cli.main",
-                "parse",
-                "latest",
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Parse latest Buyee pages",
-            status_file=status_file,
-            status=status,
-        )
-
-        run_command(
-            [
-                sys.executable,
-                "-m",
-                "auction_etl.cli.main",
-                "normalize",
-                "staging",
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Normalize Buyee staging",
-            status_file=status_file,
-            status=status,
-        )
-
-        with psycopg.connect(
-            psql_url,
-            row_factory=dict_row,
-        ) as connection:
-            buyee_staged = staging_count(
-                connection,
-                "buyee",
+            fetched_match = re.search(
+                r"Fetched\s+(\d+)\s+page",
+                buyee_crawl_output,
+                re.IGNORECASE,
             )
 
-        if buyee_staged < 1:
-            raise RuntimeError(
-                "No Buyee identities exist in staging."
+            if (
+                fetched_match is not None
+                and int(fetched_match.group(1)) < 1
+            ):
+                status["authentication_required"] = True
+                raise RuntimeError(
+                    "Buyee returned zero fetched pages."
+                )
+
+            run_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "auction_etl.cli.main",
+                    "parse",
+                    "latest",
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Parse latest Buyee pages",
+                status_file=status_file,
+                status=status,
             )
 
-        run_command(
-            [
-                sys.executable,
-                "-m",
-                "auction_etl.cli.main",
-                "sync",
-                "warehouse",
-                "--marketplace",
-                "buyee",
-                "--no-prune",
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase=(
-                "Safely synchronize Buyee without pruning"
-            ),
-            status_file=status_file,
-            status=status,
-        )
+            run_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "auction_etl.cli.main",
+                    "normalize",
+                    "staging",
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Normalize Buyee staging",
+                status_file=status_file,
+                status=status,
+            )
 
-        run_command(
-            [
-                sys.executable,
-                "scripts/crawl_buyee_live_details.py",
-                "--apply",
-                "--refresh",
-                "--delay",
-                "2",
-                "--timeout",
-                "45",
-                "--log-dir",
-                str(run_dir / "buyee-details"),
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Apply Buyee detail enrichment",
-            status_file=status_file,
-            status=status,
-        )
+            with psycopg.connect(
+                psql_url,
+                row_factory=dict_row,
+            ) as connection:
+                buyee_staged = staging_count(
+                    connection,
+                    "buyee",
+                )
+
+            if buyee_staged < 1:
+                raise RuntimeError(
+                    "No Buyee identities exist in staging."
+                )
+
+            run_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "auction_etl.cli.main",
+                    "sync",
+                    "warehouse",
+                    "--marketplace",
+                    "buyee",
+                    "--no-prune",
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase=(
+                    "Safely synchronize Buyee without pruning"
+                ),
+                status_file=status_file,
+                status=status,
+            )
+
+            run_command(
+                [
+                    sys.executable,
+                    "scripts/crawl_buyee_live_details.py",
+                    "--apply",
+                    "--refresh",
+                    "--delay",
+                    "2",
+                    "--timeout",
+                    "45",
+                    "--log-dir",
+                    str(run_dir / "buyee-details"),
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Apply Buyee detail enrichment",
+                status_file=status_file,
+                status=status,
+            )
 
         for source_name in enabled_ebay_sources(
             root / "config" / "ebay_sources.json"
