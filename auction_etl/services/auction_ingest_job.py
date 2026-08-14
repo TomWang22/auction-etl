@@ -1,0 +1,867 @@
+"""Background orchestration for user-triggered multisource auction ingestion."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Final
+
+
+REPOSITORY_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
+DEFAULT_RUNNER: Final[Path] = (
+    REPOSITORY_ROOT
+    / "scripts"
+    / "run_auction_refresh_on_demand.sh"
+)
+
+RUNTIME_ROOT: Final[Path] = (
+    Path.home()
+    / ".auction-etl"
+    / "runtime"
+    / "auction-ingest"
+)
+
+JOB_ROOT: Final[Path] = RUNTIME_ROOT / "jobs"
+LOG_ROOT: Final[Path] = RUNTIME_ROOT / "logs"
+LATEST_PATH: Final[Path] = RUNTIME_ROOT / "latest.json"
+CONTROLLER_LOCK: Final[Path] = RUNTIME_ROOT / "controller.lock"
+
+PLANNED_SOURCES: Final[tuple[str, ...]] = (
+    "eBay",
+    "Buyee",
+    "Gripsweat",
+)
+
+RUNNING_STATES: Final[frozenset[str]] = frozenset(
+    {
+        "queued",
+        "running",
+    }
+)
+
+ANSI_ESCAPE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
+)
+
+
+def utc_now() -> str:
+    """Return a stable UTC timestamp."""
+
+    return datetime.now(UTC).isoformat()
+
+
+def ensure_runtime_directories() -> None:
+    """Create local runtime storage outside the repository."""
+
+    RUNTIME_ROOT.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    JOB_ROOT.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    LOG_ROOT.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+
+def job_path(job_id: str) -> Path:
+    """Return the persisted status path for one job."""
+
+    validate_job_id(job_id)
+    return JOB_ROOT / f"{job_id}.json"
+
+
+def log_path(job_id: str) -> Path:
+    """Return the persisted log path for one job."""
+
+    validate_job_id(job_id)
+    return LOG_ROOT / f"{job_id}.log"
+
+
+def validate_job_id(job_id: str) -> None:
+    """Reject arbitrary paths passed through worker CLI arguments."""
+
+    try:
+        parsed = uuid.UUID(hex=job_id)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid auction ingest job id: {job_id!r}"
+        ) from exc
+
+    if parsed.hex != job_id:
+        raise ValueError(
+            f"Invalid auction ingest job id: {job_id!r}"
+        )
+
+
+def atomic_write_json(
+    path: Path,
+    payload: dict[str, Any],
+) -> None:
+    """Persist status without exposing partially written JSON."""
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temporary_path = path.with_suffix(
+        path.suffix + ".tmp"
+    )
+
+    temporary_path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    os.replace(
+        temporary_path,
+        path,
+    )
+
+
+def read_json(
+    path: Path,
+) -> dict[str, Any] | None:
+    """Read a persisted JSON object when present and valid."""
+
+    if not path.is_file():
+        return None
+
+    try:
+        payload = json.loads(
+            path.read_text(
+                encoding="utf-8",
+            )
+        )
+    except (
+        json.JSONDecodeError,
+        OSError,
+    ):
+        return None
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        return None
+
+    return payload
+
+
+def persist_status(
+    status: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist both the job-specific and latest status documents."""
+
+    status["updated_at"] = utc_now()
+
+    atomic_write_json(
+        job_path(
+            str(
+                status["job_id"]
+            )
+        ),
+        status,
+    )
+
+    atomic_write_json(
+        LATEST_PATH,
+        status,
+    )
+
+    return status
+
+
+def process_is_alive(
+    pid: int | None,
+) -> bool:
+    """Return whether a local process still exists."""
+
+    if not pid:
+        return False
+
+    try:
+        os.kill(
+            int(pid),
+            0,
+        )
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+    return True
+
+
+def get_latest_status() -> dict[str, Any] | None:
+    """Return the latest job and repair stale running state if required."""
+
+    ensure_runtime_directories()
+
+    status = read_json(
+        LATEST_PATH
+    )
+
+    if status is None:
+        return None
+
+    state = str(
+        status.get(
+            "status",
+            "",
+        )
+    )
+
+    if state not in RUNNING_STATES:
+        return status
+
+    pid = status.get(
+        "worker_pid"
+    )
+
+    if process_is_alive(
+        int(pid)
+        if isinstance(
+            pid,
+            int,
+        )
+        else None
+    ):
+        return status
+
+    status["status"] = "failed"
+    status["phase"] = "Worker exited unexpectedly"
+    status["message"] = (
+        "The background ingestion worker stopped before "
+        "publishing a completion result."
+    )
+    status["finished_at"] = utc_now()
+    status["return_code"] = None
+
+    source_states = dict(
+        status.get(
+            "source_states",
+            {},
+        )
+    )
+
+    for name, source_state in source_states.items():
+        if source_state == "running":
+            source_states[name] = "failed"
+
+    status["source_states"] = source_states
+
+    return persist_status(
+        status
+    )
+
+
+def build_runner_command() -> list[str]:
+    """Resolve the configured production ingestion entrypoint."""
+
+    configured = os.environ.get(
+        "AUCTION_INGEST_RUNNER"
+    )
+
+    if configured:
+        command = shlex.split(
+            configured
+        )
+
+        if not command:
+            raise RuntimeError(
+                "AUCTION_INGEST_RUNNER is empty."
+            )
+
+        return command
+
+    if not DEFAULT_RUNNER.is_file():
+        raise RuntimeError(
+            "Missing production ingestion runner: "
+            f"{DEFAULT_RUNNER}"
+        )
+
+    return [
+        "bash",
+        str(
+            DEFAULT_RUNNER
+        ),
+    ]
+
+
+def new_status(
+    job_id: str,
+) -> dict[str, Any]:
+    """Create a queued multisource-ingestion status document."""
+
+    return {
+        "schema":
+            "auction-ingest-job/v1",
+        "job_id":
+            job_id,
+        "status":
+            "queued",
+        "progress":
+            2,
+        "phase":
+            "Queued",
+        "message":
+            "Waiting for the background ingestion worker.",
+        "created_at":
+            utc_now(),
+        "started_at":
+            None,
+        "finished_at":
+            None,
+        "updated_at":
+            utc_now(),
+        "worker_pid":
+            None,
+        "runner_pid":
+            None,
+        "return_code":
+            None,
+        "runner_command":
+            None,
+        "planned_sources":
+            list(
+                PLANNED_SOURCES
+            ),
+        "source_states": {
+            source:
+                "waiting"
+            for source
+            in PLANNED_SOURCES
+        },
+        "last_output":
+            None,
+        "log_path":
+            str(
+                log_path(
+                    job_id
+                )
+            ),
+    }
+
+
+def start_job() -> dict[str, Any]:
+    """Start exactly one background ingestion job."""
+
+    ensure_runtime_directories()
+
+    with CONTROLLER_LOCK.open(
+        "a+",
+        encoding="utf-8",
+    ) as lock_handle:
+        fcntl.flock(
+            lock_handle.fileno(),
+            fcntl.LOCK_EX,
+        )
+
+        latest = get_latest_status()
+
+        if (
+            latest is not None
+            and latest.get("status")
+            in RUNNING_STATES
+        ):
+            return latest
+
+        job_id = uuid.uuid4().hex
+
+        status = new_status(
+            job_id
+        )
+
+        persist_status(
+            status
+        )
+
+        worker = subprocess.Popen(
+            [
+                sys.executable,
+                str(
+                    Path(
+                        __file__
+                    ).resolve()
+                ),
+                "worker",
+                job_id,
+            ],
+            cwd=str(
+                REPOSITORY_ROOT
+            ),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+        status["worker_pid"] = worker.pid
+        status["message"] = (
+            "Background ingestion worker started."
+        )
+
+        persist_status(
+            status
+        )
+
+        return status
+
+
+def strip_terminal_codes(
+    line: str,
+) -> str:
+    """Return log output suitable for progress inspection."""
+
+    return ANSI_ESCAPE_RE.sub(
+        "",
+        line,
+    ).strip()
+
+
+def advance_progress(
+    status: dict[str, Any],
+    candidate: int,
+    phase: str,
+    message: str,
+) -> None:
+    """Advance progress monotonically."""
+
+    current = int(
+        status.get(
+            "progress",
+            0,
+        )
+    )
+
+    if candidate > current:
+        status["progress"] = candidate
+
+    status["phase"] = phase
+    status["message"] = message
+
+
+def observe_source(
+    status: dict[str, Any],
+    source_name: str,
+) -> None:
+    """Mark one source as observed by the production runner."""
+
+    states = dict(
+        status.get(
+            "source_states",
+            {},
+        )
+    )
+
+    for name in PLANNED_SOURCES:
+        if (
+            states.get(name)
+            == "running"
+            and name != source_name
+        ):
+            states[name] = "observed"
+
+    if states.get(
+        source_name
+    ) not in {
+        "done",
+        "failed",
+    }:
+        states[source_name] = "running"
+
+    status["source_states"] = states
+
+
+def interpret_output(
+    status: dict[str, Any],
+    raw_line: str,
+) -> None:
+    """Convert production runner output into coarse user-facing progress."""
+
+    clean_line = strip_terminal_codes(
+        raw_line
+    )
+
+    if not clean_line:
+        return
+
+    status["last_output"] = clean_line
+
+    lowered = clean_line.lower()
+
+    if "ebay" in lowered:
+        observe_source(
+            status,
+            "eBay",
+        )
+        advance_progress(
+            status,
+            20,
+            "Ingesting eBay",
+            clean_line,
+        )
+
+    if "buyee" in lowered:
+        observe_source(
+            status,
+            "Buyee",
+        )
+        advance_progress(
+            status,
+            42,
+            "Ingesting Buyee",
+            clean_line,
+        )
+
+    if "gripsweat" in lowered:
+        observe_source(
+            status,
+            "Gripsweat",
+        )
+        advance_progress(
+            status,
+            64,
+            "Ingesting Gripsweat",
+            clean_line,
+        )
+
+    if any(
+        marker in lowered
+        for marker in (
+            "collector",
+            "reclassif",
+            "normalize",
+            "enrich",
+        )
+    ):
+        advance_progress(
+            status,
+            78,
+            "Updating normalized auction data",
+            clean_line,
+        )
+
+    if any(
+        marker in lowered
+        for marker in (
+            "fx ",
+            "exchange rate",
+            "update auction fx",
+        )
+    ):
+        advance_progress(
+            status,
+            88,
+            "Updating derived auction values",
+            clean_line,
+        )
+
+    if any(
+        marker in lowered
+        for marker in (
+            "doctor",
+            "health check",
+            "verification",
+            "verify",
+        )
+    ):
+        advance_progress(
+            status,
+            94,
+            "Verifying refreshed data",
+            clean_line,
+        )
+
+    if any(
+        marker in lowered
+        for marker in (
+            "result=",
+            "=pass",
+            "complete",
+            "completed",
+            "success",
+        )
+    ):
+        advance_progress(
+            status,
+            97,
+            "Finishing",
+            clean_line,
+        )
+
+
+def mark_all_sources_done(
+    status: dict[str, Any],
+) -> None:
+    """Mark all configured sources successful after the runner exits cleanly."""
+
+    status["source_states"] = {
+        source:
+            "done"
+        for source
+        in PLANNED_SOURCES
+    }
+
+
+def mark_active_sources_failed(
+    status: dict[str, Any],
+) -> None:
+    """Expose which source was active when ingestion failed."""
+
+    states = dict(
+        status.get(
+            "source_states",
+            {},
+        )
+    )
+
+    for source, source_state in states.items():
+        if source_state == "running":
+            states[source] = "failed"
+
+    status["source_states"] = states
+
+
+def run_worker(
+    job_id: str,
+) -> int:
+    """Run the production ingestion process and publish progress."""
+
+    validate_job_id(
+        job_id
+    )
+    ensure_runtime_directories()
+
+    status = read_json(
+        job_path(
+            job_id
+        )
+    )
+
+    if status is None:
+        raise RuntimeError(
+            f"Missing queued job: {job_id}"
+        )
+
+    command = build_runner_command()
+
+    status["status"] = "running"
+    status["progress"] = 5
+    status["phase"] = "Starting ingestion"
+    status["message"] = (
+        "Launching the existing multisource auction refresh pipeline."
+    )
+    status["started_at"] = utc_now()
+    status["worker_pid"] = os.getpid()
+    status["runner_command"] = command
+
+    persist_status(
+        status
+    )
+
+    output_path = log_path(
+        job_id
+    )
+
+    with output_path.open(
+        "a",
+        encoding="utf-8",
+        buffering=1,
+    ) as log_handle:
+        log_handle.write(
+            f"[{utc_now()}] Starting auction ingestion\n"
+        )
+        log_handle.write(
+            "Command: "
+            + shlex.join(
+                command
+            )
+            + "\n\n"
+        )
+
+        process = subprocess.Popen(
+            command,
+            cwd=str(
+                REPOSITORY_ROOT
+            ),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+            env=os.environ.copy(),
+        )
+
+        status["runner_pid"] = process.pid
+        persist_status(
+            status
+        )
+
+        assert process.stdout is not None
+
+        try:
+            for line in process.stdout:
+                log_handle.write(
+                    line
+                )
+
+                interpret_output(
+                    status,
+                    line,
+                )
+
+                persist_status(
+                    status
+                )
+
+        except KeyboardInterrupt:
+            try:
+                os.killpg(
+                    os.getpgid(
+                        process.pid
+                    ),
+                    signal.SIGTERM,
+                )
+            except OSError:
+                pass
+
+            raise
+
+        return_code = process.wait()
+
+        log_handle.write(
+            f"\n[{utc_now()}] "
+            f"Runner exit status: {return_code}\n"
+        )
+
+    status["return_code"] = return_code
+    status["finished_at"] = utc_now()
+
+    if return_code == 0:
+        mark_all_sources_done(
+            status
+        )
+        status["status"] = "completed"
+        status["progress"] = 100
+        status["phase"] = "Complete"
+        status["message"] = (
+            "New auction ingestion finished successfully."
+        )
+    else:
+        mark_active_sources_failed(
+            status
+        )
+        status["status"] = "failed"
+        status["phase"] = "Ingestion failed"
+        status["message"] = (
+            "The production refresh pipeline exited with "
+            f"status {return_code}. Open the job log for details."
+        )
+
+    persist_status(
+        status
+    )
+
+    return return_code
+
+
+def tail_log(
+    path: str | Path | None,
+    line_count: int = 100,
+) -> str:
+    """Return the last lines from one job log."""
+
+    if not path:
+        return ""
+
+    log_file = Path(
+        path
+    )
+
+    if not log_file.is_file():
+        return ""
+
+    try:
+        lines = log_file.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).splitlines()
+    except OSError:
+        return ""
+
+    return "\n".join(
+        lines[
+            -line_count:
+        ]
+    )
+
+
+def parse_cli() -> argparse.Namespace:
+    """Parse the private worker CLI."""
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Background worker for Streamlit auction ingestion."
+        )
+    )
+
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+    )
+
+    worker_parser = subparsers.add_parser(
+        "worker"
+    )
+    worker_parser.add_argument(
+        "job_id"
+    )
+
+    return parser.parse_args()
+
+
+def main() -> int:
+    """Run the worker command."""
+
+    arguments = parse_cli()
+
+    if arguments.command == "worker":
+        return run_worker(
+            arguments.job_id
+        )
+
+    raise RuntimeError(
+        f"Unsupported command: {arguments.command}"
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(
+        main()
+    )
