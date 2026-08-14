@@ -1200,15 +1200,14 @@ def render_listing_jump(
     with st.sidebar:
         st.divider()
         st.subheader(
-            "Review selection"
+            "Choose a listing"
         )
         st.caption(
-            "Type inside the control to search by marketplace, "
-            "listing ID, seller, or title."
+            "Search by marketplace, listing ID, seller, or title."
         )
 
         choice = st.selectbox(
-            "Search / jump to listing",
+            "Find a listing",
             identities,
             index=None,
             placeholder=(
@@ -1269,13 +1268,64 @@ def _marketplace_changed() -> None:
     _reset_listing_results()
 
 
+
+
+SALE_TYPE_DISPLAY_LABELS: dict[str, str] = {
+    "ALL": "All sale types",
+    "AUCTION": "Auction",
+    "AUCTION_STYLE": "Auction",
+    "FIXED": "Fixed price",
+    "FIXED_PRICE": "Fixed price",
+    "FIXEDPRICE": "Fixed price",
+    "BUY_IT_NOW": "Fixed price",
+    "BUYITNOW": "Fixed price",
+    "BIN": "Fixed price",
+    "OBO": "Best Offer (OBO)",
+    "BEST_OFFER": "Best Offer (OBO)",
+    "BESTOFFER": "Best Offer (OBO)",
+    "MAKE_OFFER": "Best Offer (OBO)",
+    "UNKNOWN": "Unspecified",
+    "UNSPECIFIED": "Unspecified",
+    "NONE": "Unspecified",
+    "": "Unspecified",
+}
+
+
+def format_sale_type(value: object) -> str:
+    """Return a product-facing label for an internal sale-type value."""
+
+    raw_value = str(
+        value
+    ).strip()
+
+    normalized = (
+        raw_value
+        .upper()
+        .replace(
+            "-",
+            "_",
+        )
+        .replace(
+            " ",
+            "_",
+        )
+    )
+
+    return SALE_TYPE_DISPLAY_LABELS.get(
+        normalized,
+        raw_value.replace(
+            "_",
+            " ",
+        ).title(),
+    )
+
 def apply_filters(
     dataframe: pd.DataFrame,
 ) -> tuple[pd.DataFrame, str]:
     """Render sidebar filters and return matching rows."""
     with st.sidebar:
         st.header(
-            "Search and filters"
+            "Find listings"
         )
 
         marketplaces = [
@@ -1318,7 +1368,7 @@ def apply_filters(
         )
 
         seller_contains = st.text_input(
-            "Seller contains",
+            "Seller",
             key=FILTER_WIDGET_KEYS[
                 "seller"
             ],
@@ -1326,7 +1376,7 @@ def apply_filters(
         )
 
         recent_only = st.checkbox(
-            "Recent additions only",
+            "Recently added only",
             key=FILTER_WIDGET_KEYS[
                 "recent_only"
             ],
@@ -1334,7 +1384,7 @@ def apply_filters(
         )
 
         filter_dates = st.checkbox(
-            "Filter by activity date",
+            "Limit by activity date",
             key=FILTER_WIDGET_KEYS[
                 "filter_dates"
             ],
@@ -1402,7 +1452,7 @@ def apply_filters(
         ]
 
         verdict = st.selectbox(
-            "Verdict",
+            "Review status",
             verdicts,
             key=FILTER_WIDGET_KEYS[
                 "verdict"
@@ -1431,7 +1481,7 @@ def apply_filters(
         )
 
         purchase_filter = st.selectbox(
-            "Purchase",
+            "Collection status",
             (
                 "all",
                 "In collection",
@@ -1455,12 +1505,13 @@ def apply_filters(
         ]
 
         sale_type = st.selectbox(
-            "Auction type",
+            "Sale type",
             sale_types,
             key=FILTER_WIDGET_KEYS[
                 "sale_type"
             ],
             on_change=_reset_listing_results,
+            format_func=format_sale_type,
         )
 
         st.divider()
@@ -1553,7 +1604,7 @@ def apply_filters(
         )
 
         if st.button(
-            "Refresh database",
+            "Reload data",
             width="stretch",
             key="collector_refresh_database",
         ):
@@ -1714,7 +1765,7 @@ def render_metrics(
     )
 
     metrics[1].metric(
-        "Visible rows",
+        "Listings shown",
         min(
             len(dataframe),
             int(
@@ -1732,7 +1783,7 @@ def render_metrics(
     )
 
     metrics[3].metric(
-        "Visible sellers",
+        "Sellers shown",
         dataframe["seller"]
         .replace("", pd.NA)
         .nunique(),
@@ -1898,7 +1949,7 @@ def render_listing_table(
                 dataframe["title"],
             "Seller":
                 dataframe["seller"],
-            "Auction type":
+            "Sale type":
                 dataframe["sale_type_display"],
             "Opened":
                 dataframe[
@@ -2127,7 +2178,7 @@ def render_listing_table(
                 "tooltipField": "Seller",
             },
             {
-                "field": "Auction type",
+                "field": "Sale type",
                 "width": 145,
             },
             {
@@ -2293,8 +2344,7 @@ def render_listing_table(
     }
 
     st.caption(
-        "Hover over a row to inspect it. "
-        "Click anywhere on the row to open its collector editor."
+        "Hover over a row to inspect it. Click anywhere on the row to open its details."
     )
 
     response = AgGrid(
@@ -2421,8 +2471,7 @@ def render_listing_editor(
 
     if selected is None:
         st.caption(
-            "Select any table row or use the sidebar "
-            "search to open its collector editor."
+            "Select any table row or use the sidebar search to open its details."
         )
         return
 
@@ -2498,7 +2547,7 @@ def render_listing_editor(
     summary_columns = st.columns(6)
 
     summary_columns[0].metric(
-        "Starting bid",
+        "Starting price",
         format_money(
             selected["starting_local"],
             selected["currency_display"],
@@ -2506,7 +2555,7 @@ def render_listing_editor(
     )
 
     summary_columns[1].metric(
-        "Hammer before tax",
+        "Sale price before tax",
         format_money(
             selected["hammer_local"],
             selected["currency_display"],
@@ -2576,7 +2625,7 @@ def render_listing_editor(
         clear_on_submit=False,
     ):
         st.subheader(
-            "Core classification"
+            "Pressing identification"
         )
 
         core_columns = st.columns(5)
@@ -2597,7 +2646,7 @@ def render_listing_editor(
 
         with core_columns[1]:
             manual_catalog_number = st.text_input(
-                "Manual catalog / matrix number",
+                "Catalog / matrix number",
                 value=clean_text(
                     collector_value(
                         selected,
@@ -2626,7 +2675,7 @@ def render_listing_editor(
 
         with core_columns[3]:
             manual_disc_count = st.number_input(
-                "Manual disc count",
+                "Disc count",
                 min_value=0,
                 max_value=100,
                 value=(
@@ -2663,7 +2712,7 @@ def render_listing_editor(
             )
 
         manual_pressing_group = st.text_input(
-            "Pressing-group override",
+            "Pressing group",
             value=clean_text(
                 collector_value(
                     selected,
@@ -2684,7 +2733,7 @@ def render_listing_editor(
         )
 
         st.subheader(
-            "Sale format and collection"
+            "Sale and collection"
         )
 
         sale_columns = st.columns(5)
@@ -2705,7 +2754,7 @@ def render_listing_editor(
 
         with sale_columns[1]:
             in_collection = st.checkbox(
-                "In collection / purchased",
+                "In my collection",
                 value=as_boolean(
                     collector_value(
                         selected,
@@ -2820,7 +2869,7 @@ def render_listing_editor(
             )
 
         st.subheader(
-            "Completeness and edition"
+            "Edition and completeness"
         )
 
         completeness_columns_1 = st.columns(5)
@@ -2920,7 +2969,7 @@ def render_listing_editor(
 
         with completeness_columns_2[2]:
             st.text_input(
-                "Live condition",
+                "Observed condition",
                 value=clean_text(
                     selected.get(
                         "condition_text",
@@ -2932,7 +2981,7 @@ def render_listing_editor(
             )
 
         st.subheader(
-            "Condition and collector verdict"
+            "Condition and assessment"
         )
 
         verdict_columns = st.columns(4)
@@ -3158,7 +3207,7 @@ def render_listing_editor(
 
     if changed_rows != 1:
         st.error(
-            "The collector record was not updated."
+            "Changes were not saved."
         )
         return
 
@@ -3332,7 +3381,7 @@ def render_pressing_groups(
     }
 
     selected_label = st.selectbox(
-        "Inspect one pressing group",
+        "Choose a pressing group",
         tuple(
             selector_labels.keys()
         ),
@@ -3538,7 +3587,7 @@ def render_update_status(
         )
 
     st.subheader(
-        "Data coverage"
+        "Available data"
     )
 
     st.dataframe(
@@ -3550,7 +3599,7 @@ def render_update_status(
     )
 
     st.subheader(
-        "Detail statuses"
+        "Listing details"
     )
 
     detail_status = (
@@ -3623,7 +3672,7 @@ def render_update_status(
 
         if not recent.empty:
             st.subheader(
-                "Recently updated collector records"
+                "Recently updated listings"
             )
 
             recent_display = pd.DataFrame(
@@ -3676,12 +3725,11 @@ def render_update_status(
 render_pending_notification()
 
 st.title(
-    "💿 Auction Collector Review"
+    "💿 Marketplace Sales Review"
 )
 
 st.caption(
-    "Filter recovered sales, edit collector metadata, "
-    "and compare equivalent pressings by normalized matrix number."
+    "Search marketplace sales, refine pressing details, track collection status, and compare equivalent pressings."
 )
 
 try:
@@ -3689,7 +3737,7 @@ try:
     records = integrate_recent_activity(records)
 except Exception as error:
     st.error(
-        f"Could not load Auction ETL records: {error}"
+        f"Could not load marketplace listings: {error}"
     )
     st.stop()
 
@@ -3751,8 +3799,8 @@ tabs = st.tabs(
     (
         "Listings",
         "Pressing groups",
-        "Update status",
-        "Collector analytics",
+        "Data status",
+        "Insights",
     )
 )
 
@@ -3842,12 +3890,11 @@ with tabs[0]:
 
 with tabs[1]:
     st.header(
-        "Equivalent pressing analysis"
+        "Equivalent pressing comparison"
     )
 
     st.caption(
-        "Listings are grouped by normalized manual override, "
-        "catalog/matrix number, artist, and media type."
+        "Listings are grouped using pressing-group details, catalog/matrix number, artist, and media type."
     )
 
     render_pressing_groups(
@@ -3856,7 +3903,7 @@ with tabs[1]:
 
 with tabs[2]:
     st.header(
-        "Recovery and enrichment status"
+        "Data status"
     )
 
     render_update_status(
@@ -3867,13 +3914,11 @@ with tabs[2]:
 # collector-analytics-editor:start
 with tabs[3]:
     st.header(
-        "Collector analytics curation"
+        "Collection insights"
     )
 
     st.caption(
-        "Assign exact pressings, record expected and observed "
-        "components, normalize condition, preserve bidder-data "
-        "limitations, and calculate collector analytics."
+        "Assign exact pressings, record expected and observed components, normalize condition, note bidder-data limitations, and review collection insights."
     )
 
     render_collector_analytics_editor(
