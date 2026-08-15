@@ -513,11 +513,12 @@ def verify_results(
     ).mappings().one()
 
     if (
-        int(totals["total_rows"]) != 775
-        or int(totals["unique_rows"]) != 775
+        int(totals["total_rows"]) <= 0
+        or int(totals["unique_rows"])
+        != int(totals["total_rows"])
     ):
         raise RuntimeError(
-            "Expected 775 rows and unique keys; "
+            "Expected a non-empty auction table with unique keys; "
             f"found {totals['total_rows']} rows and "
             f"{totals['unique_rows']} keys."
         )

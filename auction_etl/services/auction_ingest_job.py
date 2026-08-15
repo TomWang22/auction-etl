@@ -273,24 +273,75 @@ def get_latest_status() -> dict[str, Any] | None:
         "worker_pid"
     )
 
-    if process_is_alive(
+    if (
+        state == "queued"
+        and not isinstance(
+            pid,
+            int,
+        )
+    ):
+        registration_deadline = status.get(
+            "worker_registration_deadline"
+        )
+
+        if (
+            isinstance(
+                registration_deadline,
+                (
+                    int,
+                    float,
+                ),
+            )
+            and time.time()
+            <= float(
+                registration_deadline
+            )
+        ):
+            return status
+
+        status["status"] = "failed"
+        status["phase"] = "Worker did not start"
+        status["stage"] = "starting"
+        status["failure_stage"] = "starting"
+        status["message"] = (
+            "The background refresh did not finish starting. "
+            "You can retry when ready."
+        )
+        status["finished_at"] = utc_now()
+        status["return_code"] = None
+
+        return persist_status(
+            status
+        )
+
+    worker_pid = (
         int(pid)
         if isinstance(
             pid,
             int,
         )
         else None
+    )
+
+    if process_is_alive(
+        worker_pid
     ):
         return status
 
     status["status"] = "failed"
     status["phase"] = "Worker exited unexpectedly"
     status["message"] = (
-        "The background ingestion worker stopped before "
-        "publishing a completion result."
+        "The background refresh stopped before publishing "
+        "a completion result."
     )
     status["finished_at"] = utc_now()
     status["return_code"] = None
+    status["failure_stage"] = str(
+        status.get(
+            "stage",
+            "starting",
+        )
+    )
 
     source_states = dict(
         status.get(
@@ -359,6 +410,10 @@ def new_status(
             2,
         "phase":
             "Queued",
+        "stage":
+            "queued",
+        "failure_stage":
+            None,
         "message":
             "Waiting for the background ingestion worker.",
         "created_at":
@@ -371,6 +426,9 @@ def new_status(
             utc_now(),
         "worker_pid":
             None,
+        "worker_registration_deadline":
+            time.time()
+            + 15.0,
         "runner_pid":
             None,
         "return_code":
@@ -435,32 +493,58 @@ def start_job() -> dict[str, Any]:
             job_id
         )
 
-        with worker_output_path.open(
-            "ab",
-            buffering=0,
-        ) as worker_log:
-            worker = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(
-                        Path(
-                            __file__
-                        ).resolve()
+        try:
+            with worker_output_path.open(
+                "ab",
+                buffering=0,
+            ) as worker_log:
+                worker = subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(
+                            Path(
+                                __file__
+                            ).resolve()
+                        ),
+                        "worker",
+                        job_id,
+                    ],
+                    cwd=str(
+                        REPOSITORY_ROOT
                     ),
-                    "worker",
-                    job_id,
-                ],
-                cwd=str(
-                    REPOSITORY_ROOT
-                ),
-                stdin=subprocess.DEVNULL,
-                stdout=worker_log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=worker_log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+
+        except (
+            OSError,
+            ValueError,
+            subprocess.SubprocessError,
+        ) as error:
+            status["status"] = "failed"
+            status["phase"] = (
+                "Could not start background refresh"
+            )
+            status["stage"] = "starting"
+            status["failure_stage"] = "starting"
+            status["finished_at"] = utc_now()
+            status["message"] = (
+                "The background refresh could not be started."
+            )
+            status["last_output"] = (
+                f"{type(error).__name__}: {error}"
+            )
+
+            return persist_status(
+                status
             )
 
         status["worker_pid"] = worker.pid
+        status["worker_registration_deadline"] = None
+        status["stage"] = "starting"
         status["message"] = (
             "Background ingestion worker started."
         )
@@ -536,6 +620,26 @@ def observe_source(
         states[source_name] = "running"
 
     status["source_states"] = states
+    status["stage"] = "marketplace"
+
+
+def finish_active_sources(
+    status: dict[str, Any],
+) -> None:
+    """Close marketplace activity before post-processing begins."""
+
+    states = dict(
+        status.get(
+            "source_states",
+            {},
+        )
+    )
+
+    for source, source_state in states.items():
+        if source_state == "running":
+            states[source] = "observed"
+
+    status["source_states"] = states
 
 
 def interpret_output(
@@ -555,74 +659,102 @@ def interpret_output(
 
     lowered = clean_line.lower()
 
-    if "ebay" in lowered:
-        observe_source(
-            status,
-            "eBay",
+    current_stage = str(
+        status.get(
+            "stage",
+            "",
         )
-        advance_progress(
-            status,
-            20,
-            "Ingesting eBay",
-            clean_line,
-        )
+    )
 
-    if "buyee" in lowered:
-        observe_source(
-            status,
-            "Buyee",
-        )
-        advance_progress(
-            status,
-            42,
-            "Ingesting Buyee",
-            clean_line,
-        )
+    source_stage_open = (
+        current_stage
+        not in {
+            "post_processing",
+            "verification",
+            "finalizing",
+            "complete",
+        }
+    )
 
-    if "gripsweat" in lowered:
-        observe_source(
-            status,
-            "Gripsweat",
-        )
-        advance_progress(
-            status,
-            64,
-            "Ingesting Gripsweat",
-            clean_line,
-        )
+    if source_stage_open:
+        if "ebay" in lowered:
+            observe_source(
+                status,
+                "eBay",
+            )
+            advance_progress(
+                status,
+                20,
+                "Ingesting eBay",
+                clean_line,
+            )
 
-    if any(
+        if "buyee" in lowered:
+            observe_source(
+                status,
+                "Buyee",
+            )
+            advance_progress(
+                status,
+                42,
+                "Ingesting Buyee",
+                clean_line,
+            )
+
+        if "gripsweat" in lowered:
+            observe_source(
+                status,
+                "Gripsweat",
+            )
+            advance_progress(
+                status,
+                64,
+                "Ingesting Gripsweat",
+                clean_line,
+            )
+
+    post_processing_marker = any(
         marker in lowered
         for marker in (
             "collector",
             "reclassif",
             "normalize",
             "enrich",
-        )
-    ):
-        advance_progress(
-            status,
-            78,
-            "Updating normalized auction data",
-            clean_line,
-        )
-
-    if any(
-        marker in lowered
-        for marker in (
             "fx ",
             "exchange rate",
             "update auction fx",
         )
-    ):
-        advance_progress(
-            status,
-            88,
-            "Updating derived auction values",
-            clean_line,
-        )
+    )
 
-    if any(
+    if post_processing_marker:
+        finish_active_sources(
+            status
+        )
+        status["stage"] = "post_processing"
+
+        if any(
+            marker in lowered
+            for marker in (
+                "fx ",
+                "exchange rate",
+                "update auction fx",
+            )
+        ):
+            advance_progress(
+                status,
+                88,
+                "Updating derived auction values",
+                clean_line,
+            )
+        else:
+            advance_progress(
+                status,
+                78,
+                "Updating normalized auction data",
+                clean_line,
+            )
+
+    verification_marker = any(
         marker in lowered
         for marker in (
             "doctor",
@@ -630,7 +762,27 @@ def interpret_output(
             "verification",
             "verify",
         )
+    )
+
+    if (
+        verification_marker
+        and str(
+            status.get(
+                "stage",
+                "",
+            )
+        )
+        in {
+            "post_processing",
+            "verification",
+            "finalizing",
+        }
     ):
+        finish_active_sources(
+            status
+        )
+        status["stage"] = "verification"
+
         advance_progress(
             status,
             94,
@@ -638,7 +790,7 @@ def interpret_output(
             clean_line,
         )
 
-    if any(
+    finishing_marker = any(
         marker in lowered
         for marker in (
             "result=",
@@ -647,7 +799,27 @@ def interpret_output(
             "completed",
             "success",
         )
+    )
+
+    if (
+        finishing_marker
+        and str(
+            status.get(
+                "stage",
+                "",
+            )
+        )
+        in {
+            "post_processing",
+            "verification",
+            "finalizing",
+        }
     ):
+        finish_active_sources(
+            status
+        )
+        status["stage"] = "finalizing"
+
         advance_progress(
             status,
             97,
@@ -668,11 +840,13 @@ def mark_all_sources_done(
         in PLANNED_SOURCES
     }
 
+    status["stage"] = "complete"
+
 
 def mark_active_sources_failed(
     status: dict[str, Any],
 ) -> None:
-    """Expose which source was active when ingestion failed."""
+    """Mark only a marketplace that was active during marketplace failure."""
 
     states = dict(
         status.get(
@@ -680,6 +854,22 @@ def mark_active_sources_failed(
             {},
         )
     )
+
+    if str(
+        status.get(
+            "failure_stage",
+            status.get(
+                "stage",
+                "",
+            ),
+        )
+    ) != "marketplace":
+        for source, source_state in states.items():
+            if source_state == "running":
+                states[source] = "observed"
+
+        status["source_states"] = states
+        return
 
     for source, source_state in states.items():
         if source_state == "running":
@@ -760,6 +950,8 @@ def run_worker(
     status["status"] = "running"
     status["progress"] = 5
     status["phase"] = "Starting ingestion"
+    status["stage"] = "starting"
+    status["failure_stage"] = None
     status["message"] = (
         "Launching the existing multisource auction refresh pipeline."
     )
@@ -857,19 +1049,58 @@ def run_worker(
         status["status"] = "completed"
         status["progress"] = 100
         status["phase"] = "Complete"
+        status["failure_stage"] = None
         status["message"] = (
             "New auction ingestion finished successfully."
         )
+
     else:
+        failure_stage = str(
+            status.get(
+                "stage",
+                "starting",
+            )
+        )
+
+        status["failure_stage"] = failure_stage
+
         mark_active_sources_failed(
             status
         )
+
         status["status"] = "failed"
-        status["phase"] = "Ingestion failed"
-        status["message"] = (
-            "The production refresh pipeline exited with "
-            f"status {return_code}. Open the job log for details."
-        )
+
+        if failure_stage == "post_processing":
+            status["phase"] = "Post-processing failed"
+            status["message"] = (
+                "Marketplace collection finished, but processing "
+                "the refreshed data failed. Open technical details "
+                "for the underlying command."
+            )
+
+        elif failure_stage == "verification":
+            status["phase"] = "Verification failed"
+            status["message"] = (
+                "Marketplace data was refreshed, but verification "
+                "did not finish successfully. Open technical details "
+                "for the underlying command."
+            )
+
+        elif failure_stage == "finalizing":
+            status["phase"] = "Finalization failed"
+            status["message"] = (
+                "Marketplace data was refreshed, but the final "
+                "processing step failed. Open technical details "
+                "for the underlying command."
+            )
+
+        else:
+            status["phase"] = "Ingestion failed"
+            status["message"] = (
+                "The production refresh pipeline exited with "
+                f"status {return_code}. Open technical details "
+                "for the underlying command."
+            )
 
     persist_status(
         status

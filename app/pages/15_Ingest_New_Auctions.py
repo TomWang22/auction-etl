@@ -295,6 +295,13 @@ def render_status(
             status
         )
 
+        failure_stage = str(
+            status.get(
+                "failure_stage",
+                "",
+            )
+        )
+
         if sources:
             source_text = ", ".join(
                 sources
@@ -305,6 +312,35 @@ def render_status(
                 f"{source_text}. You can retry when ready.",
                 icon="❌",
             )
+
+        elif failure_stage == "post_processing":
+            st.error(
+                "Marketplace collection finished, but processing "
+                "the refreshed data failed. You can retry when ready.",
+                icon="❌",
+            )
+
+        elif failure_stage == "verification":
+            st.error(
+                "Marketplace data was refreshed, but the verification "
+                "step did not finish. You can retry when ready.",
+                icon="❌",
+            )
+
+        elif failure_stage == "finalizing":
+            st.error(
+                "Marketplace data was refreshed, but the final "
+                "processing step did not finish. You can retry when ready.",
+                icon="❌",
+            )
+
+        elif failure_stage == "starting":
+            st.error(
+                "The background refresh could not start successfully. "
+                "You can retry when ready.",
+                icon="❌",
+            )
+
         else:
             st.error(
                 "The marketplace refresh did not finish. "

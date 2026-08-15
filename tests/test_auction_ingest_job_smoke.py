@@ -316,7 +316,7 @@ def test_fake_runner_completes_without_production_ingestion(
 
 
 def test_ingestion_page_exposes_product_progress_contract() -> None:
-    """Verify the Streamlit page retains its progress and notification UI."""
+    """Verify the current Marketplace Sales refresh product contract."""
 
     source = INGEST_PAGE.read_text(
         encoding="utf-8",
@@ -330,15 +330,9 @@ def test_ingestion_page_exposes_product_progress_contract() -> None:
     )
 
     required_text = (
-        "Ingest New Auctions",
-        "Ingest new auctions across all sites",
-        "Auction ingestion is running…",
-        "Auction ingestion started.",
-        "New auctions are ready.",
-        "Auction ingestion failed. Open the log for details.",
-        "Live ingestion log",
-        "This page refreshes automatically every 2 seconds.",
-        "scripts/run_auction_refresh_on_demand.sh",
+        "Refresh Marketplace Sales",
+        "Refresh status",
+        "Technical details",
         "eBay",
         "Buyee",
         "Gripsweat",
@@ -356,8 +350,223 @@ def test_ingestion_page_exposes_product_progress_contract() -> None:
     ]
 
     assert not missing, (
-        "Missing ingestion UI contracts: "
+        "Missing current refresh UI contracts: "
         + ", ".join(
             missing
         )
     )
+
+    obsolete_product_copy = (
+        "Ingest New Auctions",
+        "Ingest new auctions across all sites",
+        "Auction ingestion is running…",
+        "Auction ingestion started.",
+        "New auctions are ready.",
+        "Auction ingestion failed. Open the log for details.",
+        "This page refreshes automatically every 2 seconds.",
+    )
+
+    stale = [
+        value
+        for value in obsolete_product_copy
+        if value in source
+    ]
+
+    assert not stale, (
+        "Obsolete ingestion UI copy returned: "
+        + ", ".join(
+            stale
+        )
+    )
+
+def test_queued_job_without_worker_pid_is_not_reconciled_as_failed(
+    monkeypatch,
+) -> None:
+    """Protect the parent/worker PID-registration startup window."""
+
+    from auction_etl.services import auction_ingest_job as ingest_job
+
+    queued = ingest_job.new_status(
+        "a" * 32
+    )
+
+    assert queued[
+        "worker_pid"
+    ] is None
+
+    persisted: list[
+        dict[str, object]
+    ] = []
+
+    monkeypatch.setattr(
+        ingest_job,
+        "ensure_runtime_directories",
+        lambda: None,
+    )
+
+    monkeypatch.setattr(
+        ingest_job,
+        "read_json",
+        lambda _path: dict(
+            queued
+        ),
+    )
+
+    monkeypatch.setattr(
+        ingest_job,
+        "persist_status",
+        lambda payload: (
+            persisted.append(
+                dict(
+                    payload
+                )
+            )
+            or payload
+        ),
+    )
+
+    result = ingest_job.get_latest_status()
+
+    assert result is not None
+    assert result[
+        "status"
+    ] == "queued"
+
+    assert result[
+        "worker_pid"
+    ] is None
+
+    assert persisted == []
+
+def test_post_processing_failure_does_not_blame_last_marketplace() -> None:
+    """Keep post-processing failures separate from marketplace failures."""
+
+    from auction_etl.services import auction_ingest_job as ingest_job
+
+    status = ingest_job.new_status(
+        "b" * 32
+    )
+
+    ingest_job.interpret_output(
+        status,
+        "Gripsweat ingestion started",
+    )
+
+    assert status[
+        "source_states"
+    ][
+        "Gripsweat"
+    ] == "running"
+
+    assert status[
+        "stage"
+    ] == "marketplace"
+
+    ingest_job.interpret_output(
+        status,
+        "Update auction FX values",
+    )
+
+    assert status[
+        "stage"
+    ] == "post_processing"
+
+    assert status[
+        "source_states"
+    ][
+        "Gripsweat"
+    ] == "observed"
+
+    status[
+        "failure_stage"
+    ] = "post_processing"
+
+    ingest_job.mark_active_sources_failed(
+        status
+    )
+
+    assert "failed" not in set(
+        status[
+            "source_states"
+        ].values()
+    )
+
+    assert status[
+        "source_states"
+    ][
+        "Gripsweat"
+    ] == "observed"
+
+def test_expired_queued_job_without_worker_pid_becomes_start_failure(
+    monkeypatch,
+) -> None:
+    """Prevent an abandoned queued job from blocking all future refreshes."""
+
+    from auction_etl.services import auction_ingest_job as ingest_job
+
+    queued = ingest_job.new_status(
+        "c" * 32
+    )
+
+    queued[
+        "worker_pid"
+    ] = None
+
+    queued[
+        "worker_registration_deadline"
+    ] = 0.0
+
+    persisted: list[
+        dict[str, object]
+    ] = []
+
+    monkeypatch.setattr(
+        ingest_job,
+        "ensure_runtime_directories",
+        lambda: None,
+    )
+
+    monkeypatch.setattr(
+        ingest_job,
+        "read_json",
+        lambda _path: dict(
+            queued
+        ),
+    )
+
+    monkeypatch.setattr(
+        ingest_job,
+        "persist_status",
+        lambda payload: (
+            persisted.append(
+                dict(
+                    payload
+                )
+            )
+            or payload
+        ),
+    )
+
+    result = ingest_job.get_latest_status()
+
+    assert result is not None
+
+    assert result[
+        "status"
+    ] == "failed"
+
+    assert result[
+        "phase"
+    ] == "Worker did not start"
+
+    assert result[
+        "stage"
+    ] == "starting"
+
+    assert result[
+        "failure_stage"
+    ] == "starting"
+
+    assert len(
+        persisted
+    ) == 1
