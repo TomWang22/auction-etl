@@ -131,8 +131,8 @@ TRI_STATE_OPTIONS = (
 
 
 st.set_page_config(
-    page_title="Auction Collector Review",
-    page_icon="💿",
+    page_title="Review Marketplace Sales",
+    page_icon="🔎",
     layout="wide",
 )
 render_navigation()
@@ -3727,7 +3727,7 @@ def render_update_status(
 render_pending_notification()
 
 st.title(
-    "💿 Marketplace Sales Review"
+    "🔎 Review Marketplace Sales"
 )
 
 st.caption(

@@ -28,19 +28,28 @@ class NavigationSection:
 
 NAVIGATION_SECTIONS = (
     NavigationSection(
-        title="Daily work",
+        title="Everyday work",
         description=(
-            "Review sales, update marketplace data, "
-            "and handle newly collected listings."
+            "Start here for the normal workflow: review sales, "
+            "refresh marketplace data, and handle new listings."
         ),
         items=(
             NavigationItem(
-                label="Auction Review",
+                label="Home",
+                path="pages/1_Home.py",
+                icon="🏠",
+                help_text=(
+                    "See what the workspace does, where to start, "
+                    "and how the main tools fit together."
+                ),
+            ),
+            NavigationItem(
+                label="Review Marketplace Sales",
                 path="collector_review.py",
                 icon="🔎",
                 help_text=(
                     "Browse marketplace sales, filter listings, "
-                    "and review collector details."
+                    "and review collector and pressing details."
                 ),
             ),
             NavigationItem(
@@ -48,8 +57,8 @@ NAVIGATION_SECTIONS = (
                 path="pages/15_Ingest_New_Auctions.py",
                 icon="🔄",
                 help_text=(
-                    "Bring in the latest available eBay, Buyee, "
-                    "and Gripsweat sales and process them."
+                    "Check eBay, Buyee, and Gripsweat for the latest "
+                    "available sales and update the local data."
                 ),
             ),
             NavigationItem(
@@ -57,8 +66,8 @@ NAVIGATION_SECTIONS = (
                 path="pages/13_New_Auction_Intake.py",
                 icon="📥",
                 help_text=(
-                    "Review newly collected auction listings and "
-                    "assign them to the correct physical pressing."
+                    "Review newly collected listings and connect them "
+                    "to the correct physical pressing."
                 ),
             ),
             NavigationItem(
@@ -66,17 +75,17 @@ NAVIGATION_SECTIONS = (
                 path="pages/10_Listing_Completeness_Review.py",
                 icon="✅",
                 help_text=(
-                    "Compare one auction copy with the expected "
-                    "contents of its assigned pressing."
+                    "Compare a sale copy with the contents expected "
+                    "for its assigned pressing."
                 ),
             ),
         ),
     ),
     NavigationSection(
-        title="Insights",
+        title="Analysis & reports",
         description=(
-            "Understand prices, data quality, history, "
-            "and recent refresh results."
+            "Understand sale prices, data quality, historical changes, "
+            "and previous refresh results."
         ),
         items=(
             NavigationItem(
@@ -84,16 +93,16 @@ NAVIGATION_SECTIONS = (
                 path="pages/2_Pressing_Analytics.py",
                 icon="📈",
                 help_text=(
-                    "Analyze completed sales for exact catalog "
-                    "numbers and physical pressings."
+                    "Analyze completed sales for exact catalog numbers "
+                    "and physical pressings."
                 ),
             ),
             NavigationItem(
-                label="Data Readiness",
+                label="Data Quality & Readiness",
                 path="pages/5_Normalization_Readiness.py",
                 icon="📊",
                 help_text=(
-                    "See which listings have enough reviewed data "
+                    "See which listings have enough reviewed information "
                     "for reliable comparison and analysis."
                 ),
             ),
@@ -102,18 +111,18 @@ NAVIGATION_SECTIONS = (
                 path="pages/12_Completeness_History.py",
                 icon="🕘",
                 help_text=(
-                    "Review historical completeness snapshots and "
-                    "how a pressing assessment changed over time."
+                    "Review historical completeness assessments and "
+                    "see how they changed over time."
                 ),
             ),
             NavigationItem(
-                label="Refresh Reports & Exports",
+                label="Refresh History & Exports",
                 path="pages/3_Latest_Auction_Refresh.py",
                 icon="📄",
                 help_text=(
-                    "Inspect recent ingestion results and create "
-                    "formatted reports or exports. Use Refresh "
-                    "Marketplace Sales for the normal refresh flow."
+                    "Inspect previous refresh results and create reports "
+                    "or exports. Use Refresh Marketplace Sales to run "
+                    "a new refresh."
                 ),
             ),
         ),
@@ -126,12 +135,12 @@ NAVIGATION_SECTIONS = (
         ),
         items=(
             NavigationItem(
-                label="Pressing Catalog",
+                label="Manage Pressings",
                 path="pages/14_Pressing_Reference_Catalog.py",
                 icon="💿",
                 help_text=(
-                    "Create or edit physical pressing identities such "
-                    "as catalog number, label, matrix, country, and year."
+                    "Create or edit pressing identities such as catalog "
+                    "number, label, matrix, country, and year."
                 ),
             ),
             NavigationItem(
@@ -139,7 +148,7 @@ NAVIGATION_SECTIONS = (
                 path="pages/2_Completeness_Reference.py",
                 icon="📦",
                 help_text=(
-                    "Define the expected components and quantities "
+                    "Define the components and quantities expected "
                     "for an exact physical pressing."
                 ),
             ),
@@ -148,25 +157,25 @@ NAVIGATION_SECTIONS = (
                 path="pages/9_Evidence_Intake.py",
                 icon="📚",
                 help_text=(
-                    "Stage reviewed source evidence supporting "
-                    "pressing identity and completeness claims."
+                    "Add reviewed source evidence that supports pressing "
+                    "identity and completeness claims."
                 ),
             ),
             NavigationItem(
-                label="Evidence Sources & Bulk Review",
+                label="Review Evidence in Bulk",
                 path="pages/3_Evidence_and_Bulk_Observations.py",
                 icon="🧾",
                 help_text=(
-                    "Manage evidence sources and review multiple "
-                    "listing observations together."
+                    "Manage evidence sources and review multiple listing "
+                    "observations together."
                 ),
             ),
         ),
     ),
     NavigationSection(
-        title="Advanced setup",
+        title="Advanced tools",
         description=(
-            "Less frequent tools for structured cleanup, rules, "
+            "Less frequently used tools for structured cleanup, rules, "
             "profiles, and audited reference maintenance."
         ),
         items=(
@@ -175,9 +184,8 @@ NAVIGATION_SECTIONS = (
                 path="pages/8_Cohort_Curation_Wizard.py",
                 icon="🧭",
                 help_text=(
-                    "Work through pressing identity, evidence, "
-                    "completeness, condition, comparables, and "
-                    "readiness in one guided workflow."
+                    "Work through pressing identity, evidence, completeness, "
+                    "condition, comparables, and readiness step by step."
                 ),
             ),
             NavigationItem(
@@ -185,8 +193,8 @@ NAVIGATION_SECTIONS = (
                 path="pages/7_Normalization_Workbench.py",
                 icon="🧹",
                 help_text=(
-                    "Resolve prioritized data-cleanup tasks, "
-                    "normalization values, and comparable decisions."
+                    "Resolve prioritized cleanup tasks, normalized values, "
+                    "and comparable decisions."
                 ),
             ),
             NavigationItem(
@@ -194,27 +202,26 @@ NAVIGATION_SECTIONS = (
                 path="pages/6_Deterministic_Verdict_Rules.py",
                 icon="⚖️",
                 help_text=(
-                    "Review and maintain the explicit rules used "
-                    "to calculate listing and market verdicts."
+                    "Review the explicit rules used to calculate listing "
+                    "and market verdicts."
                 ),
             ),
             NavigationItem(
-                label="Media Type Setup",
+                label="Media Rules & Defaults",
                 path="pages/11_Media_Profile_Admin.py",
                 icon="🧩",
                 help_text=(
-                    "Configure expected component behavior for "
-                    "LPs, CDs, cassettes, DVDs, and other media."
+                    "Configure expected component behavior for LPs, CDs, "
+                    "cassettes, DVDs, and other media."
                 ),
             ),
             NavigationItem(
-                label="Reference Record Audit",
+                label="Advanced Record Maintenance",
                 path="pages/4_Reference_Record_Admin.py",
                 icon="🗃️",
                 help_text=(
-                    "Maintain low-level reference records, evidence "
-                    "attachments, revision history, restores, and "
-                    "audited bulk imports."
+                    "Maintain low-level reference records, evidence links, "
+                    "revision history, restores, and audited bulk imports."
                 ),
             ),
         ),
@@ -222,38 +229,52 @@ NAVIGATION_SECTIONS = (
 )
 
 
-def render_navigation() -> None:
-    """Render the shared user-facing sidebar navigation."""
+def render_navigation_item(
+    item: NavigationItem,
+) -> None:
+    """Render one sidebar destination."""
+
+    st.page_link(
+        item.path,
+        label=item.label,
+        icon=item.icon,
+        help=item.help_text,
+        width="stretch",
+    )
+
+
+def render_navigation(
+    *,
+    expand_advanced: bool = False,
+) -> None:
+    """Render compact shared user-facing sidebar navigation."""
 
     with st.sidebar:
         st.markdown(
             "## 💿 Auction workspace"
         )
         st.caption(
-            "Choose what you want to do. "
-            "Hover over any item for a short explanation."
+            "Review sales, refresh data, and manage pressings."
         )
 
-        for section_index, section in enumerate(
-            NAVIGATION_SECTIONS
-        ):
-            if section_index:
-                st.divider()
+        for section in NAVIGATION_SECTIONS:
+            if section.title == "Advanced tools":
+                with st.expander(
+                    "Advanced tools",
+                    expanded=expand_advanced,
+                ):
+                    for item in section.items:
+                        render_navigation_item(
+                            item
+                        )
+
+                continue
 
             st.markdown(
-                f"#### {section.title}"
-            )
-            st.caption(
-                section.description
+                f"**{section.title}**"
             )
 
             for item in section.items:
-                st.page_link(
-                    item.path,
-                    label=item.label,
-                    icon=item.icon,
-                    help=item.help_text,
-                    width="stretch",
+                render_navigation_item(
+                    item
                 )
-
-        st.divider()

@@ -54,28 +54,102 @@ SOURCE_ICONS = {
 }
 
 
-def format_timestamp(
+def parse_timestamp(
     value: Any,
-) -> str:
-    """Format a persisted ISO timestamp in local time."""
+) -> datetime | None:
+    """Parse one persisted ISO timestamp."""
 
     if not value:
-        return "—"
+        return None
 
     try:
-        parsed = datetime.fromisoformat(
+        return datetime.fromisoformat(
             str(
                 value
             )
         )
     except ValueError:
-        return str(
-            value
+        return None
+
+
+def format_timestamp(
+    value: Any,
+) -> str:
+    """Format a persisted ISO timestamp in local time."""
+
+    parsed = parse_timestamp(
+        value
+    )
+
+    if parsed is None:
+        return (
+            str(
+                value
+            )
+            if value
+            else "—"
         )
 
     return parsed.astimezone().strftime(
         "%Y-%m-%d %H:%M:%S"
     )
+
+
+def format_duration(
+    started_at: Any,
+    finished_at: Any,
+) -> str:
+    """Format elapsed refresh time for normal users."""
+
+    started = parse_timestamp(
+        started_at
+    )
+
+    finished = parse_timestamp(
+        finished_at
+    )
+
+    if (
+        started is None
+        or finished is None
+    ):
+        return "—"
+
+    total_seconds = max(
+        0,
+        int(
+            (
+                finished
+                - started
+            ).total_seconds()
+        ),
+    )
+
+    hours, remainder = divmod(
+        total_seconds,
+        3600,
+    )
+
+    minutes, seconds = divmod(
+        remainder,
+        60,
+    )
+
+    if hours:
+        return (
+            f"{hours}h "
+            f"{minutes}m "
+            f"{seconds}s"
+        )
+
+    if minutes:
+        return (
+            f"{minutes}m "
+            f"{seconds}s"
+        )
+
+    return f"{seconds}s"
+
 
 
 def source_state_label(
@@ -191,43 +265,182 @@ def failed_sources(
 def render_technical_details(
     status: dict[str, Any],
 ) -> None:
-    """Keep operational details available without dominating the UI."""
+    """Keep troubleshooting information secondary to product status."""
 
     with st.expander(
-        "Technical details",
+        "Advanced technical details",
         expanded=False,
     ):
-        job_id = status.get(
-            "job_id"
+        st.caption(
+            "Troubleshooting information. Most users can ignore this section."
         )
 
-        if job_id:
-            st.caption(
-                f"Refresh ID: {job_id}"
+        run_details_tab, log_output_tab = st.tabs(
+            (
+                "Run details",
+                "Log output",
             )
+        )
 
-        log_text = tail_log(
+        job_id = str(
             status.get(
-                "log_path"
-            ),
-            line_count=120,
+                "job_id",
+                "",
+            )
+            or ""
         )
 
-        if log_text:
-            st.code(
-                log_text,
-                language="text",
+        state = str(
+            status.get(
+                "status",
+                "",
             )
-        else:
-            st.caption(
-                "No technical output is available yet."
+            or ""
+        )
+
+        phase = str(
+            status.get(
+                "phase",
+                "",
             )
+            or ""
+        )
+
+        stage = str(
+            status.get(
+                "stage",
+                "",
+            )
+            or ""
+        )
+
+        return_code = status.get(
+            "return_code"
+        )
+
+        log_path_value = status.get(
+            "log_path"
+        )
+
+        with run_details_tab:
+            detail_columns = st.columns(
+                2
+            )
+
+            with detail_columns[0]:
+                st.caption(
+                    "Refresh ID"
+                )
+                st.write(
+                    job_id
+                    or "—"
+                )
+
+                st.caption(
+                    "State"
+                )
+                st.write(
+                    state.replace(
+                        "_",
+                        " ",
+                    ).title()
+                    or "—"
+                )
+
+                st.caption(
+                    "Stage"
+                )
+                st.write(
+                    stage.replace(
+                        "_",
+                        " ",
+                    ).title()
+                    or "—"
+                )
+
+            with detail_columns[1]:
+                st.caption(
+                    "Phase"
+                )
+                st.write(
+                    phase
+                    or "—"
+                )
+
+                st.caption(
+                    "Return code"
+                )
+                st.write(
+                    str(
+                        return_code
+                    )
+                    if return_code is not None
+                    else "—"
+                )
+
+                st.caption(
+                    "Log file"
+                )
+                st.write(
+                    str(
+                        log_path_value
+                    )
+                    if log_path_value
+                    else "—"
+                )
+
+        with log_output_tab:
+            log_text = tail_log(
+                log_path_value,
+                line_count=80,
+            )
+
+            if log_text:
+                st.caption(
+                    "Showing the most recent 80 log lines."
+                )
+
+                st.code(
+                    log_text,
+                    language="text",
+                )
+            else:
+                st.caption(
+                    "No technical output is available yet."
+                )
+
+            if log_path_value:
+                log_path = Path(
+                    str(
+                        log_path_value
+                    )
+                )
+
+                if log_path.is_file():
+                    full_log = log_path.read_text(
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+
+                    st.download_button(
+                        "Download full refresh log",
+                        data=full_log,
+                        file_name=(
+                            f"refresh-{job_id or 'latest'}.log"
+                        ),
+                        mime="text/plain",
+                        key=(
+                            "refresh-log-download:"
+                            f"{job_id or 'latest'}"
+                        ),
+                    )
+
 
 
 def render_status(
     status: dict[str, Any],
 ) -> None:
-    """Render the current persisted background refresh."""
+    """Render a clear user-facing refresh summary."""
 
     state = str(
         status.get(
@@ -264,15 +477,16 @@ def render_status(
     )
 
     st.subheader(
-        "Refresh status"
+        "Latest refresh"
     )
 
-    st.progress(
-        progress / 100.0,
-        text=(
-            f"{progress}% — {phase}"
-        ),
-    )
+    if state != "completed":
+        st.progress(
+            progress / 100.0,
+            text=(
+                f"{progress}% — {phase}"
+            ),
+        )
 
     render_source_progress(
         status
@@ -360,14 +574,13 @@ def render_status(
         )
 
     detail_columns = st.columns(
-        2
+        3
     )
 
     with detail_columns[0]:
         st.caption(
             "Started"
         )
-
         st.write(
             format_timestamp(
                 status.get(
@@ -380,7 +593,6 @@ def render_status(
         st.caption(
             "Finished"
         )
-
         st.write(
             format_timestamp(
                 status.get(
@@ -389,9 +601,25 @@ def render_status(
             )
         )
 
+    with detail_columns[2]:
+        st.caption(
+            "Duration"
+        )
+        st.write(
+            format_duration(
+                status.get(
+                    "started_at"
+                ),
+                status.get(
+                    "finished_at"
+                ),
+            )
+        )
+
     render_technical_details(
         status
     )
+
 
 
 def start_refresh() -> dict[str, Any] | None:

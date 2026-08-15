@@ -23,7 +23,7 @@ st.set_page_config(
     page_icon="🧩",
     layout="wide",
 )
-render_navigation()
+render_navigation(expand_advanced=True)
 
 
 def _engine():

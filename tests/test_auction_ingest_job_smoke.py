@@ -316,7 +316,7 @@ def test_fake_runner_completes_without_production_ingestion(
 
 
 def test_ingestion_page_exposes_product_progress_contract() -> None:
-    """Verify the current Marketplace Sales refresh product contract."""
+    """Verify the Marketplace Sales refresh v2 product contract."""
 
     source = INGEST_PAGE.read_text(
         encoding="utf-8",
@@ -331,8 +331,13 @@ def test_ingestion_page_exposes_product_progress_contract() -> None:
 
     required_text = (
         "Refresh Marketplace Sales",
-        "Refresh status",
-        "Technical details",
+        "Latest refresh",
+        "Advanced technical details",
+        "Run details",
+        "Log output",
+        "Duration",
+        "Download full refresh log",
+        "Marketplace sales are up to date.",
         "eBay",
         "Buyee",
         "Gripsweat",
@@ -356,26 +361,21 @@ def test_ingestion_page_exposes_product_progress_contract() -> None:
         )
     )
 
-    obsolete_product_copy = (
-        "Ingest New Auctions",
-        "Ingest new auctions across all sites",
-        "Auction ingestion is running…",
-        "Auction ingestion started.",
-        "New auctions are ready.",
-        "Auction ingestion failed. Open the log for details.",
-        "This page refreshes automatically every 2 seconds.",
+    forbidden_text = (
+        '"Refresh status"',
+        '"Technical details"',
     )
 
-    stale = [
+    remaining = [
         value
-        for value in obsolete_product_copy
+        for value in forbidden_text
         if value in source
     ]
 
-    assert not stale, (
-        "Obsolete ingestion UI copy returned: "
+    assert not remaining, (
+        "Superseded refresh UI contracts remain: "
         + ", ".join(
-            stale
+            remaining
         )
     )
 
