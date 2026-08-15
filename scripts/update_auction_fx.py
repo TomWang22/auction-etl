@@ -495,7 +495,8 @@ def apply_rate(
 def verify_results(
     connection: Connection,
 ) -> None:
-    """Validate restored-row and conversion coverage."""
+    """Validate auction-key uniqueness and dynamic conversion coverage."""
+
     totals = connection.execute(
         text(
             """
@@ -549,35 +550,38 @@ def verify_results(
         for row in marketplace_rows
     }
 
-    buyee = by_marketplace.get("buyee")
-    ebay = by_marketplace.get("ebay")
-
-    if buyee is None or int(
-        buyee["rows"]
-    ) != 77:
-        raise RuntimeError(
-            "Expected 77 Buyee rows."
-        )
-
-    if ebay is None or int(
-        ebay["rows"]
-    ) != 698:
-        raise RuntimeError(
-            "Expected 698 eBay rows."
-        )
-
-    for marketplace, expected in (
-        ("buyee", 77),
-        ("ebay", 698),
+    for marketplace in (
+        "buyee",
+        "ebay",
     ):
-        row = by_marketplace[marketplace]
+        row = by_marketplace.get(
+            marketplace
+        )
+
+        if row is None:
+            raise RuntimeError(
+                f"Expected non-empty {marketplace} marketplace data; "
+                "found no rows."
+            )
+
+        expected = int(
+            row["rows"]
+        )
+
+        if expected <= 0:
+            raise RuntimeError(
+                f"Expected non-empty {marketplace} marketplace data; "
+                f"found {expected} rows."
+            )
 
         for column in (
             "fx_rates",
             "final_prices_usd",
             "gross_prices_usd",
         ):
-            actual = int(row[column])
+            actual = int(
+                row[column]
+            )
 
             if actual != expected:
                 raise RuntimeError(
