@@ -51,6 +51,7 @@ from auction_etl.services.media_aware_reference import (
     load_reference_editor_rows as _canonical_load_reference_editor_rows,
     preview_reference_changes as _canonical_preview_reference_changes,
 )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
@@ -58,6 +59,7 @@ st.set_page_config(
     page_icon="📦",
     layout="wide",
 )
+render_navigation()
 
 
 @st.cache_resource

@@ -31,6 +31,7 @@ from auction_etl.services.reference_record_admin import (
     restore_reference_event,
     update_reference_record,
 )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
@@ -38,6 +39,7 @@ st.set_page_config(
     page_icon="🗃️",
     layout="wide",
 )
+render_navigation()
 
 
 @st.cache_resource

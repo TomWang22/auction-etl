@@ -23,6 +23,7 @@ from auction_etl.services.evidence_intake import (
     stage_and_review,
     store_uploaded_evidence,
 )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
@@ -30,6 +31,7 @@ st.set_page_config(
     page_icon="📚",
     layout="wide",
 )
+render_navigation()
 
 
 @st.cache_resource

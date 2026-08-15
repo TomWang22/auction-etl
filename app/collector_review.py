@@ -37,6 +37,7 @@ from auction_etl.reporting.main_review_integration import (
 )
 
 from auction_etl.reporting.main_review_integration import _concat_unique_columns
+from app.navigation import render_navigation
 
 
 DATABASE_URL = os.environ.get(
@@ -134,6 +135,7 @@ st.set_page_config(
     page_icon="💿",
     layout="wide",
 )
+render_navigation()
 
 st.markdown(
     """

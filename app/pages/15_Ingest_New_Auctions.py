@@ -32,6 +32,7 @@ from auction_etl.services.auction_ingest_job import (  # noqa: E402
     start_job,
     tail_log,
 )
+from app.navigation import render_navigation
 
 
 RUNNING_STATES = {
@@ -426,6 +427,7 @@ st.set_page_config(
     page_icon="🔄",
     layout="wide",
 )
+render_navigation()
 
 st.title(
     "🔄 Refresh Marketplace Sales"

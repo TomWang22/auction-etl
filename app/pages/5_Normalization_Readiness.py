@@ -16,6 +16,7 @@ from auction_etl.services.normalization_readiness import (
     list_readiness,
     readiness_summary,
 )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
@@ -23,6 +24,7 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+render_navigation()
 
 
 @st.cache_resource

@@ -15,6 +15,7 @@ from auction_etl.services.media_profile_admin import (
     load_profile_editor,
     preview_profile_changes,
 )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
@@ -22,6 +23,7 @@ st.set_page_config(
     page_icon="🧩",
     layout="wide",
 )
+render_navigation()
 
 
 def _engine():

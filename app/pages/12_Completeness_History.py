@@ -15,12 +15,14 @@ from auction_etl.services.completeness_history import (
     list_timeline,
     snapshot_coverage,
 )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
     page_title="Completeness History",
     layout="wide",
 )
+render_navigation()
 
 
 @st.cache_resource

@@ -31,6 +31,7 @@ from auction_etl.reporting.recent_ingestion import (  # noqa: E402
     get_report_rows,
     write_formatted_csv,
 )
+from app.navigation import render_navigation
 
 
 DATABASE_URL = os.environ.get(
@@ -267,6 +268,7 @@ st.set_page_config(
     page_icon="↻",
     layout="wide",
 )
+render_navigation()
 
 st.title("Latest Auction Refresh")
 st.caption(

@@ -19,6 +19,7 @@ from auction_etl.services.pressing_reference_catalog import (
     list_pressing_references,
     save_pressing_reference,
 )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
@@ -26,6 +27,7 @@ st.set_page_config(
     page_icon="💿",
     layout="wide",
 )
+render_navigation()
 
 
 @st.cache_resource

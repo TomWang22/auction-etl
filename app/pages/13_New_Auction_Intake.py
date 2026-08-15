@@ -19,6 +19,7 @@ from auction_etl.services.auction_intake import (
     preview_assignment,
     queue_count,
 )
+from app.navigation import render_navigation
 
 
 def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
@@ -62,6 +63,7 @@ def main() -> None:
         page_title="New Auction Intake",
         layout="wide",
     )
+    render_navigation()
 
     st.title("New Auction Intake")
 

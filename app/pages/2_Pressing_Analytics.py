@@ -12,6 +12,7 @@ import streamlit as st
 from sqlalchemy import text
 
 from auction_etl.database.session import engine
+from app.navigation import render_navigation
 
 
 st.set_page_config(
@@ -19,6 +20,7 @@ st.set_page_config(
     page_icon="📈",
     layout="wide",
 )
+render_navigation()
 
 
 def query_dataframe(

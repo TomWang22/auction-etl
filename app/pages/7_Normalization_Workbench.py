@@ -23,6 +23,7 @@ from auction_etl.services.normalization_workbench import (
     queue_summary,
     save_comparable_review,
 )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
@@ -30,6 +31,7 @@ st.set_page_config(
     page_icon="🧭",
     layout="wide",
 )
+render_navigation()
 
 
 @st.cache_resource
