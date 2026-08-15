@@ -446,10 +446,10 @@ is_running = bool(
     in RUNNING_STATES
 )
 
-current_state = (
+job_id = (
     str(
         status.get(
-            "status",
+            "job_id",
             "",
         )
     )
@@ -457,13 +457,43 @@ current_state = (
     else ""
 )
 
+session_job_key = (
+    "auction_ingest_started_job"
+)
+
+if (
+    is_running
+    and job_id
+):
+    st.session_state[
+        session_job_key
+    ] = job_id
+
+session_job_id = str(
+    st.session_state.get(
+        session_job_key,
+        "",
+    )
+    or ""
+)
+
+is_session_job = bool(
+    job_id
+    and session_job_id
+    == job_id
+)
+
+show_primary_status = bool(
+    status
+    and (
+        is_running
+        or is_session_job
+    )
+)
+
 if is_running:
     button_label = (
         "Marketplace refresh is running…"
-    )
-elif current_state == "failed":
-    button_label = (
-        "Retry marketplace refresh"
     )
 else:
     button_label = (
@@ -496,18 +526,35 @@ if status is None:
         icon="ℹ️",
     )
 
-else:
+elif show_primary_status:
     render_status(
         status
     )
 
-    job_id = str(
-        status.get(
-            "job_id",
-            "",
-        )
+else:
+    render_source_progress(
+        None
     )
 
+    st.info(
+        "Ready when you are. Start a refresh to check "
+        "all three marketplaces for new sales.",
+        icon="ℹ️",
+    )
+
+    with st.expander(
+        "Previous refresh",
+        expanded=False,
+    ):
+        st.caption(
+            "The previous refresh is available for reference."
+        )
+
+        render_status(
+            status
+        )
+
+if status is not None:
     state = str(
         status.get(
             "status",
@@ -530,7 +577,8 @@ else:
     )
 
     if (
-        state == "completed"
+        is_session_job
+        and state == "completed"
         and previous_notification
         != notification_value
     ):
@@ -544,7 +592,8 @@ else:
         ] = notification_value
 
     elif (
-        state == "failed"
+        is_session_job
+        and state == "failed"
         and previous_notification
         != notification_value
     ):

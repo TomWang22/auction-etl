@@ -570,3 +570,123 @@ def test_expired_queued_job_without_worker_pid_becomes_start_failure(
     assert len(
         persisted
     ) == 1
+
+def test_explicit_gripsweat_failure_stays_marketplace_failure() -> None:
+    """Preserve explicit Gripsweat failure attribution through noisy output."""
+
+    from auction_etl.services import auction_ingest_job as ingest_job
+
+    status = ingest_job.new_status(
+        "f" * 32
+    )
+
+    ingest_job.interpret_output(
+        status,
+        "Gripsweat probe import",
+    )
+
+    ingest_job.interpret_output(
+        status,
+        "Refresh failed: Import Gripsweat probe exited with status 1.",
+    )
+
+    ingest_job.interpret_output(
+        status,
+        "Verification completed successfully",
+    )
+
+    ingest_job.interpret_output(
+        status,
+        '  "status": "FAILED",',
+    )
+
+    assert status[
+        "failure_stage"
+    ] == "marketplace"
+
+    assert status[
+        "stage"
+    ] == "marketplace"
+
+    assert status[
+        "source_states"
+    ][
+        "Gripsweat"
+    ] == "failed"
+
+    assert status[
+        "source_states"
+    ][
+        "eBay"
+    ] != "failed"
+
+    assert status[
+        "source_states"
+    ][
+        "Buyee"
+    ] != "failed"
+
+def test_refresh_stage_does_not_regress_after_verification() -> None:
+    """Keep a later noisy log line from moving progress backwards."""
+
+    from auction_etl.services import auction_ingest_job as ingest_job
+
+    status = ingest_job.new_status(
+        "1" * 32
+    )
+
+    status[
+        "stage"
+    ] = "post_processing"
+
+    ingest_job.interpret_output(
+        status,
+        "Verification of refreshed data",
+    )
+
+    assert status[
+        "stage"
+    ] == "verification"
+
+    ingest_job.interpret_output(
+        status,
+        "Collector reclassification",
+    )
+
+    assert status[
+        "stage"
+    ] == "verification"
+
+def test_refresh_page_defaults_to_ready_with_previous_terminal_collapsed() -> None:
+    """Keep an old terminal job secondary on a fresh page session."""
+
+    source = INGEST_PAGE.read_text(
+        encoding="utf-8",
+    )
+
+    required = (
+        "show_primary_status",
+        "auction_ingest_started_job",
+        "Previous refresh",
+        "The previous refresh is available for reference.",
+        "Refresh marketplace sales",
+        "is_session_job",
+    )
+
+    missing = [
+        value
+        for value in required
+        if value not in source
+    ]
+
+    assert not missing, (
+        "Missing fresh-page status contracts: "
+        + ", ".join(
+            missing
+        )
+    )
+
+    assert (
+        "Retry marketplace refresh"
+        not in source
+    )

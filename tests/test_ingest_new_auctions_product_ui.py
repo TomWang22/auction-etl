@@ -32,7 +32,7 @@ def test_page_compiles_and_uses_product_copy() -> None:
     required = (
         "Refresh Marketplace Sales",
         "Refresh marketplace sales",
-        "Retry marketplace refresh",
+        "Previous refresh",
         "Refresh status",
         "Technical details",
         "Marketplace sales are up to date.",

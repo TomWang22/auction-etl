@@ -283,3 +283,30 @@ def test_importer_source_preserves_transaction_isolation() -> None:
         "ON CONFLICT (source_name, gripsweat_item_key)"
         not in source
     )
+
+def test_identity_lookup_avoids_untyped_null_parameter_guards() -> None:
+    """Prevent psycopg from inferring a type for a NULL-only bind usage."""
+
+    source = IMPORTER.read_text(
+        encoding="utf-8",
+    )
+
+    assert (
+        ":original_marketplace IS NOT NULL"
+        not in source
+    )
+
+    assert (
+        ":original_listing_id IS NOT NULL"
+        not in source
+    )
+
+    assert (
+        "original_marketplace = :original_marketplace"
+        in source
+    )
+
+    assert (
+        "original_listing_id = :original_listing_id"
+        in source
+    )

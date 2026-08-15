@@ -107,9 +107,7 @@ SALE_IDENTITY_MATCH = text(
             AND gripsweat_item_key = :gripsweat_item_key
         )
         OR (
-            :original_marketplace IS NOT NULL
-            AND :original_listing_id IS NOT NULL
-            AND original_marketplace = :original_marketplace
+            original_marketplace = :original_marketplace
             AND original_listing_id = :original_listing_id
         )
     ORDER BY id

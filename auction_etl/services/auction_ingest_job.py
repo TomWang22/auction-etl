@@ -646,7 +646,7 @@ def interpret_output(
     status: dict[str, Any],
     raw_line: str,
 ) -> None:
-    """Convert production runner output into coarse user-facing progress."""
+    """Convert production output into stable product-facing progress."""
 
     clean_line = strip_terminal_codes(
         raw_line
@@ -659,29 +659,100 @@ def interpret_output(
 
     lowered = clean_line.lower()
 
-    current_stage = str(
-        status.get(
-            "stage",
-            "",
+    explicit_failure_line = (
+        "refresh failed:" in lowered
+        or "commandfailure:" in lowered
+    )
+
+    if explicit_failure_line:
+        failed_source: str | None = None
+
+        if "gripsweat" in lowered:
+            failed_source = "Gripsweat"
+        elif "buyee" in lowered:
+            failed_source = "Buyee"
+        elif "ebay" in lowered:
+            failed_source = "eBay"
+
+        if failed_source is not None:
+            states = dict(
+                status.get(
+                    "source_states",
+                    {},
+                )
+            )
+
+            for source, source_state in states.items():
+                if (
+                    source_state == "running"
+                    and source != failed_source
+                ):
+                    states[source] = "observed"
+
+            states[
+                failed_source
+            ] = "failed"
+
+            status[
+                "source_states"
+            ] = states
+
+            status[
+                "stage"
+            ] = "marketplace"
+
+            status[
+                "failure_stage"
+            ] = "marketplace"
+
+            advance_progress(
+                status,
+                64,
+                f"{failed_source} refresh failed",
+                clean_line,
+            )
+
+            return
+
+    if status.get(
+        "failure_stage"
+    ):
+        return
+
+    stage_order = {
+        "queued": 0,
+        "starting": 1,
+        "marketplace": 2,
+        "post_processing": 3,
+        "verification": 4,
+        "finalizing": 5,
+        "complete": 6,
+    }
+
+    def stage_rank() -> int:
+        """Return the rank of the current refresh stage."""
+
+        return stage_order.get(
+            str(
+                status.get(
+                    "stage",
+                    "starting",
+                )
+            ),
+            stage_order[
+                "starting"
+            ],
         )
-    )
 
-    source_stage_open = (
-        current_stage
-        not in {
-            "post_processing",
-            "verification",
-            "finalizing",
-            "complete",
-        }
-    )
-
-    if source_stage_open:
+    if stage_rank() <= stage_order[
+        "marketplace"
+    ]:
         if "ebay" in lowered:
             observe_source(
                 status,
                 "eBay",
             )
+
             advance_progress(
                 status,
                 20,
@@ -694,6 +765,7 @@ def interpret_output(
                 status,
                 "Buyee",
             )
+
             advance_progress(
                 status,
                 42,
@@ -706,6 +778,7 @@ def interpret_output(
                 status,
                 "Gripsweat",
             )
+
             advance_progress(
                 status,
                 64,
@@ -716,28 +789,35 @@ def interpret_output(
     post_processing_marker = any(
         marker in lowered
         for marker in (
-            "collector",
+            "collector reclassification",
             "reclassif",
             "normalize",
             "enrich",
-            "fx ",
-            "exchange rate",
             "update auction fx",
+            "exchange rate",
         )
     )
 
-    if post_processing_marker:
+    if (
+        post_processing_marker
+        and stage_rank()
+        <= stage_order[
+            "post_processing"
+        ]
+    ):
         finish_active_sources(
             status
         )
-        status["stage"] = "post_processing"
+
+        status[
+            "stage"
+        ] = "post_processing"
 
         if any(
             marker in lowered
             for marker in (
-                "fx ",
-                "exchange rate",
                 "update auction fx",
+                "exchange rate",
             )
         ):
             advance_progress(
@@ -757,31 +837,31 @@ def interpret_output(
     verification_marker = any(
         marker in lowered
         for marker in (
-            "doctor",
             "health check",
             "verification",
-            "verify",
+            "verify refreshed",
+            "verify results",
         )
     )
 
     if (
         verification_marker
-        and str(
-            status.get(
-                "stage",
-                "",
-            )
-        )
-        in {
-            "post_processing",
-            "verification",
-            "finalizing",
-        }
+        and stage_rank()
+        >= stage_order[
+            "post_processing"
+        ]
+        and stage_rank()
+        <= stage_order[
+            "verification"
+        ]
     ):
         finish_active_sources(
             status
         )
-        status["stage"] = "verification"
+
+        status[
+            "stage"
+        ] = "verification"
 
         advance_progress(
             status,
@@ -790,35 +870,36 @@ def interpret_output(
             clean_line,
         )
 
-    finishing_marker = any(
-        marker in lowered
-        for marker in (
-            "result=",
-            "=pass",
-            "complete",
-            "completed",
-            "success",
+    stripped = lowered.strip()
+
+    finishing_marker = (
+        stripped.startswith(
+            "result="
         )
+        or "completed successfully"
+        in lowered
+        or "refresh completed"
+        in lowered
     )
 
     if (
         finishing_marker
-        and str(
-            status.get(
-                "stage",
-                "",
-            )
-        )
-        in {
-            "post_processing",
-            "verification",
-            "finalizing",
-        }
+        and stage_rank()
+        >= stage_order[
+            "post_processing"
+        ]
+        and stage_rank()
+        <= stage_order[
+            "finalizing"
+        ]
     ):
         finish_active_sources(
             status
         )
-        status["stage"] = "finalizing"
+
+        status[
+            "stage"
+        ] = "finalizing"
 
         advance_progress(
             status,
@@ -826,6 +907,7 @@ def interpret_output(
             "Finishing",
             clean_line,
         )
+
 
 
 def mark_all_sources_done(
@@ -1057,6 +1139,9 @@ def run_worker(
     else:
         failure_stage = str(
             status.get(
+                "failure_stage"
+            )
+            or status.get(
                 "stage",
                 "starting",
             )
