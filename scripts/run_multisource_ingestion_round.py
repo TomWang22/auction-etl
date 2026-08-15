@@ -766,13 +766,26 @@ def stable_reference_evidence(
             ) AS marketplace,
             listing_id,
             title,
-            label,
+            COALESCE(
+                to_jsonb(auction)->>'label',
+                to_jsonb(auction)->>'record_label'
+            ) AS label,
             catalog_number,
-            COALESCE(to_jsonb(auction)->>'release_country', to_jsonb(auction)->>'country') AS country,
-            format,
-            year,
-            payload
-        FROM warehouse.auction
+            COALESCE(
+                to_jsonb(auction)->>'release_country',
+                to_jsonb(auction)->>'country'
+            ) AS country,
+            COALESCE(
+                to_jsonb(auction)->>'release_format',
+                to_jsonb(auction)->>'media_type',
+                to_jsonb(auction)->>'format'
+            ) AS format,
+            COALESCE(
+                to_jsonb(auction)->>'release_year',
+                to_jsonb(auction)->>'year'
+            ) AS year,
+            to_jsonb(auction)->'payload' AS payload
+        FROM warehouse.auction AS auction
         ORDER BY
             marketplace,
             listing_id
