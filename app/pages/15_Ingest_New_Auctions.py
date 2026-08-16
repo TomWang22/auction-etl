@@ -660,6 +660,14 @@ render_navigation(current_page="pages/15_Ingest_New_Auctions.py")
 st.title(
     "🔄 Refresh Marketplace Sales"
 )
+st.page_link(
+    "pages/16_Artists_to_Track.py",
+    label="🎵 See artists currently being tracked",
+    help=(
+        "Review the artists and marketplace searches "
+        "used by refreshes."
+    ),
+)
 
 st.caption(
     "Bring in the latest available sales from eBay, Buyee, "

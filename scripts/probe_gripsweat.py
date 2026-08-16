@@ -1,6 +1,7 @@
 """Read-only Gripsweat search probe with saved diagnostics."""
 
 from __future__ import annotations
+import os
 
 import argparse
 import hashlib
@@ -22,7 +23,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from auction_etl.browser.manager import browser
 
 
-DEFAULT_CONFIG = Path("config/gripsweat_sources.json")
+DEFAULT_CONFIG = Path(os.environ.get("AUCTION_GRIPSWEAT_SOURCES_CONFIG", "config/gripsweat_sources.json"))
 DEFAULT_OUTPUT = Path("logs/gripsweat/probe/gripsweat_probe.json")
 DEFAULT_DIAGNOSTIC_DIR = Path("logs/gripsweat")
 

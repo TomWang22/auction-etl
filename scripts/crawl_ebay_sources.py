@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 
 import argparse
 import hashlib
@@ -21,7 +22,7 @@ from auction_etl.models.crawl import CrawlJob
 from auction_etl.services.ingest import ingest_raw_page
 
 
-DEFAULT_CONFIG = Path("config/ebay_sources.json")
+DEFAULT_CONFIG = Path(os.environ.get("AUCTION_EBAY_SOURCES_CONFIG", "config/ebay_sources.json"))
 
 BLOCK_MARKERS = (
     "pardon our interruption",

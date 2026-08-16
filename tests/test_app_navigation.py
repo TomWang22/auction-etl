@@ -63,6 +63,7 @@ EXPECTED_PATHS = {
     "pages/13_New_Auction_Intake.py",
     "pages/14_Pressing_Reference_Catalog.py",
     "pages/15_Ingest_New_Auctions.py",
+    "pages/16_Artists_to_Track.py",
 }
 
 ADVANCED_PAGE_NAMES = {

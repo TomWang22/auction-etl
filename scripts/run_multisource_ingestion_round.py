@@ -1128,6 +1128,8 @@ def main(
     argv: Sequence[str] | None = None,
 ) -> int:
     """Run preflight or one live guarded all-source round."""
+    from auction_etl.services.artist_tracking import prepare_runtime_marketplace_configs
+    prepare_runtime_marketplace_configs()
 
     arguments = parse_args(
         argv

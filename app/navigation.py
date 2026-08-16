@@ -61,6 +61,15 @@ NAVIGATION_SECTIONS = (
                 ),
             ),
             NavigationItem(
+                label="Artists to track",
+                path="pages/16_Artists_to_Track.py",
+                icon="🎵",
+                help_text=(
+                    "See which artists marketplace refreshes "
+                    "currently search for and open those searches."
+                ),
+            ),
+            NavigationItem(
                 label="Match new listings",
                 path="pages/13_New_Auction_Intake.py",
                 icon="📥",

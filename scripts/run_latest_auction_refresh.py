@@ -544,6 +544,8 @@ def staging_count(
 
 def main() -> int:
     """Run a complete safe all-source refresh."""
+    from auction_etl.services.artist_tracking import prepare_runtime_marketplace_configs
+    prepare_runtime_marketplace_configs()
     arguments = parse_arguments()
     root = Path(__file__).resolve().parents[1]
 
