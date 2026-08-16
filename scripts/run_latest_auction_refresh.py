@@ -146,6 +146,43 @@ def configure_logging(log_path: Path) -> logging.Logger:
     return logger
 
 
+def emit_source_state(
+    logger: logging.Logger,
+    source: str,
+    state: str,
+) -> None:
+    """Emit one machine-readable marketplace lifecycle event."""
+
+    allowed_sources = {
+        "eBay",
+        "Buyee",
+        "Gripsweat",
+    }
+
+    allowed_states = {
+        "running",
+        "done",
+        "unavailable",
+        "failed",
+    }
+
+    if source not in allowed_sources:
+        raise ValueError(
+            f"Unsupported marketplace source: {source!r}"
+        )
+
+    if state not in allowed_states:
+        raise ValueError(
+            f"Unsupported marketplace state: {state!r}"
+        )
+
+    logger.info(
+        "AUCTION_SOURCE_STATE source=%s state=%s",
+        source,
+        state,
+    )
+
+
 def run_command(
     command: list[str],
     *,
@@ -747,6 +784,12 @@ def main() -> int:
                 "is unavailable."
             )
 
+        emit_source_state(
+            logger,
+            "Buyee",
+            "running",
+        )
+
         auth_status, _ = run_command(
             [
                 sys.executable,
@@ -840,6 +883,12 @@ def main() -> int:
             )
 
             logger.warning("")
+            emit_source_state(
+                logger,
+                "Buyee",
+                "unavailable",
+            )
+
             logger.warning(
                 "Buyee source unavailable: programmatic "
                 "access is blocked."
@@ -1001,6 +1050,19 @@ def main() -> int:
                 status=status,
             )
 
+        if buyee_available:
+            emit_source_state(
+                logger,
+                "Buyee",
+                "done",
+            )
+
+        emit_source_state(
+            logger,
+            "eBay",
+            "running",
+        )
+
         for source_name in enabled_ebay_sources(
             root / "config" / "ebay_sources.json"
         ):
@@ -1089,6 +1151,18 @@ def main() -> int:
                 status_file=status_file,
                 status=status,
             )
+
+        emit_source_state(
+            logger,
+            "eBay",
+            "done",
+        )
+
+        emit_source_state(
+            logger,
+            "Gripsweat",
+            "running",
+        )
 
         run_command(
             [
@@ -1231,6 +1305,12 @@ def main() -> int:
             phase="Apply Gripsweat detail enrichment",
             status_file=status_file,
             status=status,
+        )
+
+        emit_source_state(
+            logger,
+            "Gripsweat",
+            "done",
         )
 
         run_command(

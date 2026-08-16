@@ -56,6 +56,12 @@ ANSI_ESCAPE_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+SOURCE_STATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^AUCTION_SOURCE_STATE "
+    r"source=(eBay|Buyee|Gripsweat) "
+    r"state=(running|done|unavailable|failed)$"
+)
+
 def utc_now() -> str:
     """Return a stable UTC timestamp."""
 
@@ -439,6 +445,8 @@ def new_status(
             list(
                 PLANNED_SOURCES
             ),
+        "source_state_protocol":
+            "explicit-v1",
         "source_states": {
             source:
                 "waiting"
@@ -590,11 +598,123 @@ def advance_progress(
     status["message"] = message
 
 
+def apply_explicit_source_state(
+    status: dict[str, Any],
+    clean_line: str,
+) -> bool:
+    """Apply one machine-readable marketplace lifecycle event."""
+
+    match = SOURCE_STATE_RE.fullmatch(
+        clean_line
+    )
+
+    if match is None:
+        return False
+
+    source_name = match.group(1)
+    source_state = match.group(2)
+
+    states = dict(
+        status.get(
+            "source_states",
+            {},
+        )
+    )
+
+    states[
+        source_name
+    ] = source_state
+
+    status[
+        "source_states"
+    ] = states
+
+    status[
+        "source_state_protocol"
+    ] = "explicit-v1"
+
+    status[
+        "stage"
+    ] = "marketplace"
+
+    progress_values = {
+        ("Buyee", "running"): (
+            12,
+            "Refreshing Buyee",
+        ),
+        ("Buyee", "done"): (
+            28,
+            "Buyee complete",
+        ),
+        ("Buyee", "unavailable"): (
+            28,
+            "Buyee unavailable",
+        ),
+        ("eBay", "running"): (
+            32,
+            "Refreshing eBay",
+        ),
+        ("eBay", "done"): (
+            52,
+            "eBay complete",
+        ),
+        ("Gripsweat", "running"): (
+            56,
+            "Refreshing Gripsweat",
+        ),
+        ("Gripsweat", "done"): (
+            72,
+            "Gripsweat complete",
+        ),
+    }
+
+    if source_state == "failed":
+        status[
+            "failure_stage"
+        ] = "marketplace"
+
+        advance_progress(
+            status,
+            64,
+            f"{source_name} refresh failed",
+            clean_line,
+        )
+
+        return True
+
+    progress_value = progress_values.get(
+        (
+            source_name,
+            source_state,
+        )
+    )
+
+    if progress_value is not None:
+        candidate, phase = progress_value
+
+        advance_progress(
+            status,
+            candidate,
+            phase,
+            clean_line,
+        )
+
+    return True
+
+
 def observe_source(
     status: dict[str, Any],
     source_name: str,
 ) -> None:
     """Mark one source as observed by the production runner."""
+
+    if (
+        status.get(
+            "source_state_protocol"
+        )
+        == "explicit-v1"
+    ):
+        return
 
     states = dict(
         status.get(
@@ -628,6 +748,14 @@ def finish_active_sources(
 ) -> None:
     """Close marketplace activity before post-processing begins."""
 
+    if (
+        status.get(
+            "source_state_protocol"
+        )
+        == "explicit-v1"
+    ):
+        return
+
     states = dict(
         status.get(
             "source_states",
@@ -657,6 +785,12 @@ def interpret_output(
 
     status["last_output"] = clean_line
 
+    if apply_explicit_source_state(
+        status,
+        clean_line,
+    ):
+        return
+
     lowered = clean_line.lower()
 
     explicit_failure_line = (
@@ -682,12 +816,18 @@ def interpret_output(
                 )
             )
 
-            for source, source_state in states.items():
-                if (
-                    source_state == "running"
-                    and source != failed_source
-                ):
-                    states[source] = "observed"
+            if (
+                status.get(
+                    "source_state_protocol"
+                )
+                != "explicit-v1"
+            ):
+                for source, source_state in states.items():
+                    if (
+                        source_state == "running"
+                        and source != failed_source
+                    ):
+                        states[source] = "observed"
 
             states[
                 failed_source
@@ -744,9 +884,15 @@ def interpret_output(
             ],
         )
 
-    if stage_rank() <= stage_order[
-        "marketplace"
-    ]:
+    if (
+        not status.get(
+            "source_state_protocol"
+        )
+        and stage_rank()
+        <= stage_order[
+            "marketplace"
+        ]
+    ):
         if "ebay" in lowered:
             observe_source(
                 status,
@@ -913,22 +1059,79 @@ def interpret_output(
 def mark_all_sources_done(
     status: dict[str, Any],
 ) -> None:
-    """Mark all configured sources successful after the runner exits cleanly."""
+    """Finalize source states after the production runner exits cleanly."""
 
-    status["source_states"] = {
-        source:
-            "done"
-        for source
-        in PLANNED_SOURCES
-    }
+    states = dict(
+        status.get(
+            "source_states",
+            {},
+        )
+    )
 
-    status["stage"] = "complete"
+    if (
+        status.get(
+            "source_state_protocol"
+        )
+        == "explicit-v1"
+    ):
+        terminal_states = {
+            "done",
+            "failed",
+            "unavailable",
+        }
+
+        for source in PLANNED_SOURCES:
+            if states.get(
+                source
+            ) not in terminal_states:
+                states[
+                    source
+                ] = "failed"
+    else:
+        states = {
+            source:
+                "done"
+            for source
+            in PLANNED_SOURCES
+        }
+
+    status[
+        "source_states"
+    ] = states
+
+    status[
+        "stage"
+    ] = "complete"
 
 
 def mark_active_sources_failed(
     status: dict[str, Any],
 ) -> None:
     """Mark only a marketplace that was active during marketplace failure."""
+
+    if (
+        status.get(
+            "source_state_protocol"
+        )
+        == "explicit-v1"
+    ):
+        states = dict(
+            status.get(
+                "source_states",
+                {},
+            )
+        )
+
+        for source, source_state in states.items():
+            if source_state == "running":
+                states[
+                    source
+                ] = "failed"
+
+        status[
+            "source_states"
+        ] = states
+        return
 
     states = dict(
         status.get(

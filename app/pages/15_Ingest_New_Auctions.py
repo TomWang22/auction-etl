@@ -47,6 +47,8 @@ SOURCE_ICONS = {
         "🔵",
     "observed":
         "🟡",
+    "unavailable":
+        "⚠️",
     "done":
         "✅",
     "failed":
@@ -170,6 +172,9 @@ def source_state_label(
     if source_state == "failed":
         return "Failed"
 
+    if source_state == "unavailable":
+        return "Unavailable"
+
     if source_state == "observed":
         if overall_state == "failed":
             return "Reached before failure"
@@ -260,6 +265,43 @@ def failed_sources(
             source
         ) == "failed"
     ]
+
+
+def unavailable_sources(
+    status: dict[str, Any],
+) -> list[str]:
+    """Return marketplaces unavailable during this refresh."""
+
+    source_states = status.get(
+        "source_states",
+        {},
+    )
+
+    return [
+        source
+        for source in PLANNED_SOURCES
+        if source_states.get(
+            source
+        ) == "unavailable"
+    ]
+
+
+def all_sources_done(
+    status: dict[str, Any],
+) -> bool:
+    """Return whether every marketplace completed successfully."""
+
+    source_states = status.get(
+        "source_states",
+        {},
+    )
+
+    return all(
+        source_states.get(
+            source
+        ) == "done"
+        for source in PLANNED_SOURCES
+    )
 
 
 def render_technical_details(
@@ -500,10 +542,34 @@ def render_status(
         )
 
     elif state == "completed":
-        st.success(
-            "Marketplace sales are up to date.",
-            icon="✅",
+        unavailable = unavailable_sources(
+            status
         )
+
+        if all_sources_done(
+            status
+        ):
+            st.success(
+                "Marketplace sales are up to date.",
+                icon="✅",
+            )
+        elif unavailable:
+            source_text = ", ".join(
+                unavailable
+            )
+
+            st.warning(
+                "Refresh finished, but "
+                f"{source_text} was unavailable. "
+                "Only completed marketplaces are up to date.",
+                icon="⚠️",
+            )
+        else:
+            st.warning(
+                "Refresh finished, but not every marketplace "
+                "reported successful completion.",
+                icon="⚠️",
+            )
 
     elif state == "failed":
         sources = failed_sources(
@@ -817,6 +883,9 @@ if status is not None:
     if (
         is_session_job
         and state == "completed"
+        and all_sources_done(
+            status
+        )
         and previous_notification
         != notification_value
     ):
@@ -829,6 +898,20 @@ if status is not None:
             notification_key
         ] = notification_value
 
+    elif (
+        is_session_job
+        and state == "completed"
+        and previous_notification
+        != notification_value
+    ):
+        st.toast(
+            "Marketplace refresh finished with warnings.",
+            icon="⚠️",
+        )
+
+        st.session_state[
+            notification_key
+        ] = notification_value
     elif (
         is_session_job
         and state == "failed"
