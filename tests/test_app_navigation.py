@@ -266,14 +266,11 @@ def test_home_page_explains_the_workspace_and_primary_workflow() -> None:
         "Auction workspace",
         "What do you want to do?",
         "Review sales",
-        "Review marketplace sales →",
         "Update marketplace data",
-        "Refresh marketplace sales →",
         "Match new listings",
-        "Match new listings →",
         "Manage pressings",
-        "Manage pressings →",
         "Typical workflow",
+        "render_task_card_styles()",
         "st.switch_page(",
     )
 
@@ -284,7 +281,7 @@ def test_home_page_explains_the_workspace_and_primary_workflow() -> None:
     ]
 
     assert not missing, (
-        "Missing Home v3 UX contracts: "
+        "Missing Home v4 UX contracts: "
         + ", ".join(
             missing
         )
@@ -304,11 +301,195 @@ def test_home_page_explains_the_workspace_and_primary_workflow() -> None:
     ]
 
     assert not remaining, (
-        "Superseded Home v2 contracts remain: "
+        "Superseded Home contracts remain: "
         + ", ".join(
             remaining
         )
     )
+
+
+def test_home_primary_tasks_are_single_clickable_surfaces() -> None:
+    """Make each primary Home card one complete navigation target."""
+
+    source = HOME_PAGE.read_text(
+        encoding="utf-8",
+    )
+
+    tree = ast.parse(
+        source,
+        filename=str(
+            HOME_PAGE
+        ),
+    )
+
+    task_functions = [
+        node
+        for node in tree.body
+        if (
+            isinstance(
+                node,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                ),
+            )
+            and node.name == "task_card"
+        )
+    ]
+
+    assert len(
+        task_functions
+    ) == 1
+
+    task_source = (
+        ast.get_source_segment(
+            source,
+            task_functions[0],
+        )
+        or ""
+    )
+
+    assert (
+        "with st.container("
+        not in task_source
+    )
+
+    assert (
+        "button_label"
+        not in task_source
+    )
+
+    function_contracts = (
+        "st.button(",
+        'width="stretch"',
+        'help=f"Open {title}"',
+        "st.switch_page(",
+    )
+
+    missing_function_contracts = [
+        value
+        for value in function_contracts
+        if value not in task_source
+    ]
+
+    assert not missing_function_contracts, (
+        "Missing clickable-card function contracts: "
+        + ", ".join(
+            missing_function_contracts
+        )
+    )
+
+    style_contracts = (
+        'TASK_CARD_KEY_PREFIX = "home-task-card-"',
+        '[class*="st-key-home-task-card-"] button',
+        "button:hover",
+        "button:focus-visible",
+        "button::after",
+        "prefers-reduced-motion",
+    )
+
+    missing_style_contracts = [
+        value
+        for value in style_contracts
+        if value not in source
+    ]
+
+    assert not missing_style_contracts, (
+        "Missing clickable-card interaction contracts: "
+        + ", ".join(
+            missing_style_contracts
+        )
+    )
+
+    task_calls = [
+        node
+        for node in ast.walk(
+            tree
+        )
+        if (
+            isinstance(
+                node,
+                ast.Call,
+            )
+            and isinstance(
+                node.func,
+                ast.Name,
+            )
+            and node.func.id == "task_card"
+        )
+    ]
+
+    assert len(
+        task_calls
+    ) == 4
+
+    destinations: set[str] = set()
+
+    for call in task_calls:
+        keywords = {
+            keyword.arg:
+                keyword.value
+            for keyword in call.keywords
+            if keyword.arg is not None
+        }
+
+        assert (
+            "button_label"
+            not in keywords
+        )
+
+        key_node = keywords.get(
+            "key"
+        )
+
+        assert isinstance(
+            key_node,
+            ast.Constant,
+        )
+
+        assert isinstance(
+            key_node.value,
+            str,
+        )
+
+        assert key_node.value.startswith(
+            "home-task-card-"
+        )
+
+        destination_node = keywords.get(
+            "destination"
+        )
+
+        assert isinstance(
+            destination_node,
+            ast.Constant,
+        )
+
+        assert isinstance(
+            destination_node.value,
+            str,
+        )
+
+        destinations.add(
+            destination_node.value
+        )
+
+    assert destinations == {
+        "collector_review.py",
+        "pages/15_Ingest_New_Auctions.py",
+        "pages/13_New_Auction_Intake.py",
+        "pages/14_Pressing_Reference_Catalog.py",
+    }
+
+    stale_nested_ctas = (
+        "Review marketplace sales →",
+        "Refresh marketplace sales →",
+        "Match new listings →",
+        "Manage pressings →",
+    )
+
+    for stale in stale_nested_ctas:
+        assert stale not in source
 
 
 

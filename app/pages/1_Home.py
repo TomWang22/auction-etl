@@ -18,36 +18,134 @@ render_navigation(
 )
 
 
+TASK_CARD_KEY_PREFIX = "home-task-card-"
+
+TASK_CARD_STYLES = """
+<style>
+[class*="st-key-home-task-card-"] button {
+    position: relative;
+    width: 100%;
+    min-height: 10.75rem;
+    padding: 1.25rem 3.5rem 1.25rem 1.25rem;
+    justify-content: flex-start;
+    align-items: flex-start;
+    text-align: left;
+    border-radius: 0.85rem;
+    transition:
+        transform 120ms ease,
+        box-shadow 120ms ease,
+        border-color 120ms ease,
+        background-color 120ms ease;
+}
+
+[class*="st-key-home-task-card-"] button [data-testid="stMarkdownContainer"] {
+    width: 100%;
+    text-align: left;
+}
+
+[class*="st-key-home-task-card-"] button p {
+    margin: 0;
+    text-align: left;
+    white-space: normal;
+    font-size: 1rem;
+    line-height: 1.5;
+    font-weight: 400;
+}
+
+[class*="st-key-home-task-card-"] button p strong {
+    display: inline-block;
+    margin-bottom: 0.7rem;
+    font-size: 1.45rem;
+    line-height: 1.25;
+    font-weight: 700;
+}
+
+[class*="st-key-home-task-card-"] button::after {
+    content: "→";
+    position: absolute;
+    top: 1.15rem;
+    right: 1.25rem;
+    font-size: 1.45rem;
+    line-height: 1;
+    transition: transform 120ms ease;
+}
+
+[class*="st-key-home-task-card-"] button:hover {
+    transform: translateY(-2px);
+    border-color: currentColor;
+    box-shadow: 0 0.5rem 1.25rem rgba(0, 0, 0, 0.08);
+}
+
+[class*="st-key-home-task-card-"] button:hover::after {
+    transform: translateX(3px);
+}
+
+[class*="st-key-home-task-card-"] button:focus-visible {
+    outline: 3px solid currentColor;
+    outline-offset: 2px;
+}
+
+[class*="st-key-home-task-card-"] button:active {
+    transform: translateY(0);
+    box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    [class*="st-key-home-task-card-"] button,
+    [class*="st-key-home-task-card-"] button::after {
+        transition: none;
+    }
+
+    [class*="st-key-home-task-card-"] button:hover,
+    [class*="st-key-home-task-card-"] button:hover::after {
+        transform: none;
+    }
+}
+</style>
+"""
+
+
+def render_task_card_styles() -> None:
+    """Apply the Home task-card interaction treatment."""
+
+    st.markdown(
+        TASK_CARD_STYLES,
+        unsafe_allow_html=True,
+    )
+
+
 def task_card(
     *,
     icon: str,
     title: str,
     description: str,
-    button_label: str,
     destination: str,
     key: str,
 ) -> None:
-    """Render one immediately actionable workspace task."""
+    """Render one primary task as a single clickable surface."""
 
-    with st.container(
-        border=True
+    if not key.startswith(
+        TASK_CARD_KEY_PREFIX
     ):
-        st.subheader(
-            f"{icon} {title}"
+        raise ValueError(
+            "Home task-card keys must start with "
+            f"{TASK_CARD_KEY_PREFIX!r}."
         )
 
-        st.write(
-            description
-        )
+    label = (
+        f"{icon} **{title}**  \\n"
+        f"{description}"
+    )
 
-        if st.button(
-            button_label,
-            key=key,
-            width="stretch",
-        ):
-            st.switch_page(
-                destination
-            )
+    if st.button(
+        label,
+        key=key,
+        help=f"Open {title}",
+        width="stretch",
+    ):
+        st.switch_page(
+            destination
+        )
 
 
 def workflow_step(
@@ -67,6 +165,8 @@ def workflow_step(
         description
     )
 
+
+render_task_card_styles()
 
 st.title(
     "🏠 Auction workspace"
@@ -93,9 +193,8 @@ with left_top:
             "Search existing eBay, Buyee, and Gripsweat sales, "
             "inspect listing details, and review pressing information."
         ),
-        button_label="Review marketplace sales →",
         destination="collector_review.py",
-        key="home-review-marketplace-sales",
+        key="home-task-card-review-sales",
     )
 
 with right_top:
@@ -106,9 +205,8 @@ with right_top:
             "Check all configured marketplaces for the latest available "
             "sales and process the refreshed data."
         ),
-        button_label="Refresh marketplace sales →",
         destination="pages/15_Ingest_New_Auctions.py",
-        key="home-refresh-marketplace-sales",
+        key="home-task-card-refresh-marketplace-sales",
     )
 
 left_bottom, right_bottom = st.columns(
@@ -123,9 +221,8 @@ with left_bottom:
             "Work through newly collected listings and connect each one "
             "to the correct physical pressing."
         ),
-        button_label="Match new listings →",
         destination="pages/13_New_Auction_Intake.py",
-        key="home-match-new-listings",
+        key="home-task-card-match-new-listings",
     )
 
 with right_bottom:
@@ -136,9 +233,8 @@ with right_bottom:
             "Create or update physical pressing identities, catalog "
             "numbers, labels, matrices, countries, and release years."
         ),
-        button_label="Manage pressings →",
         destination="pages/14_Pressing_Reference_Catalog.py",
-        key="home-manage-pressings",
+        key="home-task-card-manage-pressings",
     )
 
 st.divider()
