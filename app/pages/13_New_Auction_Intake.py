@@ -63,7 +63,7 @@ def main() -> None:
         page_title="New Auction Intake",
         layout="wide",
     )
-    render_navigation()
+    render_navigation(current_page="pages/13_New_Auction_Intake.py")
 
     st.title("New Auction Intake")
 

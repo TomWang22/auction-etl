@@ -23,7 +23,7 @@ st.set_page_config(
     page_icon="🧩",
     layout="wide",
 )
-render_navigation(expand_advanced=True)
+render_navigation(current_page="pages/11_Media_Profile_Admin.py")
 
 
 def _engine():

@@ -122,31 +122,31 @@ def test_navigation_labels_are_plain_language() -> None:
 
     assert labels[
         "collector_review.py"
-    ] == "Review Marketplace Sales"
+    ] == "Review marketplace sales"
 
     assert labels[
         "pages/5_Normalization_Readiness.py"
-    ] == "Data Quality & Readiness"
+    ] == "Data quality & readiness"
 
     assert labels[
         "pages/3_Latest_Auction_Refresh.py"
-    ] == "Refresh History & Exports"
+    ] == "Refresh history & exports"
 
     assert labels[
         "pages/14_Pressing_Reference_Catalog.py"
-    ] == "Manage Pressings"
+    ] == "Manage pressings"
 
     assert labels[
         "pages/3_Evidence_and_Bulk_Observations.py"
-    ] == "Review Evidence in Bulk"
+    ] == "Review evidence in bulk"
 
     assert labels[
         "pages/11_Media_Profile_Admin.py"
-    ] == "Media Rules & Defaults"
+    ] == "Media rules & defaults"
 
     assert labels[
         "pages/4_Reference_Record_Admin.py"
-    ] == "Advanced Record Maintenance"
+    ] == "Advanced record maintenance"
 
     forbidden_terms = (
         "Admin",
@@ -190,7 +190,7 @@ def test_navigation_has_clear_user_intent_sections() -> None:
 
 
 def test_sidebar_is_compact_and_advanced_tools_are_secondary() -> None:
-    """Keep explanatory prose on Home rather than filling the sidebar."""
+    """Keep everyday work visible while secondary groups stay compact."""
 
     source = NAVIGATION_MODULE.read_text(
         encoding="utf-8",
@@ -201,61 +201,11 @@ def test_sidebar_is_compact_and_advanced_tools_are_secondary() -> None:
         not in source
     )
 
-    assert (
-        '"Advanced tools"'
-        in source
-    )
-
-    assert (
-        "expanded=expand_advanced"
-        in source
-    )
-
-    assert (
-        "Review sales, refresh data, and manage pressings."
-        in source
-    )
-
-
-def test_advanced_pages_expand_the_advanced_navigation_group() -> None:
-    """Keep the current advanced destination visible when it is active."""
-
-    for page_name in ADVANCED_PAGE_NAMES:
-        source = (
-            PAGES_DIRECTORY
-            / page_name
-        ).read_text(
-            encoding="utf-8",
-        )
-
-        assert (
-            "render_navigation("
-            "expand_advanced=True"
-            ")"
-            in source
-        )
-
-
-def test_home_page_explains_the_workspace_and_primary_workflow() -> None:
-    """Give new users a clear start-here destination."""
-
-    source = HOME_PAGE.read_text(
-        encoding="utf-8",
-    )
-
     required = (
-        "What would you like to do?",
-        "What this workspace does",
-        "Recommended workflow",
-        "Browse every tool",
-        "Review marketplace sales",
-        "Refresh marketplace sales",
-        "Review new auctions",
-        "Manage pressings",
-        "Collect",
-        "Review",
-        "Organize",
-        "Analyze",
+        '"Advanced tools"',
+        "with st.expander(",
+        "expanded=expanded",
+        "_section_contains(",
     )
 
     missing = [
@@ -265,29 +215,125 @@ def test_home_page_explains_the_workspace_and_primary_workflow() -> None:
     ]
 
     assert not missing, (
-        "Missing Home-page UX contracts: "
+        "Missing compact navigation contracts: "
         + ", ".join(
             missing
         )
     )
 
+    assert (
+        "expand_advanced"
+        not in source
+    )
+
+
+
+def test_advanced_pages_expand_the_advanced_navigation_group() -> None:
+    """Identify each advanced route so its containing group auto-expands."""
+
+    for page_name in ADVANCED_PAGE_NAMES:
+        source = (
+            PAGES_DIRECTORY
+            / page_name
+        ).read_text(
+            encoding="utf-8",
+        )
+
+        expected_route = (
+            f'current_page="pages/{page_name}"'
+        )
+
+        assert (
+            expected_route
+            in source
+        )
+
+        assert (
+            "expand_advanced=True"
+            not in source
+        )
+
+
+
+def test_home_page_explains_the_workspace_and_primary_workflow() -> None:
+    """Make Home a low-friction launcher for the primary product jobs."""
+
+    source = HOME_PAGE.read_text(
+        encoding="utf-8",
+    )
+
+    required = (
+        "Auction workspace",
+        "What do you want to do?",
+        "Review sales",
+        "Review marketplace sales →",
+        "Update marketplace data",
+        "Refresh marketplace sales →",
+        "Match new listings",
+        "Match new listings →",
+        "Manage pressings",
+        "Manage pressings →",
+        "Typical workflow",
+        "st.switch_page(",
+    )
+
+    missing = [
+        value
+        for value in required
+        if value not in source
+    ]
+
+    assert not missing, (
+        "Missing Home v3 UX contracts: "
+        + ", ".join(
+            missing
+        )
+    )
+
+    forbidden = (
+        "What would you like to do?",
+        "What this workspace does",
+        "Recommended workflow",
+        "Browse every tool",
+    )
+
+    remaining = [
+        value
+        for value in forbidden
+        if value in source
+    ]
+
+    assert not remaining, (
+        "Superseded Home v2 contracts remain: "
+        + ", ".join(
+            remaining
+        )
+    )
+
+
 
 def test_primary_review_page_matches_navigation_wording() -> None:
-    """Keep the main review page title aligned with the sidebar."""
+    """Keep the primary review page title aligned with navigation."""
 
     source = ENTRYPOINT.read_text(
         encoding="utf-8",
     )
 
     assert (
-        'page_title="Review Marketplace Sales"'
+        'page_title="Review marketplace sales"'
         in source
     )
 
     assert (
-        '"🔎 Review Marketplace Sales"'
+        '"🔎 Review marketplace sales"'
         in source
     )
+
+    assert (
+        'page_title="Review Marketplace Sales"'
+        not in source
+    )
+
 
 
 def test_default_streamlit_page_list_is_hidden() -> None:

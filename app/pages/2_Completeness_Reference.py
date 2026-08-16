@@ -59,7 +59,7 @@ st.set_page_config(
     page_icon="📦",
     layout="wide",
 )
-render_navigation()
+render_navigation(current_page="pages/2_Completeness_Reference.py")
 
 
 @st.cache_resource

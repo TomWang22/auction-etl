@@ -39,7 +39,7 @@ st.set_page_config(
     page_icon="🗃️",
     layout="wide",
 )
-render_navigation(expand_advanced=True)
+render_navigation(current_page="pages/4_Reference_Record_Admin.py")
 
 
 @st.cache_resource

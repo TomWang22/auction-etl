@@ -22,7 +22,7 @@ st.set_page_config(
     page_title="Completeness History",
     layout="wide",
 )
-render_navigation()
+render_navigation(current_page="pages/12_Completeness_History.py")
 
 
 @st.cache_resource

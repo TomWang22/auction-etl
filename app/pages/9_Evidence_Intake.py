@@ -31,7 +31,7 @@ st.set_page_config(
     page_icon="📚",
     layout="wide",
 )
-render_navigation()
+render_navigation(current_page="pages/9_Evidence_Intake.py")
 
 
 @st.cache_resource

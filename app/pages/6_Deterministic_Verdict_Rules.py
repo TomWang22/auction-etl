@@ -32,7 +32,7 @@ st.set_page_config(
     page_icon="⚖️",
     layout="wide",
 )
-render_navigation(expand_advanced=True)
+render_navigation(current_page="pages/6_Deterministic_Verdict_Rules.py")
 
 
 @st.cache_resource

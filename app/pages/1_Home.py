@@ -1,199 +1,197 @@
-"""Home page for the auction workspace."""
+"""Product-facing start page for the auction workspace."""
 
 from __future__ import annotations
 
 import streamlit as st
 
-from app.navigation import NAVIGATION_SECTIONS, render_navigation
-
-
-def render_action_card(
-    *,
-    title: str,
-    icon: str,
-    description: str,
-    path: str,
-    action_label: str,
-) -> None:
-    """Render one prominent starting action."""
-
-    with st.container(
-        border=True
-    ):
-        st.markdown(
-            f"### {icon} {title}"
-        )
-        st.write(
-            description
-        )
-        st.page_link(
-            path,
-            label=action_label,
-            width="stretch",
-        )
+from app.navigation import render_navigation
 
 
 st.set_page_config(
-    page_title="Auction Workspace",
+    page_title="Auction workspace",
     page_icon="🏠",
     layout="wide",
 )
 
-render_navigation()
+render_navigation(
+    current_page="pages/1_Home.py"
+)
+
+
+def task_card(
+    *,
+    icon: str,
+    title: str,
+    description: str,
+    button_label: str,
+    destination: str,
+    key: str,
+) -> None:
+    """Render one immediately actionable workspace task."""
+
+    with st.container(
+        border=True
+    ):
+        st.subheader(
+            f"{icon} {title}"
+        )
+
+        st.write(
+            description
+        )
+
+        if st.button(
+            button_label,
+            key=key,
+            width="stretch",
+        ):
+            st.switch_page(
+                destination
+            )
+
+
+def workflow_step(
+    *,
+    number: int,
+    icon: str,
+    title: str,
+    description: str,
+) -> None:
+    """Render one concise workflow step."""
+
+    st.markdown(
+        f"### {number}. {icon} {title}"
+    )
+
+    st.write(
+        description
+    )
+
 
 st.title(
     "🏠 Auction workspace"
 )
 
 st.write(
-    "Keep marketplace sales current, review new listings, maintain "
-    "physical pressing records, and analyze sale history from one place."
+    "Review marketplace sales, keep your data current, "
+    "and connect listings to the correct physical pressings."
 )
 
 st.subheader(
-    "What would you like to do?"
+    "What do you want to do?"
 )
 
-left_column, right_column = st.columns(
+left_top, right_top = st.columns(
     2
 )
 
-with left_column:
-    render_action_card(
-        title="Review marketplace sales",
+with left_top:
+    task_card(
         icon="🔎",
+        title="Review sales",
         description=(
-            "Search eBay, Buyee, and Gripsweat sales, inspect listing "
-            "details, and review pressing information."
+            "Search existing eBay, Buyee, and Gripsweat sales, "
+            "inspect listing details, and review pressing information."
         ),
-        path="collector_review.py",
-        action_label="Open sales review",
+        button_label="Review marketplace sales →",
+        destination="collector_review.py",
+        key="home-review-marketplace-sales",
     )
 
-    render_action_card(
-        title="Review new auctions",
-        icon="📥",
-        description=(
-            "Work through newly collected listings and connect each one "
-            "to the correct physical pressing."
-        ),
-        path="pages/13_New_Auction_Intake.py",
-        action_label="Open new-auction review",
-    )
-
-with right_column:
-    render_action_card(
-        title="Refresh marketplace sales",
+with right_top:
+    task_card(
         icon="🔄",
+        title="Update marketplace data",
         description=(
             "Check all configured marketplaces for the latest available "
             "sales and process the refreshed data."
         ),
-        path="pages/15_Ingest_New_Auctions.py",
-        action_label="Open marketplace refresh",
+        button_label="Refresh marketplace sales →",
+        destination="pages/15_Ingest_New_Auctions.py",
+        key="home-refresh-marketplace-sales",
     )
 
-    render_action_card(
-        title="Manage pressings",
+left_bottom, right_bottom = st.columns(
+    2
+)
+
+with left_bottom:
+    task_card(
+        icon="📥",
+        title="Match new listings",
+        description=(
+            "Work through newly collected listings and connect each one "
+            "to the correct physical pressing."
+        ),
+        button_label="Match new listings →",
+        destination="pages/13_New_Auction_Intake.py",
+        key="home-match-new-listings",
+    )
+
+with right_bottom:
+    task_card(
         icon="💿",
+        title="Manage pressings",
         description=(
             "Create or update physical pressing identities, catalog "
             "numbers, labels, matrices, countries, and release years."
         ),
-        path="pages/14_Pressing_Reference_Catalog.py",
-        action_label="Open pressing library",
+        button_label="Manage pressings →",
+        destination="pages/14_Pressing_Reference_Catalog.py",
+        key="home-manage-pressings",
     )
 
 st.divider()
 
 st.subheader(
-    "What this workspace does"
+    "Typical workflow"
 )
 
-workflow_columns = st.columns(
+step_one, step_two, step_three, step_four = st.columns(
     4
 )
 
-with workflow_columns[0]:
-    st.markdown(
-        "### 1. 🔄 Collect"
-    )
-    st.write(
-        "Refresh available marketplace sales from eBay, Buyee, "
-        "and Gripsweat."
-    )
-
-with workflow_columns[1]:
-    st.markdown(
-        "### 2. 🔎 Review"
-    )
-    st.write(
-        "Inspect incoming and historical listings and correct "
-        "important sale details."
+with step_one:
+    workflow_step(
+        number=1,
+        icon="🔄",
+        title="Refresh",
+        description=(
+            "Check marketplaces when you want the latest available data."
+        ),
     )
 
-with workflow_columns[2]:
-    st.markdown(
-        "### 3. 💿 Organize"
-    )
-    st.write(
-        "Connect listings to exact physical pressings and maintain "
-        "their expected contents and evidence."
-    )
-
-with workflow_columns[3]:
-    st.markdown(
-        "### 4. 📈 Analyze"
-    )
-    st.write(
-        "Compare sale history, pressing performance, completeness, "
-        "and data readiness."
+with step_two:
+    workflow_step(
+        number=2,
+        icon="📥",
+        title="Match",
+        description=(
+            "Connect newly collected listings to exact physical pressings."
+        ),
     )
 
-st.divider()
+with step_three:
+    workflow_step(
+        number=3,
+        icon="💿",
+        title="Maintain",
+        description=(
+            "Improve pressing identity, expected contents, and evidence."
+        ),
+    )
 
-st.subheader(
-    "Recommended workflow"
+with step_four:
+    workflow_step(
+        number=4,
+        icon="🔎",
+        title="Review",
+        description=(
+            "Compare sale history, condition, completeness, and performance."
+        ),
+    )
+
+st.caption(
+    "You do not need to follow every step every time. "
+    "Start with the task you need."
 )
-
-st.markdown(
-    """
-**1. Refresh marketplace sales** when you want to check for new data.
-
-**2. Review new auctions** when newly collected listings need a pressing assignment.
-
-**3. Manage pressings and evidence** when a physical release needs clearer identity
-or completeness information.
-
-**4. Review marketplace sales and analytics** when you want to compare prices,
-condition, completeness, or pressing performance.
-"""
-)
-
-with st.expander(
-    "Browse every tool",
-    expanded=False,
-):
-    st.caption(
-        "Every destination is listed here with a plain-language explanation."
-    )
-
-    for section in NAVIGATION_SECTIONS:
-        st.markdown(
-            f"### {section.title}"
-        )
-        st.write(
-            section.description
-        )
-
-        for item in section.items:
-            if item.path == "pages/1_Home.py":
-                continue
-
-            st.page_link(
-                item.path,
-                label=item.label,
-                icon=item.icon,
-                help=item.help_text,
-                width="stretch",
-            )

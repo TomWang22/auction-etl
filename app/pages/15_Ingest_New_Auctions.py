@@ -655,7 +655,7 @@ st.set_page_config(
     page_icon="🔄",
     layout="wide",
 )
-render_navigation()
+render_navigation(current_page="pages/15_Ingest_New_Auctions.py")
 
 st.title(
     "🔄 Refresh Marketplace Sales"

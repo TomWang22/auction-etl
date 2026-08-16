@@ -31,7 +31,7 @@ st.set_page_config(
     page_icon="🧭",
     layout="wide",
 )
-render_navigation(expand_advanced=True)
+render_navigation(current_page="pages/7_Normalization_Workbench.py")
 
 
 @st.cache_resource

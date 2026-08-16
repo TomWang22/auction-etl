@@ -131,11 +131,11 @@ TRI_STATE_OPTIONS = (
 
 
 st.set_page_config(
-    page_title="Review Marketplace Sales",
+    page_title="Review marketplace sales",
     page_icon="🔎",
     layout="wide",
 )
-render_navigation()
+render_navigation(current_page="collector_review.py")
 
 st.markdown(
     """
@@ -3727,7 +3727,7 @@ def render_update_status(
 render_pending_notification()
 
 st.title(
-    "🔎 Review Marketplace Sales"
+    "🔎 Review marketplace sales"
 )
 
 st.caption(

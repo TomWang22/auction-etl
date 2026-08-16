@@ -31,7 +31,7 @@ st.set_page_config(
     page_icon="🧾",
     layout="wide",
 )
-render_navigation()
+render_navigation(current_page="pages/3_Evidence_and_Bulk_Observations.py")
 
 
 @st.cache_resource
