@@ -323,6 +323,37 @@ class BuyeeOwner:
         self._executable = executable
         self._stop_event = stop_event
 
+    def _assert_context_alive(self) -> None:
+        """Require a live browser round trip before reusing the owner."""
+
+        created_page = None
+
+        try:
+            pages = [
+                page
+                for page in self._context.pages
+                if not page.is_closed()
+            ]
+
+            if pages:
+                page = pages[-1]
+            else:
+                page = self._context.new_page()
+                created_page = page
+
+            page.evaluate(
+                "() => true"
+            )
+        except Exception:
+            self._stop_event.set()
+            raise
+        finally:
+            if created_page is not None:
+                with contextlib.suppress(
+                    Exception
+                ):
+                    created_page.close()
+
     def _borrowed_open_context(
         self,
         _playwright: Playwright,
@@ -593,6 +624,8 @@ class BuyeeOwner:
         )
 
         if command == "health":
+            self._assert_context_alive()
+
             return {
                 "ok": True,
                 "protocol_version": OWNER_PROTOCOL_VERSION,
@@ -797,6 +830,11 @@ def main() -> int:
             )
         )
 
+        context.on(
+            "close",
+            lambda *_args: stop_event.set(),
+        )
+
         try:
             owner = BuyeeOwner(
                 playwright=playwright,
@@ -848,7 +886,10 @@ def main() -> int:
                 while not stop_event.is_set():
                     server.handle_request()
         finally:
-            context.close()
+            with contextlib.suppress(
+                Exception
+            ):
+                context.close()
 
             try:
                 socket_path.unlink(
