@@ -59,17 +59,18 @@ def function_block(
     )
 
 
-def test_buyee_owner_runs_true_headless() -> None:
-    """Persistent production owner must not create a GUI window."""
+def test_buyee_owner_runs_headed_offscreen() -> None:
+    """Persistent production owner stays headed but offscreen."""
 
     value = source(
         OWNER
     )
 
     assert "launch_persistent_context(" in value
-    assert "headless=True" in value
-    assert "BUYEE_OWNER_HEADLESS=true" in value
-    assert '"headless": True' in value
+    assert "headless=False" in value
+    assert "BUYEE_OWNER_HEADLESS=false" in value
+    assert '"headless": False' in value
+    assert '"--window-position=-32000,-32000"' in value
 
 
 def test_owner_health_still_proves_browser_liveness() -> None:

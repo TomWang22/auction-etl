@@ -1,4 +1,4 @@
-"""Run the long-lived headless Buyee Playwright owner."""
+"""Run the long-lived headed/offscreen Buyee Playwright owner."""
 
 from __future__ import annotations
 
@@ -636,7 +636,7 @@ class BuyeeOwner:
                 "executable": str(
                     self._executable
                 ),
-                "headless": True,
+                "headless": False,
                 "cdp": False,
             }
 
@@ -754,7 +754,7 @@ class OwnerRequestHandler(
 
 
 def main() -> int:
-    """Launch one persistent headless Buyee owner."""
+    """Launch one persistent headed/offscreen Buyee owner."""
 
     arguments = parse_arguments()
     profile_dir = (
@@ -813,7 +813,7 @@ def main() -> int:
                 executable_path=str(
                     executable
                 ),
-                headless=True,
+                headless=False,
                 locale="en-US",
                 timezone_id="Asia/Tokyo",
                 viewport={
@@ -875,7 +875,7 @@ def main() -> int:
                     flush=True,
                 )
                 print(
-                    "BUYEE_OWNER_HEADLESS=true",
+                    "BUYEE_OWNER_HEADLESS=false",
                     flush=True,
                 )
                 print(

@@ -29,7 +29,7 @@ def parse_arguments() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Start or reuse the long-lived headless "
+            "Start or reuse the long-lived headed/offscreen "
             "Buyee browser owner."
         )
     )
