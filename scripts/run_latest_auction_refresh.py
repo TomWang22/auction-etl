@@ -153,15 +153,17 @@ def emit_source_state(
     logger: logging.Logger,
     source: str,
     state: str,
+    *,
+    status_file: Path | None = None,
+    status: dict[str, Any] | None = None,
 ) -> None:
-    """Emit one machine-readable marketplace lifecycle event."""
+    """Emit and persist one marketplace lifecycle event."""
 
-    allowed_sources = {
-        "eBay",
-        "Buyee",
-        "Gripsweat",
+    source_keys = {
+        "Buyee": "buyee",
+        "eBay": "ebay",
+        "Gripsweat": "gripsweat",
     }
-
     allowed_states = {
         "running",
         "done",
@@ -169,7 +171,7 @@ def emit_source_state(
         "failed",
     }
 
-    if source not in allowed_sources:
+    if source not in source_keys:
         raise ValueError(
             f"Unsupported marketplace source: {source!r}"
         )
@@ -184,6 +186,75 @@ def emit_source_state(
         source,
         state,
     )
+
+    if status_file is None or status is None:
+        return
+
+    source_key = source_keys[source]
+    now = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    if (
+        source_key == "buyee"
+        and state == "running"
+    ):
+        status["marketplace_states"] = {
+            "buyee": "running",
+            "ebay": "waiting",
+            "gripsweat": "waiting",
+        }
+        status["marketplace_timing"] = {
+            "buyee": {
+                "started_at": now,
+            },
+            "ebay": {},
+            "gripsweat": {},
+        }
+    else:
+        marketplace_states = status.setdefault(
+            "marketplace_states",
+            {
+                "buyee": "waiting",
+                "ebay": "waiting",
+                "gripsweat": "waiting",
+            },
+        )
+        marketplace_states[
+            source_key
+        ] = state
+
+        timing = status.setdefault(
+            "marketplace_timing",
+            {},
+        )
+        source_timing = timing.setdefault(
+            source_key,
+            {},
+        )
+
+        if state == "running":
+            source_timing[
+                "started_at"
+            ] = now
+            source_timing.pop(
+                "finished_at",
+                None,
+            )
+        else:
+            source_timing[
+                "finished_at"
+            ] = now
+
+    status["current_marketplace"] = source_key
+    status["current_marketplace_state"] = state
+    status["updated_at"] = now
+
+    write_json_atomic(
+        status_file,
+        status,
+    )
+
 
 
 def run_command(
@@ -794,6 +865,8 @@ def main() -> int:
             logger,
             "Buyee",
             "running",
+            status_file=status_file,
+            status=status,
         )
 
         buyee_owner_socket = Path(
@@ -959,6 +1032,8 @@ def main() -> int:
                 logger,
                 "Buyee",
                 "unavailable",
+                status_file=status_file,
+                status=status,
             )
 
             logger.warning(
@@ -1127,7 +1202,6 @@ def main() -> int:
                         / arguments.buyee_profile
                     ),
                     "--apply",
-                    "--refresh",
                     "--delay",
                     "2",
                     "--timeout",
@@ -1148,12 +1222,16 @@ def main() -> int:
                 logger,
                 "Buyee",
                 "done",
+                status_file=status_file,
+                status=status,
             )
 
         emit_source_state(
             logger,
             "eBay",
             "running",
+            status_file=status_file,
+            status=status,
         )
 
         for source_name in enabled_ebay_sources(
@@ -1249,12 +1327,16 @@ def main() -> int:
             logger,
             "eBay",
             "done",
+            status_file=status_file,
+            status=status,
         )
 
         emit_source_state(
             logger,
             "Gripsweat",
             "running",
+            status_file=status_file,
+            status=status,
         )
 
         run_command(
@@ -1407,6 +1489,8 @@ def main() -> int:
             logger,
             "Gripsweat",
             "done",
+            status_file=status_file,
+            status=status,
         )
 
         run_command(

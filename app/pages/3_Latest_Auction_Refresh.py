@@ -32,6 +32,7 @@ from auction_etl.reporting.recent_ingestion import (  # noqa: E402
     write_formatted_csv,
 )
 from app.navigation import render_navigation
+import time
 
 
 DATABASE_URL = os.environ.get(
@@ -263,6 +264,136 @@ def launch_job(
     )
 
 
+
+MARKETPLACE_PROGRESS = (
+    ("buyee", "Buyee"),
+    ("ebay", "eBay"),
+    ("gripsweat", "Gripsweat"),
+)
+
+
+def marketplace_progress_states(
+    status: dict[str, Any],
+) -> dict[str, str]:
+    """Return normalized live marketplace progress."""
+
+    defaults = {
+        key: "waiting"
+        for key, _label
+        in MARKETPLACE_PROGRESS
+    }
+
+    raw_states = status.get(
+        "marketplace_states"
+    )
+
+    if isinstance(
+        raw_states,
+        dict,
+    ):
+        for key in defaults:
+            value = str(
+                raw_states.get(
+                    key,
+                    defaults[key],
+                )
+            ).casefold()
+
+            if value in {
+                "waiting",
+                "running",
+                "done",
+                "failed",
+                "unavailable",
+            }:
+                defaults[
+                    key
+                ] = value
+
+        return defaults
+
+    overall_state = str(
+        status.get(
+            "state",
+            "",
+        )
+    ).casefold()
+
+    if overall_state in {
+        "complete",
+        "completed",
+        "success",
+        "succeeded",
+    }:
+        return {
+            key: "done"
+            for key in defaults
+        }
+
+    return defaults
+
+
+def render_marketplace_progress(
+    status: dict[str, Any],
+) -> None:
+    """Render live sequential marketplace progress."""
+
+    labels = {
+        "waiting": (
+            "⚪",
+            "Waiting",
+        ),
+        "running": (
+            "🟡",
+            "Running",
+        ),
+        "done": (
+            "✅",
+            "Complete",
+        ),
+        "failed": (
+            "❌",
+            "Failed",
+        ),
+        "unavailable": (
+            "⚠️",
+            "Unavailable",
+        ),
+    }
+
+    states = marketplace_progress_states(
+        status
+    )
+
+    st.subheader(
+        "Latest refresh"
+    )
+
+    columns = st.columns(
+        len(
+            MARKETPLACE_PROGRESS
+        )
+    )
+
+    for column, (
+        key,
+        label,
+    ) in zip(
+        columns,
+        MARKETPLACE_PROGRESS,
+        strict=True,
+    ):
+        icon, state_label = labels[
+            states[key]
+        ]
+
+        column.markdown(
+            f"### {icon} {label}"
+        )
+        column.caption(
+            state_label
+        )
+
 st.set_page_config(
     page_title="Latest Auction Refresh",
     page_icon="↻",
@@ -348,6 +479,10 @@ st.info(
     )
 )
 
+render_marketplace_progress(
+    status
+)
+
 trigger = status.get("trigger")
 
 if trigger:
@@ -416,6 +551,10 @@ with refresh_tab:
         st.success(
             "The new ingestion round started in the background."
         )
+        time.sleep(
+            0.25
+        )
+        st.rerun()
 
     st.warning(
         "The ingestion round never prunes globally. "
@@ -449,6 +588,13 @@ with refresh_tab:
                 tail_file(log_path),
                 language="text",
             )
+
+    if job_running:
+        time.sleep(
+            2
+        )
+        st.rerun()
+
 
 with report_tab:
     st.subheader("Auction data browser")
