@@ -14,7 +14,7 @@ from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import Page
+from playwright.sync_api import BrowserContext, Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from sqlalchemy import text
 
@@ -184,6 +184,22 @@ def parse_args() -> argparse.Namespace:
         "--wait-seconds",
         type=float,
         default=5.0,
+    )
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        default=3,
+        help=(
+            "Maximum attempts for transient navigation failures."
+        ),
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=10.0,
+        help=(
+            "Base seconds between transient navigation retries."
+        ),
     )
     parser.add_argument(
         "--profile",
@@ -931,7 +947,6 @@ def load_sales(
             (
                 title IS NULL
                 OR sold_at IS NULL
-                OR original_listing_id IS NULL
                 OR detail_status IS DISTINCT FROM 'complete'
             )
             """
@@ -982,6 +997,116 @@ def load_sales(
         )
         for row in rows
     ]
+
+
+def retryable_navigation_error(
+    error: str | None,
+) -> bool:
+    """Return whether a detail navigation failure is transient."""
+
+    if not error:
+        return False
+
+    lowered = error.casefold()
+
+    if "page.goto:" not in lowered:
+        return False
+
+    markers = (
+        "timeout",
+        "err_network_io_suspended",
+        "err_connection_reset",
+        "err_timed_out",
+        "err_network_changed",
+        "err_http2_protocol_error",
+        "err_connection_closed",
+    )
+
+    return any(
+        marker in lowered
+        for marker in markers
+    )
+
+
+def inspect_sale_with_retry(
+    context: BrowserContext,
+    sale: StoredSale,
+    wait_seconds: float,
+    diagnostics_dir: Path,
+    attempts: int,
+    retry_delay: float,
+) -> DetailResult:
+    """Inspect one sale with bounded transient-navigation retries."""
+
+    if attempts < 1:
+        raise ValueError(
+            "attempts must be at least 1."
+        )
+
+    result: DetailResult | None = None
+
+    for attempt in range(
+        1,
+        attempts + 1,
+    ):
+        page = context.new_page()
+
+        try:
+            result = inspect_sale(
+                page,
+                sale,
+                wait_seconds,
+                diagnostics_dir,
+            )
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+        if result.complete:
+            return result
+
+        if not retryable_navigation_error(
+            result.error
+        ):
+            return result
+
+        if attempt >= attempts:
+            return result
+
+        delay = min(
+            60.0,
+            max(
+                0.0,
+                retry_delay,
+            )
+            * (
+                2
+                ** (
+                    attempt - 1
+                )
+            ),
+        )
+
+        print()
+        print(
+            "Transient Gripsweat navigation failure; "
+            f"retrying {sale.gripsweat_item_id} "
+            f"after {delay:.1f}s "
+            f"(attempt {attempt + 1}/{attempts})."
+        )
+
+        time.sleep(
+            delay
+        )
+
+    if result is None:
+        raise RuntimeError(
+            "Detail retry loop produced no result."
+        )
+
+    return result
 
 
 def inspect_sale(
@@ -1335,38 +1460,57 @@ def main() -> int:
         exist_ok=True,
     )
 
-    context = browser.context(args.profile)
-    page = context.new_page()
+    if args.attempts < 1:
+        raise SystemExit(
+            "--attempts must be at least 1."
+        )
+
+    if args.retry_delay < 0:
+        raise SystemExit(
+            "--retry-delay cannot be negative."
+        )
+
+    context = browser.context(
+        args.profile
+    )
+
     results: list[DetailResult] = []
 
-    try:
-        for index, sale in enumerate(
-            rows,
-            start=1,
-        ):
-            result = inspect_sale(
-                page,
-                sale,
-                args.wait_seconds,
-                args.diagnostics_dir,
+    for index, sale in enumerate(
+        rows,
+        start=1,
+    ):
+        result = inspect_sale_with_retry(
+            context,
+            sale,
+            args.wait_seconds,
+            args.diagnostics_dir,
+            args.attempts,
+            args.retry_delay,
+        )
+
+        results.append(
+            result
+        )
+
+        print_result(
+            index,
+            len(rows),
+            result,
+        )
+
+        if args.apply:
+            apply_result(
+                result
             )
-            results.append(result)
 
-            print_result(
-                index,
-                len(rows),
-                result,
-            )
-
-            if args.apply:
-                apply_result(result)
-
-            if index < len(rows):
-                time.sleep(
-                    max(0.0, args.delay)
+        if index < len(rows):
+            time.sleep(
+                max(
+                    0.0,
+                    args.delay,
                 )
-    finally:
-        page.close()
+            )
 
     args.output.write_text(
         json.dumps(

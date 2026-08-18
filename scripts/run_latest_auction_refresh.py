@@ -68,7 +68,10 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--buyee-profile",
-        default="anonymous",
+        default=os.environ.get(
+            "AUCTION_BUYEE_PROFILE",
+            "buyee",
+        ),
     )
     return parser.parse_args()
 
@@ -700,6 +703,9 @@ def main() -> int:
 
     required_paths = (
         root / "scripts" / "verify_buyee_session.py",
+        root / "scripts" / "ensure_buyee_owner.py",
+        root / "scripts" / "run_buyee_owner.py",
+        root / "scripts" / "run_buyee_owner_job.py",
         root / "scripts" / "inspect_recent_ingestion.py",
         root / "scripts" / "crawl_buyee_live_details.py",
         root / "scripts" / "crawl_ebay_sources.py",
@@ -790,10 +796,76 @@ def main() -> int:
             "running",
         )
 
+        buyee_owner_socket = Path(
+            environment.get(
+                "AUCTION_BUYEE_OWNER_SOCKET",
+                str(
+                    Path.home()
+                    / ".auction-etl"
+                    / "runtime"
+                    / "buyee-owner"
+                    / "owner.sock"
+                ),
+            )
+        ).expanduser().resolve()
+
+        environment["AUCTION_BUYEE_PROFILE"] = (
+            arguments.buyee_profile
+        )
+        environment["AUCTION_BUYEE_OWNER_SOCKET"] = str(
+            buyee_owner_socket
+        )
+        environment.pop(
+            "AUCTION_BUYEE_CDP_URL",
+            None,
+        )
+
+        run_command(
+            [
+                sys.executable,
+                "scripts/ensure_buyee_owner.py",
+                "--profile-dir",
+                str(
+                    root
+                    / "profiles"
+                    / arguments.buyee_profile
+                ),
+                "--socket-path",
+                str(
+                    buyee_owner_socket
+                ),
+            ],
+            root=root,
+            environment=environment,
+            logger=logger,
+            phase="Ensure hidden Buyee browser owner",
+            status_file=status_file,
+            status=status,
+        )
+
+        status["buyee_profile"] = (
+            arguments.buyee_profile
+        )
+        status["buyee_owner_socket"] = str(
+            buyee_owner_socket
+        )
+        status.pop(
+            "buyee_cdp_url",
+            None,
+        )
+
         auth_status, _ = run_command(
             [
                 sys.executable,
-                "scripts/verify_buyee_session.py",
+                "scripts/run_buyee_owner_job.py",
+                "--socket-path",
+                str(
+                    buyee_owner_socket
+                ),
+                "--timeout-seconds",
+                "180",
+                "verify_closed_watchlist",
+                "--",
                 "--profile-dir",
                 str(
                     root
@@ -931,8 +1003,15 @@ def main() -> int:
             _, buyee_crawl_output = run_command(
                 [
                     sys.executable,
-                    "-m",
-                    "auction_etl.cli.main",
+                    "scripts/run_buyee_owner_job.py",
+                    "--socket-path",
+                    str(
+                        buyee_owner_socket
+                    ),
+                    "--timeout-seconds",
+                    "900",
+                    "crawl_closed_watchlist",
+                    "--",
                     "crawl",
                     "url",
                     BUYEE_URL,
@@ -1032,7 +1111,21 @@ def main() -> int:
             run_command(
                 [
                     sys.executable,
-                    "scripts/crawl_buyee_live_details.py",
+                    "scripts/run_buyee_owner_job.py",
+                    "--socket-path",
+                    str(
+                        buyee_owner_socket
+                    ),
+                    "--timeout-seconds",
+                    "3600",
+                    "crawl_live_details",
+                    "--",
+                    "--profile-dir",
+                    str(
+                        root
+                        / "profiles"
+                        / arguments.buyee_profile
+                    ),
                     "--apply",
                     "--refresh",
                     "--delay",
@@ -1286,11 +1379,14 @@ def main() -> int:
                 sys.executable,
                 "scripts/enrich_gripsweat_details.py",
                 "--apply",
-                "--refresh-complete",
                 "--delay",
                 "2",
                 "--wait-seconds",
                 "6",
+                "--attempts",
+                "3",
+                "--retry-delay",
+                "10",
                 "--output",
                 str(
                     run_dir

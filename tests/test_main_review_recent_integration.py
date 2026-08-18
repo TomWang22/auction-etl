@@ -227,7 +227,7 @@ def test_main_page_has_reactive_filter_contract() -> None:
 
     required = (
         "load_gripsweat_records",
-        "Recent additions only",
+        "Recently added only",
         "_marketplace_changed",
         "on_change=_marketplace_changed",
         "_filter_revision",

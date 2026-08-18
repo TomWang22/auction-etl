@@ -46,14 +46,23 @@ def test_home_is_a_direct_task_launcher() -> None:
     )
 
     required = (
-        '"🏠 Auction workspace"',
-        '"What do you want to do?"',
-        '"Review marketplace sales →"',
-        '"Refresh marketplace sales →"',
-        '"Match new listings →"',
-        '"Manage pressings →"',
+        "🏠 Auction workspace",
+        "What do you want to do?",
+        "Review sales",
+        "Update marketplace data",
+        "Match new listings",
+        "Manage pressings",
+        "collector_review.py",
+        "pages/15_Ingest_New_Auctions.py",
+        "pages/13_New_Auction_Intake.py",
+        "pages/14_Pressing_Reference_Catalog.py",
+        "home-task-card-review-sales",
+        "home-task-card-refresh-marketplace-sales",
+        "home-task-card-match-new-listings",
+        "home-task-card-manage-pressings",
+        "st.button(",
         "st.switch_page(",
-        '"Typical workflow"',
+        "Typical workflow",
     )
 
     missing = [
@@ -68,6 +77,7 @@ def test_home_is_a_direct_task_launcher() -> None:
             missing
         )
     )
+
 
 
 def test_home_does_not_duplicate_the_full_navigation() -> None:
@@ -168,7 +178,7 @@ def test_navigation_routes_are_unique() -> None:
 
     assert len(
         paths
-    ) == 18
+    ) == 19
 
 
 def test_every_page_identifies_current_route() -> None:
@@ -191,7 +201,7 @@ def test_every_page_identifies_current_route() -> None:
 
     assert len(
         scripts
-    ) == 18
+    ) == 19
 
     for path in scripts:
         source = path.read_text(

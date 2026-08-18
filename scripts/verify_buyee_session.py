@@ -18,6 +18,7 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
+from auction_etl.browser.buyee_cdp import open_buyee_context
 
 
 DEFAULT_TARGET_URL = (
@@ -352,17 +353,17 @@ def main() -> int:
 
     try:
         with sync_playwright() as playwright:
-            context = (
-                playwright.chromium
-                .launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=arguments.headless,
-                    viewport={
+            context, owns_context, _cdp_browser = open_buyee_context(
+                playwright,
+                profile_dir=profile_dir,
+                headless=arguments.headless,
+                launch_options={
+                    "viewport": {
                         "width": 1440,
                         "height": 1000,
                     },
-                    locale="en-US",
-                )
+                    "locale": "en-US",
+                },
             )
 
             try:
@@ -622,7 +623,8 @@ def main() -> int:
                 print(f"ERROR: {timeout_message}")
                 return VERIFICATION_TIMEOUT_EXIT_CODE
             finally:
-                context.close()
+                if owns_context:
+                    context.close()
     except Exception as exc:
         write_json_atomic(
             status_file,

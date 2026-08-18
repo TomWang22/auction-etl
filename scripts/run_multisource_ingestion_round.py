@@ -86,7 +86,7 @@ def parse_args(
         "--buyee-profile",
         default=os.environ.get(
             "AUCTION_BUYEE_PROFILE",
-            "anonymous",
+            "buyee",
         ),
     )
 

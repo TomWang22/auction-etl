@@ -150,7 +150,7 @@ def test_sidebar_jump_is_searchable_and_stable() -> None:
     source = source_text()
 
     required = (
-        "Search / jump to listing",
+        "Find a listing",
         "JUMP_LISTING_KEY",
         "SELECTED_LISTING_KEY",
         "PENDING_JUMP_LISTING_KEY",

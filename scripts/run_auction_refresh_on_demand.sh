@@ -127,5 +127,5 @@ exec \
     "${PYTHON_CMD}" \
     "${PARENT}" \
     --database-url "${DATABASE_URL}" \
-    --buyee-profile "${AUCTION_BUYEE_PROFILE:-anonymous}" \
+    --buyee-profile "${AUCTION_BUYEE_PROFILE:-buyee}" \
     --execute

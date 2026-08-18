@@ -211,6 +211,10 @@ def persist_status(
 ) -> dict[str, Any]:
     """Persist both the job-specific and latest status documents."""
 
+    sync_artist_targets_from_sources(
+        status
+    )
+
     status["updated_at"] = utc_now()
 
     atomic_write_json(
@@ -400,8 +404,609 @@ def build_runner_command() -> list[str]:
     ]
 
 
+
+def snapshot_tracked_artist_targets() -> dict[str, dict[str, Any]]:
+    """Capture enabled artist targets included when a refresh starts."""
+
+    from auction_etl.services.artist_tracking import (
+        SUPPORTED_MARKETPLACES as ARTIST_MARKETPLACES,
+        list_tracked_artists,
+    )
+
+    snapshot: dict[
+        str,
+        dict[str, Any],
+    ] = {}
+
+    for artist in list_tracked_artists():
+        if not bool(
+            artist.get(
+                "enabled",
+                True,
+            )
+        ):
+            continue
+
+        artist_id = str(
+            artist.get(
+                "id",
+                "",
+            )
+        ).strip()
+
+        if not artist_id:
+            continue
+
+        targets = artist.get(
+            "targets",
+            {},
+        )
+
+        if not isinstance(
+            targets,
+            dict,
+        ):
+            continue
+
+        enabled_targets = [
+            marketplace
+            for marketplace
+            in ARTIST_MARKETPLACES
+            if bool(
+                targets.get(
+                    marketplace,
+                    {},
+                ).get(
+                    "enabled",
+                    False,
+                )
+            )
+        ]
+
+        if not enabled_targets:
+            continue
+
+        snapshot[
+            artist_id
+        ] = {
+            "name": str(
+                artist.get(
+                    "name",
+                    artist_id,
+                )
+            ),
+            "query": str(
+                artist.get(
+                    "query",
+                    "",
+                )
+            ),
+            "targets":
+                enabled_targets,
+        }
+
+    return snapshot
+
+
+def build_artist_target_status_snapshot(
+    artist_targets: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Create job-local lifecycle state for captured artist targets."""
+
+    result: dict[
+        str,
+        dict[str, Any],
+    ] = {}
+
+    supported = {
+        "ebay",
+        "gripsweat",
+    }
+
+    for artist_id, artist in artist_targets.items():
+        if not isinstance(
+            artist,
+            dict,
+        ):
+            continue
+
+        target_values = artist.get(
+            "targets",
+            [],
+        )
+
+        if not isinstance(
+            target_values,
+            (
+                list,
+                tuple,
+                set,
+                frozenset,
+            ),
+        ):
+            continue
+
+        targets = [
+            str(
+                marketplace
+            )
+            for marketplace
+            in target_values
+            if str(
+                marketplace
+            )
+            in supported
+        ]
+
+        if not targets:
+            continue
+
+        result[
+            str(
+                artist_id
+            )
+        ] = {
+            "name": str(
+                artist.get(
+                    "name",
+                    artist_id,
+                )
+            ),
+            "query": str(
+                artist.get(
+                    "query",
+                    "",
+                )
+            ),
+            "target_states": {
+                marketplace:
+                    "waiting"
+                for marketplace
+                in targets
+            },
+            "target_updated_at": {
+                marketplace:
+                    None
+                for marketplace
+                in targets
+            },
+            "target_completed_at": {
+                marketplace:
+                    None
+                for marketplace
+                in targets
+            },
+        }
+
+    return result
+
+
+def set_artist_source_state(
+    status: dict[str, Any],
+    source_name: str,
+    source_state: str,
+    *,
+    occurred_at: str | None = None,
+) -> None:
+    """Mirror a marketplace lifecycle state onto included artist targets."""
+
+    marketplace = {
+        "eBay":
+            "ebay",
+        "Gripsweat":
+            "gripsweat",
+    }.get(
+        source_name
+    )
+
+    if marketplace is None:
+        return
+
+    timestamp = (
+        occurred_at
+        or utc_now()
+    )
+
+    artist_targets = status.get(
+        "artist_targets",
+        {},
+    )
+
+    if not isinstance(
+        artist_targets,
+        dict,
+    ):
+        return
+
+    for artist in artist_targets.values():
+        if not isinstance(
+            artist,
+            dict,
+        ):
+            continue
+
+        target_states = artist.get(
+            "target_states",
+            {},
+        )
+
+        if not isinstance(
+            target_states,
+            dict,
+        ):
+            continue
+
+        if marketplace not in target_states:
+            continue
+
+        target_states[
+            marketplace
+        ] = source_state
+
+        target_updated_at = artist.setdefault(
+            "target_updated_at",
+            {},
+        )
+
+        if isinstance(
+            target_updated_at,
+            dict,
+        ):
+            target_updated_at[
+                marketplace
+            ] = timestamp
+
+        if source_state == "done":
+            target_completed_at = artist.setdefault(
+                "target_completed_at",
+                {},
+            )
+
+            if (
+                isinstance(
+                    target_completed_at,
+                    dict,
+                )
+                and not target_completed_at.get(
+                    marketplace
+                )
+            ):
+                target_completed_at[
+                    marketplace
+                ] = timestamp
+
+
+def sync_artist_targets_from_sources(
+    status: dict[str, Any],
+) -> None:
+    """Keep artist-target lifecycle aligned with marketplace lifecycle."""
+
+    states = status.get(
+        "source_states",
+        {},
+    )
+
+    if not isinstance(
+        states,
+        dict,
+    ):
+        return
+
+    for source_name in (
+        "eBay",
+        "Gripsweat",
+    ):
+        source_state = states.get(
+            source_name
+        )
+
+        if source_state not in {
+            "waiting",
+            "running",
+            "done",
+            "unavailable",
+            "failed",
+        }:
+            continue
+
+        set_artist_source_state(
+            status,
+            source_name,
+            str(
+                source_state
+            ),
+        )
+
+
+def artist_job_history() -> list[dict[str, Any]]:
+    """Return valid persisted ingestion jobs newest first."""
+
+    ensure_runtime_directories()
+
+    statuses: list[
+        dict[str, Any]
+    ] = []
+
+    for path in JOB_ROOT.glob(
+        "*.json"
+    ):
+        status = read_json(
+            path
+        )
+
+        if status is not None:
+            statuses.append(
+                status
+            )
+
+    statuses.sort(
+        key=lambda value: str(
+            value.get(
+                "created_at",
+                "",
+            )
+        ),
+        reverse=True,
+    )
+
+    return statuses
+
+
+def artist_target_statuses(
+    artists: list[dict[str, Any]],
+    *,
+    latest_status: dict[str, Any] | None = None,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Summarize current and last-successful refresh state per artist target."""
+
+    if latest_status is None:
+        latest_status = get_latest_status()
+
+    historical = (
+        list(
+            history
+        )
+        if history is not None
+        else artist_job_history()
+    )
+
+    ordered: list[
+        dict[str, Any]
+    ] = []
+
+    latest_job_id = ""
+
+    if latest_status is not None:
+        latest_job_id = str(
+            latest_status.get(
+                "job_id",
+                "",
+            )
+        )
+
+        ordered.append(
+            latest_status
+        )
+
+    for status in historical:
+        job_id = str(
+            status.get(
+                "job_id",
+                "",
+            )
+        )
+
+        if (
+            latest_job_id
+            and job_id
+            == latest_job_id
+        ):
+            continue
+
+        ordered.append(
+            status
+        )
+
+    result: dict[
+        str,
+        dict[str, dict[str, Any]],
+    ] = {}
+
+    for artist in artists:
+        artist_id = str(
+            artist.get(
+                "id",
+                "",
+            )
+        ).strip()
+
+        if not artist_id:
+            continue
+
+        targets = artist.get(
+            "targets",
+            {},
+        )
+
+        if not isinstance(
+            targets,
+            dict,
+        ):
+            continue
+
+        artist_result: dict[
+            str,
+            dict[str, Any],
+        ] = {}
+
+        for marketplace in (
+            "ebay",
+            "gripsweat",
+        ):
+            target = targets.get(
+                marketplace,
+                {},
+            )
+
+            if not isinstance(
+                target,
+                dict,
+            ):
+                continue
+
+            if not bool(
+                target.get(
+                    "enabled",
+                    False,
+                )
+            ):
+                continue
+
+            summary: dict[
+                str,
+                Any,
+            ] = {
+                "state":
+                    "not_refreshed",
+                "job_id":
+                    None,
+                "job_status":
+                    None,
+                "current_job":
+                    False,
+                "last_refreshed_at":
+                    None,
+            }
+
+            latest_relevant_found = False
+
+            for status in ordered:
+                status_artists = status.get(
+                    "artist_targets",
+                    {},
+                )
+
+                if not isinstance(
+                    status_artists,
+                    dict,
+                ):
+                    continue
+
+                status_artist = status_artists.get(
+                    artist_id
+                )
+
+                if not isinstance(
+                    status_artist,
+                    dict,
+                ):
+                    continue
+
+                target_states = status_artist.get(
+                    "target_states",
+                    {},
+                )
+
+                if not isinstance(
+                    target_states,
+                    dict,
+                ):
+                    continue
+
+                if marketplace not in target_states:
+                    continue
+
+                if not latest_relevant_found:
+                    summary[
+                        "state"
+                    ] = str(
+                        target_states.get(
+                            marketplace,
+                            "not_refreshed",
+                        )
+                    )
+
+                    summary[
+                        "job_id"
+                    ] = status.get(
+                        "job_id"
+                    )
+
+                    summary[
+                        "job_status"
+                    ] = status.get(
+                        "status"
+                    )
+
+                    summary[
+                        "current_job"
+                    ] = bool(
+                        latest_job_id
+                        and str(
+                            status.get(
+                                "job_id",
+                                "",
+                            )
+                        )
+                        == latest_job_id
+                        and status.get(
+                            "status"
+                        )
+                        in RUNNING_STATES
+                    )
+
+                    latest_relevant_found = True
+
+                completed = status_artist.get(
+                    "target_completed_at",
+                    {},
+                )
+
+                if (
+                    summary[
+                        "last_refreshed_at"
+                    ]
+                    is None
+                    and isinstance(
+                        completed,
+                        dict,
+                    )
+                ):
+                    completed_at = completed.get(
+                        marketplace
+                    )
+
+                    if completed_at:
+                        summary[
+                            "last_refreshed_at"
+                        ] = str(
+                            completed_at
+                        )
+
+                if (
+                    latest_relevant_found
+                    and summary[
+                        "last_refreshed_at"
+                    ]
+                    is not None
+                ):
+                    break
+
+            artist_result[
+                marketplace
+            ] = summary
+
+        result[
+            artist_id
+        ] = artist_result
+
+    return result
+
 def new_status(
     job_id: str,
+    *,
+    artist_targets: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create a queued multisource-ingestion status document."""
 
@@ -453,6 +1058,19 @@ def new_status(
             for source
             in PLANNED_SOURCES
         },
+        "source_finished_at": {
+            source:
+                None
+            for source
+            in PLANNED_SOURCES
+        },
+        "artist_target_protocol":
+            "snapshot-v1",
+        "artist_targets":
+            build_artist_target_status_snapshot(
+                artist_targets
+                or {}
+            ),
         "last_output":
             None,
         "log_path":
@@ -489,8 +1107,13 @@ def start_job() -> dict[str, Any]:
 
         job_id = uuid.uuid4().hex
 
+        artist_targets = (
+            snapshot_tracked_artist_targets()
+        )
+
         status = new_status(
-            job_id
+            job_id,
+            artist_targets=artist_targets,
         )
 
         persist_status(
@@ -613,6 +1236,7 @@ def apply_explicit_source_state(
 
     source_name = match.group(1)
     source_state = match.group(2)
+    occurred_at = utc_now()
 
     states = dict(
         status.get(
@@ -628,6 +1252,33 @@ def apply_explicit_source_state(
     status[
         "source_states"
     ] = states
+
+    source_finished_at = dict(
+        status.get(
+            "source_finished_at",
+            {},
+        )
+    )
+
+    if source_state in {
+        "done",
+        "failed",
+        "unavailable",
+    }:
+        source_finished_at[
+            source_name
+        ] = occurred_at
+
+    status[
+        "source_finished_at"
+    ] = source_finished_at
+
+    set_artist_source_state(
+        status,
+        source_name,
+        source_state,
+        occurred_at=occurred_at,
+    )
 
     status[
         "source_state_protocol"
@@ -1098,6 +1749,10 @@ def mark_all_sources_done(
     status[
         "source_states"
     ] = states
+
+    sync_artist_targets_from_sources(
+        status
+    )
 
     status[
         "stage"

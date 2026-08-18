@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import html
+from datetime import datetime
 
 import streamlit as st
 
 from app.navigation import render_navigation
+from auction_etl.services.auction_ingest_job import (
+    RUNNING_STATES,
+    artist_target_statuses,
+    get_latest_status,
+    start_job,
+)
 from auction_etl.services.artist_tracking import (
     MARKETPLACE_LABELS,
     SUPPORTED_MARKETPLACES,
@@ -120,6 +127,543 @@ def render_search_link(
     )
 
 
+
+def refresh_state_view(
+    state: str,
+) -> tuple[str, str]:
+    """Return product-facing icon and label for one lifecycle state."""
+
+    values = {
+        "not_refreshed": (
+            "⚪",
+            "Not refreshed",
+        ),
+        "waiting": (
+            "⚪",
+            "Waiting",
+        ),
+        "running": (
+            "🔵",
+            "Running",
+        ),
+        "done": (
+            "✅",
+            "Complete",
+        ),
+        "unavailable": (
+            "⚠️",
+            "Unavailable",
+        ),
+        "failed": (
+            "🔴",
+            "Failed",
+        ),
+        "observed": (
+            "🟡",
+            "Legacy status",
+        ),
+    }
+
+    return values.get(
+        state,
+        (
+            "⚪",
+            state.replace(
+                "_",
+                " ",
+            ).title(),
+        ),
+    )
+
+
+def format_refresh_time(
+    value: object,
+) -> str:
+    """Format an ISO refresh timestamp in the user's local timezone."""
+
+    if value is None:
+        return "Never"
+
+    text = str(
+        value
+    ).strip()
+
+    if not text:
+        return "Never"
+
+    try:
+        parsed = datetime.fromisoformat(
+            text
+        )
+    except ValueError:
+        return text
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+
+    return parsed.strftime(
+        "%Y-%m-%d %H:%M:%S %Z"
+    ).strip()
+
+
+def active_artist_target_count(
+    artists: list[dict],
+) -> int:
+    """Return enabled eBay/Gripsweat targets in the current artist model."""
+
+    return sum(
+        1
+        for artist
+        in artists
+        if bool(
+            artist.get(
+                "enabled",
+                True,
+            )
+        )
+        for marketplace
+        in SUPPORTED_MARKETPLACES
+        if bool(
+            artist.get(
+                "targets",
+                {},
+            ).get(
+                marketplace,
+                {},
+            ).get(
+                "enabled",
+                False,
+            )
+        )
+    )
+
+
+@st.fragment(
+    run_every="3s"
+)
+def render_refresh_workspace() -> None:
+    """Render live production refresh controls and artist coverage."""
+
+    current_artists = (
+        list_tracked_artists()
+    )
+
+    target_count = (
+        active_artist_target_count(
+            current_artists
+        )
+    )
+
+    latest = get_latest_status()
+
+    running = bool(
+        latest is not None
+        and latest.get(
+            "status"
+        )
+        in RUNNING_STATES
+    )
+
+    st.subheader(
+        "Refresh tracked artists"
+    )
+
+    st.write(
+        "Run the same production marketplace refresh used by "
+        "Refresh marketplace sales."
+    )
+
+    st.caption(
+        "eBay and Gripsweat are tracked per artist. "
+        "Buyee still refreshes from the authenticated watchlist "
+        "and is shown as a global marketplace status."
+    )
+
+    if st.button(
+        "Refresh tracked artists",
+        type="primary",
+        use_container_width=True,
+        disabled=(
+            running
+            or target_count == 0
+        ),
+        key="refresh_tracked_artists",
+    ):
+        latest = start_job()
+
+        running = bool(
+            latest.get(
+                "status"
+            )
+            in RUNNING_STATES
+        )
+
+        st.toast(
+            "Production marketplace refresh started.",
+            icon="🔄",
+        )
+
+    if target_count == 0:
+        st.info(
+            "Enable at least one artist marketplace before refreshing."
+        )
+
+    if latest is None:
+        st.caption(
+            "No production marketplace refresh has been recorded yet."
+        )
+    else:
+        source_states = latest.get(
+            "source_states",
+            {},
+        )
+
+        if not isinstance(
+            source_states,
+            dict,
+        ):
+            source_states = {}
+
+        source_finished = latest.get(
+            "source_finished_at",
+            {},
+        )
+
+        if not isinstance(
+            source_finished,
+            dict,
+        ):
+            source_finished = {}
+
+        source_columns = st.columns(
+            3
+        )
+
+        for column, source in zip(
+            source_columns,
+            (
+                "eBay",
+                "Buyee",
+                "Gripsweat",
+            ),
+            strict=True,
+        ):
+            state = str(
+                source_states.get(
+                    source,
+                    "not_refreshed",
+                )
+            )
+
+            icon, label = (
+                refresh_state_view(
+                    state
+                )
+            )
+
+            with column:
+                st.markdown(
+                    f"{icon} **{source}**"
+                )
+
+                st.caption(
+                    label
+                )
+
+                finished_at = (
+                    source_finished.get(
+                        source
+                    )
+                )
+
+                if finished_at:
+                    st.caption(
+                        "Finished "
+                        + format_refresh_time(
+                            finished_at
+                        )
+                    )
+
+        job_state = str(
+            latest.get(
+                "status",
+                "",
+            )
+        )
+
+        phase = str(
+            latest.get(
+                "phase",
+                "",
+            )
+        )
+
+        job_id = str(
+            latest.get(
+                "job_id",
+                "",
+            )
+        )
+
+        if job_state in RUNNING_STATES:
+            st.info(
+                (
+                    phase
+                    or "Marketplace refresh is running."
+                )
+                + (
+                    f" · {job_id[:8]}"
+                    if job_id
+                    else ""
+                ),
+                icon="🔄",
+            )
+
+        elif job_state == "completed":
+            all_done = all(
+                source_states.get(
+                    source
+                )
+                == "done"
+                for source
+                in (
+                    "eBay",
+                    "Buyee",
+                    "Gripsweat",
+                )
+            )
+
+            if all_done:
+                st.success(
+                    "All three marketplaces completed.",
+                    icon="✅",
+                )
+            else:
+                incomplete = [
+                    source
+                    for source
+                    in (
+                        "eBay",
+                        "Buyee",
+                        "Gripsweat",
+                    )
+                    if source_states.get(
+                        source
+                    )
+                    != "done"
+                ]
+
+                st.warning(
+                    "Refresh finished, but not every marketplace "
+                    "is green: "
+                    + ", ".join(
+                        incomplete
+                    ),
+                    icon="⚠️",
+                )
+
+        elif job_state == "failed":
+            st.error(
+                phase
+                or "Marketplace refresh failed.",
+                icon="🚨",
+            )
+
+    st.markdown(
+        "#### Artist refresh coverage"
+    )
+
+    if not current_artists:
+        st.info(
+            "No artists are being tracked yet."
+        )
+
+        return
+
+    summaries = artist_target_statuses(
+        current_artists,
+        latest_status=latest,
+    )
+
+    header = st.columns(
+        [
+            3,
+            2,
+            2,
+        ]
+    )
+
+    header[
+        0
+    ].markdown(
+        "**Artist**"
+    )
+
+    header[
+        1
+    ].markdown(
+        "**eBay refresh**"
+    )
+
+    header[
+        2
+    ].markdown(
+        "**Gripsweat refresh**"
+    )
+
+    for artist in current_artists:
+        artist_id = str(
+            artist.get(
+                "id",
+                "",
+            )
+        )
+
+        artist_enabled = bool(
+            artist.get(
+                "enabled",
+                True,
+            )
+        )
+
+        artist_statuses = summaries.get(
+            artist_id,
+            {},
+        )
+
+        row = st.columns(
+            [
+                3,
+                2,
+                2,
+            ]
+        )
+
+        with row[
+            0
+        ]:
+            st.markdown(
+                "**"
+                + str(
+                    artist.get(
+                        "name",
+                        artist_id,
+                    )
+                )
+                + "**"
+            )
+
+            st.caption(
+                "Active"
+                if artist_enabled
+                else "Paused"
+            )
+
+        targets = artist.get(
+            "targets",
+            {},
+        )
+
+        for column_index, marketplace in (
+            (
+                1,
+                "ebay",
+            ),
+            (
+                2,
+                "gripsweat",
+            ),
+        ):
+            target = (
+                targets.get(
+                    marketplace,
+                    {},
+                )
+                if isinstance(
+                    targets,
+                    dict,
+                )
+                else {}
+            )
+
+            with row[
+                column_index
+            ]:
+                if not bool(
+                    target.get(
+                        "enabled",
+                        False,
+                    )
+                ):
+                    st.caption(
+                        "— Not tracked"
+                    )
+
+                    continue
+
+                summary = artist_statuses.get(
+                    marketplace,
+                    {
+                        "state":
+                            "not_refreshed",
+                        "last_refreshed_at":
+                            None,
+                    },
+                )
+
+                state = str(
+                    summary.get(
+                        "state",
+                        "not_refreshed",
+                    )
+                )
+
+                icon, label = (
+                    refresh_state_view(
+                        state
+                    )
+                )
+
+                st.markdown(
+                    f"{icon} **{label}**"
+                )
+
+                st.caption(
+                    "Last refreshed: "
+                    + format_refresh_time(
+                        summary.get(
+                            "last_refreshed_at"
+                        )
+                    )
+                )
+
+                if bool(
+                    summary.get(
+                        "current_job",
+                        False,
+                    )
+                ):
+                    current_job = str(
+                        summary.get(
+                            "job_id",
+                            "",
+                        )
+                    )
+
+                    if current_job:
+                        st.caption(
+                            "Current run "
+                            + current_job[
+                                :8
+                            ]
+                        )
+
+    st.caption(
+        "Artist coverage reflects the artist settings captured "
+        "when each production refresh started."
+    )
+
+
 st.title(
     "🎵 Artists to track"
 )
@@ -131,7 +675,8 @@ st.write(
 
 st.caption(
     "Saving an artist changes future marketplace refreshes. "
-    "It does not start a refresh immediately."
+    "Use Refresh tracked artists below when you want to run "
+    "the production ingestion pipeline."
 )
 
 artists = list_tracked_artists()
@@ -193,6 +738,10 @@ metric_columns[
     "Marketplace searches",
     active_targets,
 )
+
+st.divider()
+
+render_refresh_workspace()
 
 st.divider()
 

@@ -405,12 +405,9 @@ with refresh_tab:
     )
 
     if control_columns[1].button(
-        "Run new ingestion round",
+        "Run Buyee, eBay, and Gripsweat",
         type="primary",
-        disabled=(
-            not refresh_enabled
-            or job_running
-        ),
+        disabled=not refresh_enabled or job_running,
         width="stretch",
     ):
         launch_job(

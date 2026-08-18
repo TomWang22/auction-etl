@@ -114,7 +114,10 @@ def test_collector_review_has_analytics_tab() -> None:
         encoding="utf-8"
     )
 
-    assert '"Collector analytics"' in source
+    assert '"Insights"' in source
+    assert '"Collection insights"' in source
+    assert "with tabs[3]:" in source
+    assert "render_collector_analytics_editor(" in source
     assert (
         "render_collector_analytics_editor("
         in source

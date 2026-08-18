@@ -24,6 +24,7 @@ from playwright.sync_api import (
 from sqlalchemy import text
 
 from auction_etl.database.session import engine
+from auction_etl.browser.buyee_cdp import open_buyee_context
 
 
 DATABASE_NAME = "auction_warehouse"
@@ -1303,27 +1304,25 @@ def main() -> int:
     failures = 0
 
     with sync_playwright() as playwright:
-        context = (
-            playwright.chromium
-            .launch_persistent_context(
-                user_data_dir=str(
-                    profile_dir
-                ),
-                headless=not arguments.headed,
-                locale="en-US",
-                timezone_id="Asia/Tokyo",
-                viewport={
+        context, owns_context, _cdp_browser = open_buyee_context(
+            playwright,
+            profile_dir=profile_dir,
+            headless=not arguments.headed,
+            launch_options={
+                "locale": "en-US",
+                "timezone_id": "Asia/Tokyo",
+                "viewport": {
                     "width": 1600,
                     "height": 1200,
                 },
-                user_agent=(
+                "user_agent": (
                     "Mozilla/5.0 "
                     "(Macintosh; Intel Mac OS X 10_15_7) "
                     "AppleWebKit/537.36 "
                     "(KHTML, like Gecko) "
                     "Chrome/126.0 Safari/537.36"
                 ),
-            )
+            },
         )
 
         try:
@@ -1412,7 +1411,8 @@ def main() -> int:
                         arguments.delay
                     )
         finally:
-            context.close()
+            if owns_context:
+                context.close()
 
     summary_path = (
         arguments.log_dir

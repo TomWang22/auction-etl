@@ -94,7 +94,7 @@ print(
 
 
 def write_fake_runner(path: Path) -> None:
-    """Write a deterministic marketplace runner used only by this test."""
+    """Write a deterministic explicit-protocol runner used only by this test."""
 
     path.write_text(
         textwrap.dedent(
@@ -105,12 +105,36 @@ def write_fake_runner(path: Path) -> None:
 
 
             steps = (
-                ("eBay ingestion started", 0.35),
-                ("eBay ingestion complete", 0.10),
-                ("Buyee ingestion started", 0.10),
-                ("Buyee ingestion complete", 0.10),
-                ("Gripsweat ingestion started", 0.10),
-                ("Gripsweat ingestion complete", 0.10),
+                (
+                    "AUCTION_SOURCE_STATE source=eBay state=running",
+                    0.05,
+                ),
+                ("eBay ingestion started", 0.30),
+                (
+                    "AUCTION_SOURCE_STATE source=eBay state=done",
+                    0.05,
+                ),
+                ("eBay ingestion complete", 0.05),
+                (
+                    "AUCTION_SOURCE_STATE source=Buyee state=running",
+                    0.05,
+                ),
+                ("Buyee ingestion started", 0.05),
+                (
+                    "AUCTION_SOURCE_STATE source=Buyee state=done",
+                    0.05,
+                ),
+                ("Buyee ingestion complete", 0.05),
+                (
+                    "AUCTION_SOURCE_STATE source=Gripsweat state=running",
+                    0.05,
+                ),
+                ("Gripsweat ingestion started", 0.05),
+                (
+                    "AUCTION_SOURCE_STATE source=Gripsweat state=done",
+                    0.05,
+                ),
+                ("Gripsweat ingestion complete", 0.05),
                 ("collector normalize complete", 0.05),
                 ("FX exchange rate update complete", 0.05),
                 ("verification complete", 0.05),
@@ -449,7 +473,7 @@ def test_post_processing_failure_does_not_blame_last_marketplace() -> None:
 
     ingest_job.interpret_output(
         status,
-        "Gripsweat ingestion started",
+        "AUCTION_SOURCE_STATE source=Gripsweat state=running",
     )
 
     assert status[
@@ -457,6 +481,21 @@ def test_post_processing_failure_does_not_blame_last_marketplace() -> None:
     ][
         "Gripsweat"
     ] == "running"
+
+    assert status[
+        "stage"
+    ] == "marketplace"
+
+    ingest_job.interpret_output(
+        status,
+        "AUCTION_SOURCE_STATE source=Gripsweat state=done",
+    )
+
+    assert status[
+        "source_states"
+    ][
+        "Gripsweat"
+    ] == "done"
 
     assert status[
         "stage"
@@ -475,7 +514,7 @@ def test_post_processing_failure_does_not_blame_last_marketplace() -> None:
         "source_states"
     ][
         "Gripsweat"
-    ] == "observed"
+    ] == "done"
 
     status[
         "failure_stage"
@@ -495,7 +534,7 @@ def test_post_processing_failure_does_not_blame_last_marketplace() -> None:
         "source_states"
     ][
         "Gripsweat"
-    ] == "observed"
+    ] == "done"
 
 def test_expired_queued_job_without_worker_pid_becomes_start_failure(
     monkeypatch,

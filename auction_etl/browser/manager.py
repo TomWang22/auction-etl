@@ -12,12 +12,19 @@ from auction_etl.browser.defaults import (
     VIEWPORT,
 )
 from auction_etl.browser.profiles import profile_path
+from auction_etl.browser.buyee_cdp import (
+    buyee_cdp_url,
+    buyee_profile_name,
+    connect_buyee_cdp_context,
+)
 
 
 class BrowserManager:
     def __init__(self) -> None:
         self._playwright: Playwright | None = None
         self._contexts: dict[str, BrowserContext] = {}
+        self._borrowed_profiles: set[str] = set()
+        self._cdp_browsers: dict[str, object] = {}
 
     def context(self, profile: str = "anonymous") -> BrowserContext:
         if profile in self._contexts:
@@ -25,6 +32,23 @@ class BrowserManager:
 
         if self._playwright is None:
             self._playwright = sync_playwright().start()
+
+        cdp_url = buyee_cdp_url()
+
+        if (
+            cdp_url is not None
+            and profile == buyee_profile_name()
+        ):
+            cdp_browser, context = connect_buyee_cdp_context(
+                self._playwright,
+                cdp_url,
+            )
+
+            self._cdp_browsers[profile] = cdp_browser
+            self._borrowed_profiles.add(profile)
+            self._contexts[profile] = context
+
+            return context
 
         kwargs = {
             "user_data_dir": str(profile_path(profile)),
@@ -41,16 +65,22 @@ class BrowserManager:
         if CHANNEL is not None:
             kwargs["channel"] = CHANNEL
 
-        context = self._playwright.chromium.launch_persistent_context(**kwargs)
+        context = self._playwright.chromium.launch_persistent_context(
+            **kwargs
+        )
 
         self._contexts[profile] = context
+
         return context
 
     def close(self) -> None:
-        for context in self._contexts.values():
-            context.close()
+        for profile, context in self._contexts.items():
+            if profile not in self._borrowed_profiles:
+                context.close()
 
         self._contexts.clear()
+        self._borrowed_profiles.clear()
+        self._cdp_browsers.clear()
 
         if self._playwright:
             self._playwright.stop()

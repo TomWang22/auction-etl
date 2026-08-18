@@ -1,6 +1,7 @@
 """Regression tests for conflict-safe Gripsweat probe imports."""
 
 from __future__ import annotations
+import sys
 
 import importlib.util
 from contextlib import contextmanager
@@ -20,23 +21,94 @@ IMPORTER = (
 
 
 def load_importer() -> ModuleType:
-    """Load the importer without executing its main entrypoint."""
+    """Load the importer without production database configuration."""
 
-    spec = importlib.util.spec_from_file_location(
-        "gripsweat_probe_import_test_target",
-        IMPORTER,
+    session_name = "auction_etl.database.session"
+
+    fake_session = ModuleType(
+        session_name
     )
 
-    assert spec is not None
-    assert spec.loader is not None
+    fake_session.engine = object()
 
-    module = importlib.util.module_from_spec(
-        spec
+    missing = object()
+
+    previous_session = sys.modules.get(
+        session_name,
+        missing,
     )
 
-    spec.loader.exec_module(
-        module
+    database_package_name = "auction_etl.database"
+
+    previous_database_package = sys.modules.get(
+        database_package_name,
+        missing,
     )
+
+    previous_package_session = missing
+
+    if previous_database_package is not missing:
+        previous_package_session = getattr(
+            previous_database_package,
+            "session",
+            missing,
+        )
+
+    sys.modules[
+        session_name
+    ] = fake_session
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "gripsweat_probe_import_test_target",
+            IMPORTER,
+        )
+
+        assert spec is not None
+        assert spec.loader is not None
+
+        module = importlib.util.module_from_spec(
+            spec
+        )
+
+        spec.loader.exec_module(
+            module
+        )
+    finally:
+        if previous_session is missing:
+            sys.modules.pop(
+                session_name,
+                None,
+            )
+        else:
+            sys.modules[
+                session_name
+            ] = previous_session
+
+        database_package = sys.modules.get(
+            database_package_name
+        )
+
+        if database_package is not None:
+            if previous_package_session is missing:
+                if (
+                    getattr(
+                        database_package,
+                        "session",
+                        None,
+                    )
+                    is fake_session
+                ):
+                    delattr(
+                        database_package,
+                        "session",
+                    )
+            else:
+                setattr(
+                    database_package,
+                    "session",
+                    previous_package_session,
+                )
 
     return module
 
