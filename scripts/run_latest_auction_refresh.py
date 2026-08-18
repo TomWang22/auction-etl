@@ -819,6 +819,18 @@ def main() -> int:
             initial_state = database_state(connection)
             verify_state(initial_state)
 
+            buyee_listing_ids_before = {
+                str(row["listing_id"])
+                for row in connection.execute(
+                    """
+                    SELECT listing_id
+                    FROM warehouse.auction
+                    WHERE marketplace = %s
+                    """,
+                    ("buyee",),
+                ).fetchall()
+            }
+
             snapshot_auction_keys(
                 connection,
                 baseline_path,
@@ -1183,8 +1195,88 @@ def main() -> int:
                 status=status,
             )
 
-            run_command(
-                [
+            with psycopg.connect(
+                psql_url,
+                row_factory=dict_row,
+            ) as connection:
+                buyee_listing_ids_after = {
+                    str(row["listing_id"])
+                    for row in connection.execute(
+                        """
+                        SELECT listing_id
+                        FROM warehouse.auction
+                        WHERE marketplace = %s
+                        """,
+                        ("buyee",),
+                    ).fetchall()
+                }
+
+            buyee_new_listing_ids = sorted(
+                buyee_listing_ids_after
+                - buyee_listing_ids_before
+            )
+
+            status[
+                "buyee_new_listing_count"
+            ] = len(
+                buyee_new_listing_ids
+            )
+            status[
+                "buyee_detail_candidate_count"
+            ] = len(
+                buyee_new_listing_ids
+            )
+            status[
+                "buyee_existing_listing_count"
+            ] = len(
+                buyee_listing_ids_before
+            )
+            status["message"] = (
+                "Buyee identity synchronization complete: "
+                f"{len(buyee_new_listing_ids)} new listing(s) "
+                "require detail enrichment."
+            )
+            status["updated_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+
+            write_json_atomic(
+                status_file,
+                status,
+            )
+
+            logger.info("")
+            logger.info(
+                "Buyee new-only detail enrichment"
+            )
+            logger.info(
+                "--------------------------------"
+            )
+            logger.info(
+                "Existing before refresh : %s",
+                len(
+                    buyee_listing_ids_before
+                ),
+            )
+            logger.info(
+                "Warehouse after refresh : %s",
+                len(
+                    buyee_listing_ids_after
+                ),
+            )
+            logger.info(
+                "New detail candidates   : %s",
+                len(
+                    buyee_new_listing_ids
+                ),
+            )
+            logger.info(
+                "Existing listing details are not "
+                "revisited by the normal latest refresh."
+            )
+
+            if buyee_new_listing_ids:
+                buyee_detail_command = [
                     sys.executable,
                     "scripts/run_buyee_owner_job.py",
                     "--socket-path",
@@ -1207,15 +1299,39 @@ def main() -> int:
                     "--timeout",
                     "45",
                     "--log-dir",
-                    str(run_dir / "buyee-details"),
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase="Apply Buyee detail enrichment",
-                status_file=status_file,
-                status=status,
-            )
+                    str(
+                        run_dir
+                        / "buyee-details"
+                    ),
+                ]
+
+                for listing_id in (
+                    buyee_new_listing_ids
+                ):
+                    buyee_detail_command.extend(
+                        [
+                            "--listing-id",
+                            listing_id,
+                        ]
+                    )
+
+                run_command(
+                    buyee_detail_command,
+                    root=root,
+                    environment=environment,
+                    logger=logger,
+                    phase=(
+                        "Apply new-only Buyee "
+                        "detail enrichment"
+                    ),
+                    status_file=status_file,
+                    status=status,
+                )
+            else:
+                logger.info(
+                    "No new Buyee listing identities; "
+                    "detail-page crawl skipped."
+                )
 
         if buyee_available:
             emit_source_state(

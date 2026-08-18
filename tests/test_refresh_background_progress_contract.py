@@ -87,28 +87,49 @@ def test_owner_health_still_proves_browser_liveness() -> None:
 
 
 def test_latest_refresh_does_not_force_all_buyee_details() -> None:
-    """Latest refresh enriches only normal crawler candidates."""
+    """Latest refresh enriches only newly discovered Buyee listings."""
 
     value = source(
         RUNNER
     )
 
-    start = value.index(
+    crawl_start = value.index(
         '"crawl_live_details"'
     )
-    end = value.index(
-        'phase="Apply Buyee detail enrichment"',
-        start,
+
+    buyee_end = value.index(
+        "if buyee_available:",
+        crawl_start,
     )
 
-    command = value[
-        start:end
+    detail_block = value[
+        crawl_start:buyee_end
     ]
 
-    assert '"--apply"' in command
-    assert '"--refresh"' not in command
-    assert '"--delay"' in command
-    assert '"--timeout"' in command
+    assert (
+        "buyee_new_listing_ids"
+        in value
+    )
+    assert (
+        "buyee_listing_ids_after"
+        in value
+    )
+    assert (
+        "buyee_listing_ids_before"
+        in value
+    )
+    assert (
+        '"--listing-id"'
+        in detail_block
+    )
+    assert (
+        '"--refresh"'
+        not in detail_block
+    )
+    assert (
+        "detail-page crawl skipped"
+        in value
+    )
 
 
 def test_crawler_has_distinct_refresh_semantics() -> None:
