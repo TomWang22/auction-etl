@@ -160,7 +160,7 @@ def print_health(
     )
 
 
-def main() -> int:
+def _main_once() -> int:
     """Start the owner once and reuse it on later refreshes."""
 
     arguments = parse_arguments()
@@ -402,6 +402,47 @@ def main() -> int:
         "Timed out waiting for the Buyee owner to become ready."
     )
 
+
+
+OWNER_SOCKET_UNRECOGNIZED_ERROR = (
+    "The Buyee owner socket is occupied by "
+    "an unrecognized live service."
+)
+
+OWNER_SOCKET_RECOVERY_RETRIES = 20
+
+OWNER_SOCKET_RECOVERY_DELAY_SECONDS = 0.25
+
+
+def _wait_before_owner_retry() -> None:
+    """Wait briefly for an unhealthy owner to finish shutting down."""
+
+    import time
+
+    time.sleep(
+        OWNER_SOCKET_RECOVERY_DELAY_SECONDS
+    )
+
+
+def main():
+    """Ensure the Buyee owner, tolerating its bounded teardown race."""
+
+    for retry_index in range(
+        OWNER_SOCKET_RECOVERY_RETRIES
+        + 1
+    ):
+        try:
+            return _main_once()
+        except RuntimeError as error:
+            if (
+                str(error)
+                != OWNER_SOCKET_UNRECOGNIZED_ERROR
+                or retry_index
+                >= OWNER_SOCKET_RECOVERY_RETRIES
+            ):
+                raise
+
+            _wait_before_owner_retry()
 
 if __name__ == "__main__":
     raise SystemExit(
