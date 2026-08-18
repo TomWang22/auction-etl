@@ -215,6 +215,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Revisit rows that already have title and sold date.",
     )
+    parser.add_argument(
+        "--item-id-file",
+        type=Path,
+        help=(
+            "Optional newline-delimited Gripsweat item-ID allowlist. "
+            "Manual/backfill behavior remains unchanged when omitted."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1445,6 +1453,52 @@ def main() -> int:
         args.limit,
         args.refresh_complete,
     )
+
+    if args.item_id_file is not None:
+        if not args.item_id_file.is_file():
+            raise SystemExit(
+                "Gripsweat item-ID allowlist not found: "
+                f"{args.item_id_file}"
+            )
+
+        allowed_item_ids = {
+            line.strip()
+            for line in (
+                args.item_id_file
+                .read_text(
+                    encoding="utf-8"
+                )
+                .splitlines()
+            )
+            if line.strip()
+        }
+
+        rows = [
+            sale
+            for sale in rows
+            if sale.gripsweat_item_id
+            in allowed_item_ids
+        ]
+
+        print()
+        print(
+            "Incremental Gripsweat detail policy"
+        )
+        print(
+            "-----------------------------------"
+        )
+        print(
+            "Allowlisted new item IDs :",
+            len(
+                allowed_item_ids
+            ),
+        )
+        print(
+            "Detail pages selected    :",
+            len(
+                rows
+            ),
+        )
 
     if not rows:
         print("No matching detail pages require processing.")

@@ -653,6 +653,400 @@ def staging_count(
     )
 
 
+
+EBAY_KNOWN_STOP_THRESHOLD = 20
+GRIPSWEAT_KNOWN_STOP_THRESHOLD = 20
+
+INCREMENTAL_PROGRESS_FIELDS = (
+    "discovered",
+    "already_known",
+    "new",
+    "detail_scraped",
+    "detail_skipped",
+    "discovery_pages",
+    "consecutive_known_at_stop",
+)
+
+
+def _read_incremental_json(
+    path: Path,
+):
+    """Read one runtime JSON artifact."""
+
+    import json
+
+    return json.loads(
+        path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def _read_incremental_object(
+    path: Path,
+) -> dict[str, object]:
+    """Read one runtime JSON object."""
+
+    value = _read_incremental_json(
+        path
+    )
+
+    if not isinstance(
+        value,
+        dict,
+    ):
+        raise RuntimeError(
+            f"Expected JSON object: {path}"
+        )
+
+    return value
+
+
+def _safe_incremental_name(
+    value: str,
+) -> str:
+    """Return a filesystem-safe source name."""
+
+    import re
+
+    result = re.sub(
+        r"[^A-Za-z0-9_.-]+",
+        "-",
+        value,
+    ).strip(
+        "-."
+    )
+
+    return result or "source"
+
+
+def _write_incremental_ids(
+    path: Path,
+    values: set[str] | list[str],
+) -> None:
+    """Write deterministic newline-delimited IDs."""
+
+    normalized = sorted(
+        {
+            str(value).strip()
+            for value in values
+            if str(value).strip()
+        }
+    )
+
+    path.write_text(
+        (
+            "\n".join(
+                normalized
+            )
+            + (
+                "\n"
+                if normalized
+                else ""
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
+def _set_incremental_progress(
+    status: dict[str, object],
+    status_file: Path,
+    marketplace: str,
+    counters: dict[str, int],
+) -> None:
+    """Persist one marketplace's counters."""
+
+    root = status.setdefault(
+        "marketplace_progress",
+        {},
+    )
+
+    if not isinstance(
+        root,
+        dict,
+    ):
+        root = {}
+        status[
+            "marketplace_progress"
+        ] = root
+
+    root[
+        marketplace
+    ] = {
+        field: int(
+            counters.get(
+                field,
+                0,
+            )
+        )
+        for field in (
+            INCREMENTAL_PROGRESS_FIELDS
+        )
+    }
+
+    write_json_atomic(
+        status_file,
+        status,
+    )
+
+
+def _merge_incremental_progress(
+    status: dict[str, object],
+    status_file: Path,
+    marketplace: str,
+    incoming: dict[str, object],
+) -> None:
+    """Aggregate one configured source into marketplace counters."""
+
+    root = status.setdefault(
+        "marketplace_progress",
+        {},
+    )
+
+    if not isinstance(
+        root,
+        dict,
+    ):
+        root = {}
+        status[
+            "marketplace_progress"
+        ] = root
+
+    current = root.get(
+        marketplace
+    )
+
+    if not isinstance(
+        current,
+        dict,
+    ):
+        current = {
+            field: 0
+            for field in (
+                INCREMENTAL_PROGRESS_FIELDS
+            )
+        }
+
+    merged: dict[str, int] = {}
+
+    for field in (
+        INCREMENTAL_PROGRESS_FIELDS
+    ):
+        old = int(
+            current.get(
+                field,
+                0,
+            )
+        )
+        new = int(
+            incoming.get(
+                field,
+                0,
+            )
+        )
+
+        if (
+            field
+            == "consecutive_known_at_stop"
+        ):
+            merged[
+                field
+            ] = max(
+                old,
+                new,
+            )
+        else:
+            merged[
+                field
+            ] = old + new
+
+    root[
+        marketplace
+    ] = merged
+
+    write_json_atomic(
+        status_file,
+        status,
+    )
+
+
+def _incremental_identity_sequence(
+    path: Path,
+    field: str,
+) -> list[str]:
+    """Extract nested JSON identity values in encounter order."""
+
+    if not path.is_file():
+        return []
+
+    value = _read_incremental_json(
+        path
+    )
+    result: list[str] = []
+
+    def visit(
+        node,
+    ) -> None:
+        if isinstance(
+            node,
+            dict,
+        ):
+            raw = node.get(
+                field
+            )
+
+            if raw is not None:
+                normalized = str(
+                    raw
+                ).strip()
+
+                if normalized:
+                    result.append(
+                        normalized
+                    )
+
+            for child in node.values():
+                visit(
+                    child
+                )
+
+        elif isinstance(
+            node,
+            list,
+        ):
+            for child in node:
+                visit(
+                    child
+                )
+
+    visit(
+        value
+    )
+
+    return result
+
+
+def _incremental_unique(
+    values: list[str],
+) -> list[str]:
+    """De-duplicate without changing discovery order."""
+
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for value in values:
+        if value in seen:
+            continue
+
+        seen.add(
+            value
+        )
+        result.append(
+            value
+        )
+
+    return result
+
+
+def _incremental_trailing_known(
+    values: list[str],
+    known: set[str],
+) -> int:
+    """Count trailing warehouse-known IDs."""
+
+    count = 0
+
+    for value in reversed(
+        values
+    ):
+        if value not in known:
+            break
+
+        count += 1
+
+    return count
+
+
+def _incremental_page_count(
+    path: Path,
+) -> int:
+    """Count discovery page records in nested JSON."""
+
+    if not path.is_file():
+        return 0
+
+    value = _read_incremental_json(
+        path
+    )
+    count = 0
+
+    def visit(
+        node,
+    ) -> None:
+        nonlocal count
+
+        if isinstance(
+            node,
+            dict,
+        ):
+            if (
+                "page_number"
+                in node
+                and isinstance(
+                    node.get(
+                        "items"
+                    ),
+                    list,
+                )
+            ):
+                count += 1
+
+            for child in node.values():
+                visit(
+                    child
+                )
+
+        elif isinstance(
+            node,
+            list,
+        ):
+            for child in node:
+                visit(
+                    child
+                )
+
+    visit(
+        value
+    )
+
+    return count
+
+
+def _incremental_result_count(
+    path: Path,
+) -> int:
+    """Count detail result rows."""
+
+    if not path.is_file():
+        return 0
+
+    value = _read_incremental_json(
+        path
+    )
+
+    return (
+        len(
+            value
+        )
+        if isinstance(
+            value,
+            list,
+        )
+        else 0
+    )
+
+
 def main() -> int:
     """Run a complete safe all-source refresh."""
     from auction_etl.services.artist_tracking import prepare_runtime_marketplace_configs
@@ -1353,6 +1747,17 @@ def main() -> int:
         for source_name in enabled_ebay_sources(
             root / "config" / "ebay_sources.json"
         ):
+            ebay_incremental_stats = (
+                run_dir
+                / (
+                    "ebay-incremental-"
+                    + _safe_incremental_name(
+                        source_name
+                    )
+                    + ".json"
+                )
+            )
+
             run_command(
                 [
                     sys.executable,
@@ -1361,6 +1766,15 @@ def main() -> int:
                     "config/ebay_sources.json",
                     "--source",
                     source_name,
+                    "--incremental-newest-first",
+                    "--known-stop-threshold",
+                    str(
+                        EBAY_KNOWN_STOP_THRESHOLD
+                    ),
+                    "--incremental-stats-file",
+                    str(
+                        ebay_incremental_stats
+                    ),
                 ],
                 root=root,
                 environment=environment,
@@ -1368,6 +1782,15 @@ def main() -> int:
                 phase=f"Crawl eBay source {source_name}",
                 status_file=status_file,
                 status=status,
+            )
+
+            _merge_incremental_progress(
+                status,
+                status_file,
+                "ebay",
+                _read_incremental_object(
+                    ebay_incremental_stats
+                ),
             )
 
             run_command(
@@ -1468,6 +1891,67 @@ def main() -> int:
             status=status,
         )
 
+        with psycopg.connect(
+            psql_url,
+            row_factory=dict_row,
+        ) as connection:
+            gripsweat_before_rows = (
+                connection.execute(
+                    """
+                    SELECT
+                        gripsweat_item_key,
+                        gripsweat_item_id
+                    FROM warehouse.gripsweat_sale
+                    """
+                ).fetchall()
+            )
+
+        gripsweat_item_keys_before = {
+            str(
+                row[
+                    "gripsweat_item_key"
+                ]
+            ).strip()
+            for row in gripsweat_before_rows
+            if row[
+                "gripsweat_item_key"
+            ] is not None
+            and str(
+                row[
+                    "gripsweat_item_key"
+                ]
+            ).strip()
+        }
+
+        gripsweat_item_ids_before = {
+            str(
+                row[
+                    "gripsweat_item_id"
+                ]
+            ).strip()
+            for row in gripsweat_before_rows
+            if row[
+                "gripsweat_item_id"
+            ] is not None
+            and str(
+                row[
+                    "gripsweat_item_id"
+                ]
+            ).strip()
+        }
+
+        _set_incremental_progress(
+            status,
+            status_file,
+            "gripsweat",
+            {
+                field: 0
+                for field in (
+                    INCREMENTAL_PROGRESS_FIELDS
+                )
+            },
+        )
+
         probe_path = run_dir / "gripsweat-probe.json"
         audit_path = (
             run_dir
@@ -1514,91 +1998,411 @@ def main() -> int:
             status=status,
         )
 
-        run_command(
-            [
-                sys.executable,
-                "scripts/audit_gripsweat_pagination.py",
-                "--config",
-                "config/gripsweat_sources.json",
-                "--pages",
-                "10",
-                "--delay",
-                "2",
-                "--wait-seconds",
-                "6",
-                "--output",
-                str(audit_path),
-                "--diagnostics-dir",
-                str(run_dir / "gripsweat-pagination"),
-                "--empty-page-limit",
-                "2",
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Crawl Gripsweat pagination",
-            status_file=status_file,
-            status=status,
+        gripsweat_probe_sequence = (
+            _incremental_identity_sequence(
+                probe_path,
+                "gripsweat_item_key",
+            )
+        )
+        gripsweat_probe_unique = (
+            _incremental_unique(
+                gripsweat_probe_sequence
+            )
+        )
+        gripsweat_probe_known = sum(
+            value
+            in gripsweat_item_keys_before
+            for value in (
+                gripsweat_probe_unique
+            )
+        )
+        gripsweat_probe_new = (
+            len(
+                gripsweat_probe_unique
+            )
+            - gripsweat_probe_known
+        )
+        gripsweat_probe_trailing_known = (
+            _incremental_trailing_known(
+                gripsweat_probe_sequence,
+                gripsweat_item_keys_before,
+            )
+        )
+        gripsweat_stop_after_probe = (
+            bool(
+                gripsweat_probe_sequence
+            )
+            and gripsweat_probe_trailing_known
+            >= GRIPSWEAT_KNOWN_STOP_THRESHOLD
         )
 
-        run_command(
-            [
-                sys.executable,
-                "scripts/import_gripsweat_pagination_audit.py",
-                "--input",
-                str(audit_path),
-                "--dry-run",
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Validate Gripsweat identities",
-            status_file=status_file,
-            status=status,
-        )
-
-        run_command(
-            [
-                sys.executable,
-                "scripts/import_gripsweat_pagination_audit.py",
-                "--input",
-                str(audit_path),
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Import Gripsweat identities",
-            status_file=status_file,
-            status=status,
-        )
-
-        run_command(
-            [
-                sys.executable,
-                "scripts/enrich_gripsweat_details.py",
-                "--apply",
-                "--delay",
-                "2",
-                "--wait-seconds",
-                "6",
-                "--attempts",
-                "3",
-                "--retry-delay",
-                "10",
-                "--output",
-                str(
-                    run_dir
-                    / "gripsweat-detail-apply.json"
+        _set_incremental_progress(
+            status,
+            status_file,
+            "gripsweat",
+            {
+                "discovered": len(
+                    gripsweat_probe_unique
                 ),
-                "--diagnostics-dir",
-                str(run_dir / "gripsweat-details"),
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Apply Gripsweat detail enrichment",
-            status_file=status_file,
-            status=status,
+                "already_known": (
+                    gripsweat_probe_known
+                ),
+                "new": gripsweat_probe_new,
+                "detail_scraped": 0,
+                "detail_skipped": (
+                    gripsweat_probe_known
+                ),
+                "discovery_pages": (
+                    _incremental_page_count(
+                        probe_path
+                    )
+                ),
+                "consecutive_known_at_stop": (
+                    gripsweat_probe_trailing_known
+                    if gripsweat_stop_after_probe
+                    else 0
+                ),
+            },
+        )
+
+        logger.info("")
+        logger.info(
+            "Gripsweat incremental discovery gate"
+        )
+        logger.info(
+            "------------------------------------"
+        )
+        logger.info(
+            "Discovered           : %s",
+            len(
+                gripsweat_probe_unique
+            ),
+        )
+        logger.info(
+            "Already known        : %s",
+            gripsweat_probe_known,
+        )
+        logger.info(
+            "New                  : %s",
+            gripsweat_probe_new,
+        )
+        logger.info(
+            "Trailing known       : %s",
+            gripsweat_probe_trailing_known,
+        )
+
+        if not gripsweat_stop_after_probe:
+            run_command(
+                [
+                    sys.executable,
+                    "scripts/audit_gripsweat_pagination.py",
+                    "--config",
+                    "config/gripsweat_sources.json",
+                    "--pages",
+                    "10",
+                    "--delay",
+                    "2",
+                    "--wait-seconds",
+                    "6",
+                    "--output",
+                    str(audit_path),
+                    "--diagnostics-dir",
+                    str(run_dir / "gripsweat-pagination"),
+                    "--empty-page-limit",
+                    "2",
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Crawl Gripsweat pagination",
+                status_file=status_file,
+                status=status,
+            )
+
+            run_command(
+                [
+                    sys.executable,
+                    "scripts/import_gripsweat_pagination_audit.py",
+                    "--input",
+                    str(audit_path),
+                    "--dry-run",
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Validate Gripsweat identities",
+                status_file=status_file,
+                status=status,
+            )
+
+            run_command(
+                [
+                    sys.executable,
+                    "scripts/import_gripsweat_pagination_audit.py",
+                    "--input",
+                    str(audit_path),
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Import Gripsweat identities",
+                status_file=status_file,
+                status=status,
+            )
+
+        else:
+            logger.info(
+                "Skipping Gripsweat pagination audit: "
+                "newest-page overlap already reached "
+                "the known-ID threshold."
+            )
+
+        with psycopg.connect(
+            psql_url,
+            row_factory=dict_row,
+        ) as connection:
+            gripsweat_after_rows = (
+                connection.execute(
+                    """
+                    SELECT
+                        gripsweat_item_key,
+                        gripsweat_item_id
+                    FROM warehouse.gripsweat_sale
+                    """
+                ).fetchall()
+            )
+
+        gripsweat_item_keys_after = {
+            str(
+                row[
+                    "gripsweat_item_key"
+                ]
+            ).strip()
+            for row in gripsweat_after_rows
+            if row[
+                "gripsweat_item_key"
+            ] is not None
+            and str(
+                row[
+                    "gripsweat_item_key"
+                ]
+            ).strip()
+        }
+
+        gripsweat_item_ids_after = {
+            str(
+                row[
+                    "gripsweat_item_id"
+                ]
+            ).strip()
+            for row in gripsweat_after_rows
+            if row[
+                "gripsweat_item_id"
+            ] is not None
+            and str(
+                row[
+                    "gripsweat_item_id"
+                ]
+            ).strip()
+        }
+
+        gripsweat_new_item_keys = (
+            gripsweat_item_keys_after
+            - gripsweat_item_keys_before
+        )
+        gripsweat_new_item_ids = sorted(
+            gripsweat_item_ids_after
+            - gripsweat_item_ids_before
+        )
+
+        gripsweat_audit_sequence = (
+            _incremental_identity_sequence(
+                audit_path,
+                "gripsweat_item_key",
+            )
+            if audit_path.is_file()
+            else []
+        )
+
+        gripsweat_discovery_sequence = (
+            gripsweat_probe_sequence
+            + gripsweat_audit_sequence
+        )
+        gripsweat_discovered_unique = (
+            _incremental_unique(
+                gripsweat_discovery_sequence
+            )
+        )
+
+        gripsweat_already_known = sum(
+            value
+            in gripsweat_item_keys_before
+            for value in (
+                gripsweat_discovered_unique
+            )
+        )
+
+        gripsweat_stop_sequence = (
+            gripsweat_audit_sequence
+            or gripsweat_probe_sequence
+        )
+
+        gripsweat_consecutive_known = (
+            _incremental_trailing_known(
+                gripsweat_stop_sequence,
+                gripsweat_item_keys_before,
+            )
+        )
+
+        gripsweat_discovery_pages = (
+            _incremental_page_count(
+                probe_path
+            )
+            + (
+                _incremental_page_count(
+                    audit_path
+                )
+                if audit_path.is_file()
+                else 0
+            )
+        )
+
+        gripsweat_id_file = (
+            run_dir
+            / "gripsweat-new-item-ids.txt"
+        )
+        gripsweat_detail_output = (
+            run_dir
+            / "gripsweat-detail-apply.json"
+        )
+
+        detail_scraped = 0
+
+        if gripsweat_new_item_ids:
+            _write_incremental_ids(
+                gripsweat_id_file,
+                gripsweat_new_item_ids,
+            )
+
+            run_command(
+                [
+                    sys.executable,
+                    "scripts/enrich_gripsweat_details.py",
+                    "--apply",
+                    "--delay",
+                    "2",
+                    "--wait-seconds",
+                    "6",
+                    "--attempts",
+                    "3",
+                    "--retry-delay",
+                    "10",
+                    "--item-id-file",
+                    str(
+                        gripsweat_id_file
+                    ),
+                    "--output",
+                    str(
+                        gripsweat_detail_output
+                    ),
+                    "--diagnostics-dir",
+                    str(
+                        run_dir
+                        / "gripsweat-details"
+                    ),
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Apply Gripsweat detail enrichment",
+                status_file=status_file,
+                status=status,
+            )
+
+            detail_scraped = (
+                _incremental_result_count(
+                    gripsweat_detail_output
+                )
+            )
+        else:
+            logger.info("")
+            logger.info(
+                "No new Gripsweat identities; "
+                "detail-page crawl skipped."
+            )
+
+        gripsweat_discovered_count = max(
+            len(
+                gripsweat_discovered_unique
+            ),
+            len(
+                gripsweat_new_item_keys
+            ),
+        )
+
+        _set_incremental_progress(
+            status,
+            status_file,
+            "gripsweat",
+            {
+                "discovered": (
+                    gripsweat_discovered_count
+                ),
+                "already_known": (
+                    gripsweat_already_known
+                ),
+                "new": len(
+                    gripsweat_new_item_keys
+                ),
+                "detail_scraped": (
+                    detail_scraped
+                ),
+                "detail_skipped": max(
+                    0,
+                    gripsweat_discovered_count
+                    - detail_scraped,
+                ),
+                "discovery_pages": (
+                    gripsweat_discovery_pages
+                ),
+                "consecutive_known_at_stop": (
+                    gripsweat_consecutive_known
+                ),
+            },
+        )
+
+        logger.info("")
+        logger.info(
+            "Gripsweat incremental summary"
+        )
+        logger.info(
+            "-----------------------------"
+        )
+        logger.info(
+            "Discovered             : %s",
+            gripsweat_discovered_count,
+        )
+        logger.info(
+            "Already known          : %s",
+            gripsweat_already_known,
+        )
+        logger.info(
+            "New identities         : %s",
+            len(
+                gripsweat_new_item_keys
+            ),
+        )
+        logger.info(
+            "Detail pages scraped   : %s",
+            detail_scraped,
+        )
+        logger.info(
+            "Discovery pages        : %s",
+            gripsweat_discovery_pages,
+        )
+        logger.info(
+            "Consecutive known stop : %s",
+            gripsweat_consecutive_known,
         )
 
         emit_source_state(

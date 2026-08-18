@@ -99,6 +99,28 @@ def parse_args() -> argparse.Namespace:
             "results page does not initially contain listings."
         ),
     )
+    parser.add_argument(
+        "--incremental-newest-first",
+        action="store_true",
+        help=(
+            "Stop after a bounded trailing run of warehouse-known "
+            "listing IDs. Use only for newest-first source URLs."
+        ),
+    )
+    parser.add_argument(
+        "--known-stop-threshold",
+        type=int,
+        default=20,
+        help=(
+            "Consecutive warehouse-known IDs required before an "
+            "incremental newest-first crawl stops."
+        ),
+    )
+    parser.add_argument(
+        "--incremental-stats-file",
+        type=Path,
+        help="Optional JSON output for incremental counters.",
+    )
     return parser.parse_args()
 
 
@@ -376,11 +398,280 @@ def page_payload(
     }
 
 
+
+def _warehouse_known_ebay_listing_ids(
+    session,
+) -> set[str]:
+    """Return eBay IDs already present in the warehouse."""
+
+    rows = (
+        session.connection()
+        .exec_driver_sql(
+            """
+            SELECT listing_id
+            FROM warehouse.auction
+            WHERE lower(btrim(marketplace)) = 'ebay'
+              AND listing_id IS NOT NULL
+            """
+        )
+        .fetchall()
+    )
+
+    return {
+        str(row[0]).strip()
+        for row in rows
+        if row[0] is not None
+        and str(row[0]).strip()
+    }
+
+
+def _extract_incremental_ebay_listing_ids(
+    html: str,
+) -> list[str]:
+    """Extract ordered unique IDs from eBay item links."""
+
+    import re
+
+    patterns = (
+        re.compile(
+            r"""(?ix)
+            (?:https?:)?//[^"'\s<>]*ebay\.[^"'\s<>]*
+            /itm/
+            (?:[^/"'\s<>]+/)?
+            (?P<id>\d{9,15})
+            """
+        ),
+        re.compile(
+            r"""(?ix)
+            ["']
+            /itm/
+            (?:[^/"'\s<>]+/)?
+            (?P<id>\d{9,15})
+            """
+        ),
+    )
+
+    positioned: list[
+        tuple[int, str]
+    ] = []
+
+    for pattern in patterns:
+        for match in pattern.finditer(
+            html
+        ):
+            positioned.append(
+                (
+                    match.start(),
+                    match.group(
+                        "id"
+                    ),
+                )
+            )
+
+    positioned.sort(
+        key=lambda item: item[0]
+    )
+
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for _position, listing_id in positioned:
+        if listing_id in seen:
+            continue
+
+        seen.add(
+            listing_id
+        )
+        result.append(
+            listing_id
+        )
+
+    return result
+
+
+def _new_incremental_ebay_counters() -> dict[str, object]:
+    """Create one incremental counter state."""
+
+    return {
+        "discovered": 0,
+        "already_known": 0,
+        "new": 0,
+        "detail_scraped": 0,
+        "detail_skipped": 0,
+        "discovery_pages": 0,
+        "consecutive_known_at_stop": 0,
+        "_seen_ids": set(),
+        "_consecutive_known": 0,
+    }
+
+
+def _record_incremental_ebay_page(
+    counters: dict[str, object],
+    listing_ids: list[str],
+    known_listing_ids: set[str],
+) -> int:
+    """Record one page and return its trailing known-ID run."""
+
+    counters[
+        "discovery_pages"
+    ] = (
+        int(
+            counters[
+                "discovery_pages"
+            ]
+        )
+        + 1
+    )
+
+    seen = counters[
+        "_seen_ids"
+    ]
+
+    if not isinstance(
+        seen,
+        set,
+    ):
+        raise RuntimeError(
+            "Invalid eBay incremental seen-ID state."
+        )
+
+    consecutive_known = int(
+        counters[
+            "_consecutive_known"
+        ]
+    )
+
+    for listing_id in listing_ids:
+        if listing_id not in seen:
+            seen.add(
+                listing_id
+            )
+
+            counters[
+                "discovered"
+            ] = (
+                int(
+                    counters[
+                        "discovered"
+                    ]
+                )
+                + 1
+            )
+
+            if (
+                listing_id
+                in known_listing_ids
+            ):
+                counters[
+                    "already_known"
+                ] = (
+                    int(
+                        counters[
+                            "already_known"
+                        ]
+                    )
+                    + 1
+                )
+            else:
+                counters[
+                    "new"
+                ] = (
+                    int(
+                        counters[
+                            "new"
+                        ]
+                    )
+                    + 1
+                )
+
+        if (
+            listing_id
+            in known_listing_ids
+        ):
+            consecutive_known += 1
+        else:
+            consecutive_known = 0
+
+    counters[
+        "_consecutive_known"
+    ] = consecutive_known
+
+    return consecutive_known
+
+
+def _public_incremental_ebay_counters(
+    counters: dict[str, object],
+) -> dict[str, int]:
+    """Return persisted production counters."""
+
+    new_count = int(
+        counters[
+            "new"
+        ]
+    )
+    known_count = int(
+        counters[
+            "already_known"
+        ]
+    )
+
+    return {
+        "discovered": int(
+            counters[
+                "discovered"
+            ]
+        ),
+        "already_known": known_count,
+        "new": new_count,
+        "detail_scraped": new_count,
+        "detail_skipped": known_count,
+        "discovery_pages": int(
+            counters[
+                "discovery_pages"
+            ]
+        ),
+        "consecutive_known_at_stop": int(
+            counters[
+                "consecutive_known_at_stop"
+            ]
+        ),
+    }
+
+
+def _write_incremental_ebay_stats(
+    path: Path,
+    counters: dict[str, object],
+) -> None:
+    """Persist eBay incremental counters."""
+
+    import json
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    path.write_text(
+        json.dumps(
+            _public_incremental_ebay_counters(
+                counters
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def crawl_source(
     source: Source,
     stats: CrawlStats,
     *,
     interactive: bool = False,
+    incremental_newest_first: bool = False,
+    known_stop_threshold: int = 20,
+    incremental_counters: dict[str, object] | None = None,
 ) -> None:
     print()
     print(f"Source : {source.name}")
@@ -398,6 +689,25 @@ def crawl_source(
 
     try:
         with SessionLocal() as session:
+            known_listing_ids = (
+                _warehouse_known_ebay_listing_ids(
+                    session
+                )
+                if incremental_newest_first
+                else set()
+            )
+
+            source_consecutive_known = 0
+
+            if (
+                incremental_newest_first
+                and incremental_counters
+                is not None
+            ):
+                incremental_counters[
+                    "_consecutive_known"
+                ] = 0
+
             job = CrawlJob(
                 source=f"ebay:{source.name}",
                 status="running",
@@ -646,6 +956,43 @@ def crawl_source(
                         )
                         break
 
+                    stop_for_known_overlap = False
+
+                    if (
+                        incremental_newest_first
+                        and incremental_counters
+                        is not None
+                    ):
+                        page_listing_ids = (
+                            _extract_incremental_ebay_listing_ids(
+                                html
+                            )
+                        )
+
+                        if page_listing_ids:
+                            source_consecutive_known = (
+                                _record_incremental_ebay_page(
+                                    incremental_counters,
+                                    page_listing_ids,
+                                    known_listing_ids,
+                                )
+                            )
+
+                            stop_for_known_overlap = (
+                                len(
+                                    page_listing_ids
+                                )
+                                >= known_stop_threshold
+                                and source_consecutive_known
+                                >= known_stop_threshold
+                            )
+                        else:
+                            print(
+                                "Incremental overlap stop was not "
+                                "evaluated because no ordered item IDs "
+                                "were extracted from this page."
+                            )
+
                     raw = ingest_raw_page(
                         session=session,
                         job=job,
@@ -668,6 +1015,30 @@ def crawl_source(
                         f"Processed raw page "
                         f"{raw.id}; cards: {count}"
                     )
+
+                    if stop_for_known_overlap:
+                        if (
+                            incremental_counters
+                            is not None
+                        ):
+                            incremental_counters[
+                                "consecutive_known_at_stop"
+                            ] = max(
+                                int(
+                                    incremental_counters[
+                                        "consecutive_known_at_stop"
+                                    ]
+                                ),
+                                source_consecutive_known,
+                            )
+
+                        print(
+                            "Stopping incremental eBay discovery: "
+                            f"{source_consecutive_known} consecutive "
+                            "warehouse-known IDs reached the bounded "
+                            "newest-first overlap threshold."
+                        )
+                        break
 
                     if not has_next_page(html):
                         print(
@@ -724,6 +1095,19 @@ def main() -> int:
         return 2
 
     stats = CrawlStats()
+    incremental_counters = (
+        _new_incremental_ebay_counters()
+    )
+
+    if (
+        args.incremental_newest_first
+        and args.known_stop_threshold < 1
+    ):
+        print(
+            "--known-stop-threshold must be at least 1.",
+            file=sys.stderr,
+        )
+        return 2
 
     for source in selected:
         stats.sources += 1
@@ -733,6 +1117,15 @@ def main() -> int:
                 source,
                 stats,
                 interactive=args.interactive,
+                incremental_newest_first=(
+                    args.incremental_newest_first
+                ),
+                known_stop_threshold=(
+                    args.known_stop_threshold
+                ),
+                incremental_counters=(
+                    incremental_counters
+                ),
             )
         except Exception as exc:
             stats.failed_sources += 1
@@ -763,6 +1156,33 @@ def main() -> int:
     print(
         f"Failed          : {stats.failed_sources}"
     )
+
+    if args.incremental_newest_first:
+        incremental_public = (
+            _public_incremental_ebay_counters(
+                incremental_counters
+            )
+        )
+
+        print()
+        print("Incremental eBay counters")
+        print("-------------------------")
+
+        for key, value in (
+            incremental_public.items()
+        ):
+            print(
+                f"{key}={value}"
+            )
+
+        if (
+            args.incremental_stats_file
+            is not None
+        ):
+            _write_incremental_ebay_stats(
+                args.incremental_stats_file,
+                incremental_counters,
+            )
 
     if (
         stats.blocked_sources
