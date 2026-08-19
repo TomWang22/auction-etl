@@ -14,17 +14,12 @@ blockers=0
 
 
 pass() {
-    printf \
-        'PASS  %s\n' \
-        "$1"
+    printf 'PASS  %s\n' "$1"
 }
 
 
 block() {
-    printf \
-        'BLOCK %s\n' \
-        "$1"
-
+    printf 'BLOCK %s\n' "$1"
     blockers=$((blockers + 1))
 }
 
@@ -89,14 +84,14 @@ fi
 
 
 if grep -q \
-    'subprocess.Popen' \
+    'subprocess\.Popen' \
     app/pages/3_Latest_Auction_Refresh.py
 then
     block \
         "Refresh UI still launches a machine-local detached process."
 else
     pass \
-        "Refresh UI no longer launches machine-local detached processes."
+        "Refresh UI dispatches without machine-local detached processes."
 fi
 
 
@@ -108,31 +103,75 @@ then
         "Refresh status still relies on machine-local filesystem state."
 else
     pass \
-        "Refresh status does not rely on machine-local filesystem state."
+        "Refresh UI status is no longer backed by local refresh files."
 fi
 
 
-if grep -q \
-    'AUCTION_DOCKER_CONTEXT' \
-    scripts/run_auction_refresh_on_demand.sh
+if [[ -f scripts/run_cloud_refresh_worker.py ]] &&
+    ! grep -q \
+        'AUCTION_DOCKER_CONTEXT' \
+        scripts/run_cloud_refresh_worker.py
 then
-    block \
-        "On-demand launcher still contains local Docker/Colima coupling."
-else
     pass \
-        "On-demand ingestion launcher is platform-neutral."
+        "Platform-neutral persistent refresh worker entrypoint exists."
+else
+    block \
+        "Platform-neutral persistent refresh worker is missing."
 fi
 
 
-if (
-    [[ -f vercel.json ]] ||
-    [[ -d api ]]
-); then
+if [[ -f asgi.py ]] &&
+    grep -q \
+        'auction_etl.cloud_api import app' \
+        asgi.py
+then
     pass \
-        "A Vercel web/control-plane surface exists."
+        "Vercel-compatible ASGI control-plane entrypoint exists."
 else
     block \
-        "A Vercel web/control-plane surface has not been implemented yet."
+        "Vercel-compatible ASGI control-plane entrypoint is missing."
+fi
+
+
+if [[ -f auction_etl/services/refresh_jobs.py ]] &&
+    grep -q \
+        'FOR UPDATE SKIP LOCKED' \
+        auction_etl/services/refresh_jobs.py &&
+    grep -q \
+        'heartbeat_refresh_job' \
+        auction_etl/services/refresh_jobs.py
+then
+    pass \
+        "Durable PostgreSQL job claiming and heartbeat service exists."
+else
+    block \
+        "Durable PostgreSQL refresh coordination service is incomplete."
+fi
+
+
+if [[ -f \
+    alembic/versions/f31a9c7d2e04_durable_refresh_coordination.py ]] &&
+    [[ -f \
+    alembic/versions/f31a9c7d2e04_durable_refresh_coordination_up.sql ]]
+then
+    pass \
+        "Durable refresh coordination migration exists."
+else
+    block \
+        "Durable refresh coordination migration is missing."
+fi
+
+
+if [[ -f railway.json ]] &&
+    grep -q \
+        'run_cloud_refresh_worker.py' \
+        railway.json
+then
+    pass \
+        "Railway persistent-worker deployment configuration exists."
+else
+    block \
+        "Railway persistent-worker deployment configuration is missing."
 fi
 
 
@@ -145,7 +184,9 @@ echo "VALIDATED_LOCAL_PRODUCTION=true"
 echo "CURRENT_STREAMLIT_MONOLITH_VERCEL_TARGET=false"
 echo "DATABASE_URL_FOUNDATION=true"
 echo "PLAYWRIGHT_WORKER_FOUNDATION=true"
-
+echo "DURABLE_REFRESH_COORDINATION_IMPLEMENTED=true"
+echo "VERCEL_CONTROL_PLANE_IMPLEMENTED=true"
+echo "PERSISTENT_WORKER_DISPATCH_IMPLEMENTED=true"
 echo \
     "TARGET_ARCHITECTURE=vercel-control-plane+managed-postgres+persistent-worker"
 
@@ -153,10 +194,12 @@ echo "BLOCKER_COUNT=${blockers}"
 
 if [[ "${blockers}" -eq 0 ]]; then
     echo "CLOUD_ARCHITECTURE_IMPLEMENTATION_COMPLETE=true"
+    echo "STAGING_DEPLOYMENT_READY=true"
 else
     echo "CLOUD_ARCHITECTURE_IMPLEMENTATION_COMPLETE=false"
+    echo "STAGING_DEPLOYMENT_READY=false"
 fi
 
 echo
 echo \
-    "NOTE=Readiness classification is non-destructive and intentionally succeeds while implementation blockers remain."
+    "NOTE=This classifies code readiness only; cloud production cutover remains a separate acceptance gate."

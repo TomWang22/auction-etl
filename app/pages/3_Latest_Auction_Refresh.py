@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -31,6 +30,15 @@ from auction_etl.reporting.recent_ingestion import (  # noqa: E402
     get_report_rows,
     write_formatted_csv,
 )
+from auction_etl.services.refresh_jobs import (  # noqa: E402
+    RefreshCoordinationUnavailable,
+    build_refresh_engine,
+    coordination_schema_ready,
+    create_refresh_job,
+    get_latest_refresh_job,
+    list_refresh_jobs,
+    refresh_job_to_ui_status,
+)
 from app.navigation import render_navigation
 import time
 
@@ -43,28 +51,6 @@ DATABASE_URL = os.environ.get(
     ),
 )
 
-_state_dir_value = os.environ.get(
-    "AUCTION_REFRESH_STATE_DIR"
-)
-
-if _state_dir_value:
-    _state_dir = Path(
-        _state_dir_value
-    ).expanduser()
-
-    if not _state_dir.is_absolute():
-        _state_dir = ROOT / _state_dir
-else:
-    _state_dir = (
-        ROOT / "logs/latest-refresh"
-    )
-
-STATUS_PATH = (
-    _state_dir / "status.json"
-)
-LAUNCHER_PATH = (
-    ROOT / "scripts/launch_latest_refresh_job.py"
-)
 MEDIA_CONFIG_PATH = (
     ROOT / "config/report_media_types.json"
 )
@@ -145,24 +131,6 @@ def write_json(
     temporary.replace(path)
 
 
-def tail_file(
-    path: Path,
-    lines: int = 100,
-) -> str:
-    """Return the final lines of a text log."""
-    if not path.is_file():
-        return ""
-
-    content = path.read_text(
-        encoding="utf-8",
-        errors="replace",
-    ).splitlines()
-
-    return "\n".join(
-        content[-lines:]
-    )
-
-
 @st.cache_data(ttl=30)
 def load_schema_contract(
     database_url: str,
@@ -219,48 +187,113 @@ def load_report(
         )
 
 
-def launch_job(
-    *,
-    inspect_only: bool,
-) -> None:
-    """Launch a detached refresh or inspection process."""
-    command = [
-        sys.executable,
-        str(LAUNCHER_PATH),
-        "--database-url",
-        DATABASE_URL,
-        "--trigger",
-        "ui",
-    ]
+@st.cache_resource
+def refresh_engine(
+    database_url: str,
+):
+    """Return the durable refresh coordination engine."""
+    return build_refresh_engine(
+        database_url
+    )
 
-    if inspect_only:
-        command.append(
-            "--inspect-only"
+
+@st.cache_data(ttl=2)
+def load_refresh_status(
+    database_url: str,
+) -> dict[str, Any]:
+    """Load the latest durable refresh state from PostgreSQL."""
+    try:
+        engine = refresh_engine(
+            database_url
         )
 
-    environment = os.environ.copy()
-    environment["DATABASE_URL"] = DATABASE_URL
-    environment.pop(
-        "DOCKER_HOST",
-        None,
+        if not coordination_schema_ready(
+            engine
+        ):
+            return {
+                "state": "idle",
+                "phase": "not-installed",
+                "message": (
+                    "Durable refresh coordination has not been "
+                    "migrated into this database yet."
+                ),
+                "coordination_ready": False,
+            }
+
+        job = get_latest_refresh_job(
+            engine
+        )
+    except Exception as exc:
+        return {
+            "state": "unavailable",
+            "phase": "database",
+            "message": (
+                "Durable refresh status is unavailable: "
+                f"{exc}"
+            ),
+            "coordination_ready": False,
+        }
+
+    if job is None:
+        return {
+            "state": "idle",
+            "phase": "idle",
+            "message": "No durable refresh job has been queued.",
+            "coordination_ready": True,
+        }
+
+    status = refresh_job_to_ui_status(
+        job
     )
-    environment.pop(
-        "DOCKER_CONTEXT",
-        None,
-    )
-    environment.pop(
-        "PGOPTIONS",
-        None,
+    status[
+        "coordination_ready"
+    ] = True
+
+    return status
+
+
+def enqueue_refresh_job(
+    database_url: str,
+) -> tuple[dict[str, Any], bool]:
+    """Create or reuse one durable refresh job."""
+    engine = refresh_engine(
+        database_url
     )
 
-    subprocess.Popen(
-        command,
-        cwd=ROOT,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+    if not coordination_schema_ready(
+        engine
+    ):
+        raise RefreshCoordinationUnavailable(
+            "Run the Phase-C Alembic migration before "
+            "queueing a cloud refresh."
+        )
+
+    source_commit = (
+        os.environ.get(
+            "VERCEL_GIT_COMMIT_SHA"
+        )
+        or os.environ.get(
+            "AUCTION_SOURCE_COMMIT"
+        )
+    )
+
+    requested_by = os.environ.get(
+        "AUCTION_REFRESH_REQUESTED_BY",
+        "streamlit",
+    )
+
+    job, created = create_refresh_job(
+        engine,
+        requested_by=requested_by,
+        source_commit=source_commit,
+        trigger="ui",
+    )
+
+    return (
+        refresh_job_to_ui_status(
+            job
+        ),
+        created,
     )
 
 
@@ -407,12 +440,8 @@ st.caption(
     "filter collector data, and create formatted exports."
 )
 
-status = read_json(
-    STATUS_PATH,
-    {
-        "state": "idle",
-        "message": "No UI refresh job has been started.",
-    },
+status = load_refresh_status(
+    DATABASE_URL
 )
 
 status_columns = st.columns(4)
@@ -489,7 +518,7 @@ if trigger:
     st.caption(
         "Latest trigger: "
         + str(trigger).upper()
-        + ". Cron and this page share the same launcher and lock."
+        + ". Refresh ownership and progress are stored in PostgreSQL."
     )
 
 refresh_tab, report_tab, history_tab = st.tabs(
@@ -511,8 +540,16 @@ with refresh_tab:
     )
 
     job_running = (
-        str(status.get("state", "")).lower()
-        == "running"
+        str(
+            status.get(
+                "state",
+                "",
+            )
+        ).lower()
+        in {
+            "queued",
+            "running",
+        }
     )
 
     control_columns = st.columns(2)
@@ -520,15 +557,11 @@ with refresh_tab:
     if control_columns[0].button(
         "Inspect recent ingestion",
         type="secondary",
-        disabled=job_running,
+        disabled=False,
         width="stretch",
     ):
-        launch_job(
-            inspect_only=True,
-        )
-        st.success(
-            "Inspection started in the background."
-        )
+        st.cache_data.clear()
+        st.rerun()
 
     confirmation = control_columns[1].text_input(
         "Type RUN to enable a new ingestion round",
@@ -537,29 +570,57 @@ with refresh_tab:
 
     refresh_enabled = (
         confirmation.strip().upper() == "RUN"
+        and not job_running
+        and bool(
+            status.get(
+                "coordination_ready",
+                False,
+            )
+        )
     )
 
     if control_columns[1].button(
         "Run Buyee, eBay, and Gripsweat",
         type="primary",
-        disabled=not refresh_enabled or job_running,
+        disabled=not refresh_enabled,
         width="stretch",
     ):
-        launch_job(
-            inspect_only=False,
-        )
-        st.success(
-            "The new ingestion round started in the background."
-        )
-        time.sleep(
-            0.25
-        )
-        st.rerun()
+        try:
+            queued_status, created = (
+                enqueue_refresh_job(
+                    DATABASE_URL
+                )
+            )
+        except Exception as exc:
+            st.error(
+                "Could not queue the durable refresh job: "
+                f"{exc}"
+            )
+        else:
+            st.cache_data.clear()
+
+            if created:
+                st.success(
+                    "The refresh was queued for the "
+                    "persistent marketplace worker."
+                )
+            else:
+                st.info(
+                    "An active durable refresh already exists; "
+                    "showing that job instead."
+                )
+
+            status = queued_status
+
+            time.sleep(
+                0.25
+            )
+            st.rerun()
 
     st.warning(
         "The ingestion round never prunes globally. "
-        "It stops before another crawl if staging already contains "
-        "un-ingested eBay identities."
+        "The web process only queues work; the persistent worker "
+        "owns marketplace execution."
     )
 
     if st.button(
@@ -568,26 +629,17 @@ with refresh_tab:
         st.cache_data.clear()
         st.rerun()
 
-    log_value = status.get(
-        "log_path",
+    durable_job_id = status.get(
+        "job_id"
     )
 
-    if log_value:
-        log_path = Path(
-            str(log_value)
-        )
-
-        if not log_path.is_absolute():
-            log_path = ROOT / log_path
-
-        with st.expander(
-            "Latest refresh log",
-            expanded=False,
-        ):
-            st.code(
-                tail_file(log_path),
-                language="text",
+    if durable_job_id:
+        st.caption(
+            "Durable refresh job: "
+            + str(
+                durable_job_id
             )
+        )
 
     if job_running:
         time.sleep(
@@ -1096,11 +1148,41 @@ with history_tab:
 
     history_rows: list[dict[str, Any]] = []
 
+    try:
+        coordination_engine = refresh_engine(
+            DATABASE_URL
+        )
+
+        if coordination_schema_ready(
+            coordination_engine
+        ):
+            for job in list_refresh_jobs(
+                coordination_engine,
+                limit=50,
+            ):
+                history_rows.append(
+                    {
+                        "Category": "Refresh",
+                        "Name": str(
+                            job["id"]
+                        ),
+                        "Modified": (
+                            job.get(
+                                "updated_at"
+                            )
+                            or job.get(
+                                "requested_at"
+                            )
+                        ),
+                        "Path": (
+                            "PostgreSQL ops.refresh_job"
+                        ),
+                    }
+                )
+    except Exception:
+        pass
+
     for parent, category in (
-        (
-            ROOT / "logs/latest-refresh",
-            "Refresh",
-        ),
         (
             ROOT / "reports/recent-ingestion",
             "Report",
@@ -1131,7 +1213,16 @@ with history_tab:
             )
 
     history_rows.sort(
-        key=lambda row: row["Modified"],
+        key=lambda row: (
+            row["Modified"].timestamp()
+            if isinstance(
+                row.get(
+                    "Modified"
+                ),
+                datetime,
+            )
+            else 0.0
+        ),
         reverse=True,
     )
 
