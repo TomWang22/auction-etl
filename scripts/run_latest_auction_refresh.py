@@ -29,6 +29,9 @@ DEFAULT_SQLALCHEMY_URL = (
     "postgresql+psycopg://auction:auction@127.0.0.1:5544/"
     "auction_warehouse"
 )
+DEFAULT_EXPECTED_DATABASE_NAME = "auction_warehouse"
+DEFAULT_EXPECTED_DATABASE_USER = "auction"
+
 BUYEE_URL = (
     "https://buyee.jp/myorders/watchlist/closed"
 )
@@ -71,6 +74,20 @@ def parse_arguments() -> argparse.Namespace:
         default=os.environ.get(
             "AUCTION_BUYEE_PROFILE",
             "buyee",
+        ),
+    )
+    parser.add_argument(
+        "--expected-database-name",
+        default=os.environ.get(
+            "AUCTION_EXPECTED_DATABASE_NAME",
+            DEFAULT_EXPECTED_DATABASE_NAME,
+        ),
+    )
+    parser.add_argument(
+        "--expected-database-user",
+        default=os.environ.get(
+            "AUCTION_EXPECTED_DATABASE_USER",
+            DEFAULT_EXPECTED_DATABASE_USER,
         ),
     )
     return parser.parse_args()
@@ -425,16 +442,38 @@ def database_state(
     }
 
 
-def verify_state(state: dict[str, int | str]) -> None:
+def verify_state(
+    state: dict[str, int | str],
+    *,
+    expected_database_name: str = DEFAULT_EXPECTED_DATABASE_NAME,
+    expected_database_user: str = DEFAULT_EXPECTED_DATABASE_USER,
+) -> None:
     """Validate core database invariants."""
-    if state["database_name"] != "auction_warehouse":
-        raise RuntimeError(
-            "Unexpected database name."
+    expected_name = expected_database_name.strip()
+    expected_user = expected_database_user.strip()
+
+    if not expected_name:
+        raise ValueError(
+            "Expected database name must not be empty."
         )
 
-    if state["database_user"] != "auction":
+    if not expected_user:
+        raise ValueError(
+            "Expected database user must not be empty."
+        )
+
+    if state["database_name"] != expected_name:
         raise RuntimeError(
-            "Unexpected database user."
+            "Unexpected database name: "
+            f"expected {expected_name!r}, "
+            f"found {state['database_name']!r}."
+        )
+
+    if state["database_user"] != expected_user:
+        raise RuntimeError(
+            "Unexpected database user: "
+            f"expected {expected_user!r}, "
+            f"found {state['database_user']!r}."
         )
 
     if state["total_rows"] != state["unique_rows"]:
@@ -1211,7 +1250,15 @@ def main() -> int:
             row_factory=dict_row,
         ) as connection:
             initial_state = database_state(connection)
-            verify_state(initial_state)
+            verify_state(
+                initial_state,
+                expected_database_name=(
+                    arguments.expected_database_name
+                ),
+                expected_database_user=(
+                    arguments.expected_database_user
+                ),
+            )
 
             buyee_listing_ids_before = {
                 str(row["listing_id"])
@@ -2499,7 +2546,15 @@ def main() -> int:
         ) as connection:
             final_state = database_state(connection)
 
-        verify_state(final_state)
+        verify_state(
+            final_state,
+            expected_database_name=(
+                arguments.expected_database_name
+            ),
+            expected_database_user=(
+                arguments.expected_database_user
+            ),
+        )
 
         if (
             int(final_state["total_rows"])

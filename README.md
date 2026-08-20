@@ -199,3 +199,87 @@ Deduplication prefers native eBay warehouse records over matching
 Gripsweat archive records sharing the same listing ID. Exporting is
 read-only and never deletes or modifies warehouse records.
 <!-- collector-filtered-export:end -->
+
+<!-- BEGIN AUCTION_ETL_CLOUD_ARCHITECTURE -->
+
+## Production and cloud architecture
+
+Validated production baseline:
+
+```text
+commit: 9adf009c698d7448a58d280186fc1f3cd16e9644
+tag:    production-incremental-20260818-9adf009
+```
+
+### Current production
+
+```mermaid
+flowchart LR
+    User["Collector"] --> UI["Streamlit UI"]
+    UI --> DB[("Local PostgreSQL")]
+    UI --> Refresh["Latest Refresh"]
+    Refresh --> Runner["Local refresh runner"]
+    Runner --> Buyee["Buyee<br/>new IDs only"]
+    Runner --> Ebay["eBay<br/>bounded newest-first"]
+    Runner --> Grip["Gripsweat<br/>new IDs only"]
+    Buyee --> Owner["Persistent Playwright<br/>Buyee owner"]
+    Owner --> Profile[("Browser profile")]
+    Buyee --> DB
+    Ebay --> DB
+    Grip --> DB
+    Runner --> Files[("Local status / logs / evidence")]
+```
+
+### Target cloud architecture
+
+```mermaid
+flowchart LR
+    User["Collector"] --> Vercel["Vercel<br/>FastAPI control plane"]
+    Vercel --> DB[("Managed PostgreSQL")]
+    Vercel -->|"enqueue"| Jobs[("Durable refresh jobs")]
+    Jobs --> Worker["Persistent marketplace worker"]
+    Worker --> Buyee["Buyee"]
+    Worker --> Ebay["eBay"]
+    Worker --> Grip["Gripsweat"]
+    Buyee --> Owner["Persistent Playwright owner"]
+    Owner --> Volume[("Persistent Buyee profile")]
+    Buyee --> DB
+    Ebay --> DB
+    Grip --> DB
+    Worker --> Jobs
+    Worker --> Evidence[("Durable evidence / exports")]
+    Vercel -->|"poll progress"| Jobs
+```
+
+The web/control plane and marketplace/browser worker remain separate.
+
+Long-running crawling, Chromium, and the persistent Buyee profile do not belong to one HTTP request lifecycle.
+
+Refresh coordination moves from local subprocess/log-file state to durable PostgreSQL job state.
+
+Detailed documents:
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Cloud deployment plan](docs/DEPLOYMENT.md)
+- [Database deployment plan](docs/DATABASE_DEPLOYMENT.md)
+
+### Migration status
+
+The existing validated application remains production.
+
+Cloud cutover is not complete until these are implemented and accepted:
+
+```text
+durable PostgreSQL refresh jobs
+persistent marketplace worker
+persistent Buyee profile storage
+Vercel control-plane API/UI
+no local detached refresh process
+no local refresh-status dependency
+managed PostgreSQL staging rehearsal
+production migration rehearsal
+end-to-end staging acceptance
+controlled production cutover
+```
+
+<!-- END AUCTION_ETL_CLOUD_ARCHITECTURE -->

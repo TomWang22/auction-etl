@@ -29,7 +29,8 @@ DEFAULT_DATABASE_URL = (
 DEFAULT_SOURCE_CSV = Path(
     "recovery-input/auction_report_buyee_no_bulk.csv"
 )
-EXPECTED_DATABASE = "auction_warehouse"
+DEFAULT_EXPECTED_DATABASE_NAME = "auction_warehouse"
+DEFAULT_EXPECTED_DATABASE_USER = "auction"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,22 @@ def parse_arguments(
             DEFAULT_DATABASE_URL,
         ),
         help="SQLAlchemy PostgreSQL URL.",
+    )
+    parser.add_argument(
+        "--expected-database-name",
+        default=os.getenv(
+            "AUCTION_EXPECTED_DATABASE_NAME",
+            DEFAULT_EXPECTED_DATABASE_NAME,
+        ),
+        help="Required current_database() identity.",
+    )
+    parser.add_argument(
+        "--expected-database-user",
+        default=os.getenv(
+            "AUCTION_EXPECTED_DATABASE_USER",
+            DEFAULT_EXPECTED_DATABASE_USER,
+        ),
+        help="Required current_user identity.",
     )
     parser.add_argument(
         "--source-csv",
@@ -272,8 +289,24 @@ def resolve_exchange_rate(
 
 def verify_database(
     connection: Connection,
+    *,
+    expected_database_name: str = DEFAULT_EXPECTED_DATABASE_NAME,
+    expected_database_user: str = DEFAULT_EXPECTED_DATABASE_USER,
 ) -> None:
-    """Refuse to update an unexpected database."""
+    """Refuse to update an unexpected database identity."""
+    expected_name = expected_database_name.strip()
+    expected_user = expected_database_user.strip()
+
+    if not expected_name:
+        raise ValueError(
+            "Expected database name must not be empty."
+        )
+
+    if not expected_user:
+        raise ValueError(
+            "Expected database user must not be empty."
+        )
+
     row = connection.execute(
         text(
             """
@@ -287,19 +320,29 @@ def verify_database(
     database_name = str(
         row["database_name"]
     )
+    database_user = str(
+        row["database_user"]
+    )
 
-    if database_name != EXPECTED_DATABASE:
+    if database_name != expected_name:
         raise RuntimeError(
             "Refusing to update database "
             f"{database_name!r}; expected "
-            f"{EXPECTED_DATABASE!r}."
+            f"{expected_name!r}."
+        )
+
+    if database_user != expected_user:
+        raise RuntimeError(
+            "Refusing to update as database user "
+            f"{database_user!r}; expected "
+            f"{expected_user!r}."
         )
 
     print(
         f"Database: {database_name}"
     )
     print(
-        f"User    : {row['database_user']}"
+        f"User    : {database_user}"
     )
 
 
@@ -665,7 +708,15 @@ def main(
 
     try:
         with engine.begin() as connection:
-            verify_database(connection)
+            verify_database(
+                connection,
+                expected_database_name=(
+                    options.expected_database_name
+                ),
+                expected_database_user=(
+                    options.expected_database_user
+                ),
+            )
             ensure_columns(connection)
 
             rate_rows, value_rows = apply_rate(

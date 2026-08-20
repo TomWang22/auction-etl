@@ -1,0 +1,4 @@
+# Vercel serves only the lightweight database control plane.
+# The local ETL/worker retains the complete uv dependency graph.
+pyproject.toml
+uv.lock

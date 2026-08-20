@@ -1,0 +1,4 @@
+# Vercel control-plane runtime only.
+# Full ETL/worker dependencies remain in pyproject.toml and uv.lock.
+sqlalchemy==2.0.51
+psycopg[binary]==3.3.4
