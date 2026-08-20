@@ -15,37 +15,35 @@ DATABASE = ROOT / "docs" / "DATABASE_DEPLOYMENT.md"
 
 def read(path: Path) -> str:
     """Read UTF-8 repository documentation."""
-
     return path.read_text(encoding="utf-8")
 
 
-def test_readme_contains_current_and_target_architecture() -> None:
-    """README exposes current and target runtime generations."""
-
+def test_readme_contains_collector_ledger_architecture() -> None:
+    """README exposes the accepted Collector Ledger architecture."""
     value = read(README)
 
-    assert "Current production" in value
-    assert "Target cloud architecture" in value
+    assert "# Collector Ledger" in value
+    assert "## Architecture overview" in value
     assert "```mermaid" in value
-    assert "Durable refresh jobs" in value
-    assert "Persistent Playwright" in value
+    assert "Vercel" in value
+    assert "Neon PostgreSQL" in value
+    assert "refresh worker" in value
+    assert "Railway" in value
 
 
 def test_architecture_separates_control_plane_and_worker() -> None:
     """Long-running browser work remains outside web execution."""
-
     value = read(ARCHITECTURE)
 
     assert "Vercel control plane" in value
-    assert "Persistent worker platform" in value
-    assert "Managed PostgreSQL" in value
+    assert "Logical refresh execution role" in value
+    assert "Neon PostgreSQL" in value
     assert "spawn detached ingestion processes" in value
     assert "treat local files as shared refresh state" in value
 
 
 def test_architecture_preserves_incremental_marketplace_contracts() -> None:
     """Documentation preserves the three incremental policies."""
-
     value = read(ARCHITECTURE)
 
     assert "calculate new warehouse IDs" in value
@@ -55,7 +53,6 @@ def test_architecture_preserves_incremental_marketplace_contracts() -> None:
 
 def test_deployment_preserves_buyee_browser_contract() -> None:
     """Cloud deployment retains validated Buyee compatibility."""
-
     value = read(DEPLOYMENT)
 
     assert "headed Chromium" in value
@@ -66,7 +63,6 @@ def test_deployment_preserves_buyee_browser_contract() -> None:
 
 def test_database_plan_separates_runtime_and_migrations() -> None:
     """Runtime and migration connection purposes are documented."""
-
     value = read(DATABASE)
 
     assert "DATABASE_URL=<managed PostgreSQL application connection>" in value
@@ -79,7 +75,6 @@ def test_database_plan_separates_runtime_and_migrations() -> None:
 
 def test_database_plan_contains_durable_refresh_schema() -> None:
     """Cloud refresh state is database-backed."""
-
     value = read(DATABASE)
 
     assert "ops.refresh_job" in value
@@ -89,11 +84,17 @@ def test_database_plan_contains_durable_refresh_schema() -> None:
     assert "lease_expires_at" in value
 
 
-def test_docs_do_not_claim_cloud_production_is_complete() -> None:
-    """Target architecture remains distinct from current production."""
-
+def test_docs_keep_production_cutover_explicit() -> None:
+    """Source promotion does not silently claim production cutover."""
     readme = read(README)
     deployment = read(DEPLOYMENT)
 
-    assert "Cloud cutover is not complete" in readme
+    assert (
+        "Production runtime/data cutover remains a separate explicit operation."
+        in readme
+    )
     assert "Cloud production cutover is not yet approved." in deployment
+    assert (
+        "Cloud cutover is not complete until these are implemented and accepted:"
+        not in readme
+    )

@@ -1,6 +1,6 @@
 # Collector Ledger Architecture
 
-> **Architecture status:** Vercel + Neon staging acceptance closed on 2026-08-19.
+> **Architecture status:** Vercel + Neon staging acceptance closed on 2026-08-19; the accepted Phase-C source has since been merged into `main`.
 >
 > **Product/documentation name:** Collector Ledger.
 >
@@ -23,72 +23,194 @@ Browser automation and marketplace crawling have a different lifecycle from HTTP
 
 ## 2. Architecture at a glance
 
+The Phase-C durable-refresh source has now been merged into `main`. The diagrams below distinguish the accepted staging runtime topology from the broader repository architecture.
+
+### 2.1 Accepted staging runtime topology
+
 ```mermaid
 flowchart LR
-    Operator["Operator / review UI / automation"]
+    Operator["Operator / automation"]
 
-    subgraph GitBoundary["Git / promotion boundary"]
-        GitHub["Git / GitHub"]
-        PhaseC["Phase-C staging source"]
-        Main["main production boundary"]
+    subgraph Source["Git / promotion boundary"]
+        Main["GitHub main"]
+        VercelConfig["vercel.json + API source"]
+        WorkerSource["worker + ingestion source"]
     end
 
-    subgraph Vercel["Vercel control plane"]
+    subgraph Control["Vercel control plane"]
         API["auction_etl/cloud_api.py"]
         Health["GET /api/health"]
         Readiness["GET /api/readiness"]
-        CreateJob["POST /api/refresh-jobs"]
-        LatestJob["GET /api/refresh-jobs/latest"]
-        JobById["GET /api/refresh-jobs/{id}"]
+        Create["POST /api/refresh-jobs"]
+        Status["GET refresh status"]
     end
 
-    subgraph Neon["Neon PostgreSQL — authoritative staging"]
-        Ops["ops.refresh_job / ops.refresh_marketplace"]
-        Warehouse["warehouse.*"]
-        System["system.*"]
-        Alembic["alembic_version"]
+    subgraph Data["Neon PostgreSQL — authoritative staging"]
+        Ops[("ops.refresh_job<br/>ops.refresh_marketplace")]
+        Warehouse[("warehouse.*")]
+        System[("system.*")]
+        Schema[("alembic_version")]
     end
 
-    subgraph WorkerRole["Logical refresh execution role"]
+    subgraph Execution["Logical refresh execution role"]
         Worker["scripts/run_cloud_refresh_worker.py"]
-        Discovery["Marketplace discovery / crawling"]
-        Normalize["Parsing / normalization"]
-        Profile["Buyee browser profile / session"]
+        Round["canonical multisource refresh"]
+        Profile[("Buyee browser/session profile")]
     end
 
-    subgraph Marketplaces["Marketplace sources"]
+    subgraph Sources["Marketplace sources"]
         Buyee["Buyee"]
         Ebay["eBay"]
         Gripsweat["Gripsweat"]
     end
 
-    GitHub --> PhaseC
-    GitHub --> Main
-    PhaseC --> Vercel
-    PhaseC --> Worker
+    Main --> VercelConfig
+    Main --> WorkerSource
+
+    VercelConfig -. deployment source .-> API
+    WorkerSource -. execution source .-> Worker
 
     Operator --> API
     API --> Health
     API --> Readiness
-    API --> CreateJob
-    API --> LatestJob
-    API --> JobById
+    API --> Create
+    API --> Status
 
-    CreateJob --> Ops
-    LatestJob --> Ops
-    JobById --> Ops
-    Readiness --> Neon
+    Readiness --> Data
+    Create --> Ops
+    Status --> Ops
 
     Worker --> Ops
-    Worker --> Discovery
-    Discovery --> Buyee
-    Discovery --> Ebay
-    Discovery --> Gripsweat
-    Buyee <--> Profile
-    Discovery --> Normalize
-    Normalize --> Warehouse
-    Normalize --> System
+    Worker --> Round
+    Round --> Buyee
+    Round --> Ebay
+    Round --> Gripsweat
+    Round <--> Profile
+    Round --> Warehouse
+    Round --> System
 ```
+
+The source relationship shown above does not imply that every `main` commit automatically redeploys every runtime. Source promotion, Vercel deployment, database promotion, and worker deployment remain separately controlled operations.
+
+### 2.2 Whole-repository functional map
+
+```mermaid
+flowchart TB
+    Collector["Collector / reviewer"]
+
+    subgraph UI["Application UI — app/"]
+        Review["collector_review.py"]
+        Navigation["navigation.py"]
+        Analytics["collector_analytics_editor.py"]
+        ExportUI["collector_export.py"]
+        Workbenches["app/pages/*<br/>intake / completeness / pressing / evidence / analytics"]
+    end
+
+    subgraph Package["Core package — auction_etl/"]
+        Services["auction_etl/services/*<br/>application workflows"]
+        Domain["domain/*<br/>pressing/reference domain"]
+        Classifiers["classifiers/*"]
+        Crawlers["crawlers/*"]
+        Discovery["discovery/*"]
+        Parsers["parser + parsers/*"]
+        Reporting["reporting/*"]
+        Database["database + models"]
+        Browser["browser + auth"]
+    end
+
+    subgraph CloudControl["Cloud control plane"]
+        CloudAPI["cloud_api.py"]
+        Vercel["Vercel"]
+    end
+
+    subgraph Refresh["Refresh orchestration — scripts/"]
+        Worker["run_cloud_refresh_worker.py"]
+        Multi["run_multisource_ingestion_round.py"]
+        Latest["run_latest_auction_refresh.py"]
+        Sync["sync_warehouse_incremental.py"]
+        BuyeeOwner["Buyee Playwright owner"]
+    end
+
+    subgraph Sources["External marketplace sources"]
+        Buyee["Buyee"]
+        Ebay["eBay"]
+        Gripsweat["Gripsweat"]
+    end
+
+    subgraph PostgreSQL["PostgreSQL state"]
+        Neon[("Neon staging")]
+        Local[("Local PostgreSQL")]
+        Ops["ops.* durable coordination"]
+        Warehouse["warehouse.* canonical records"]
+        System["system.* operational state"]
+    end
+
+    subgraph Schema["Schema evolution"]
+        Alembic["alembic/versions/*"]
+    end
+
+    subgraph Outputs["Collector outputs"]
+        Evidence["Evidence / audit artifacts"]
+        Exports["CSV / Excel / JSON / Markdown / Word"]
+    end
+
+    Collector --> Review
+    Review --> Navigation
+    Navigation --> Workbenches
+    Review --> Analytics
+    Review --> ExportUI
+
+    Review --> Services
+    Workbenches --> Services
+    Analytics --> Services
+    ExportUI --> Reporting
+
+    Services --> Domain
+    Services --> Classifiers
+    Services --> Database
+    Services --> Reporting
+
+    Crawlers --> Parsers
+    Discovery --> Crawlers
+    Browser --> Crawlers
+
+    Vercel --> CloudAPI
+    Collector --> Vercel
+    CloudAPI --> Ops
+
+    Worker --> Ops
+    Worker --> Multi
+    Multi --> Latest
+    Latest --> Discovery
+    Latest --> Crawlers
+    Latest --> Parsers
+    Latest --> Sync
+    Latest <--> BuyeeOwner
+
+    Crawlers --> Buyee
+    Crawlers --> Ebay
+    Discovery --> Ebay
+    Multi --> Gripsweat
+
+    Database --> Neon
+    Database --> Local
+
+    Neon --- Ops
+    Neon --- Warehouse
+    Neon --- System
+
+    Sync --> Warehouse
+    Services --> Warehouse
+    Services --> System
+
+    Alembic --> Neon
+    Alembic --> Local
+
+    Reporting --> Exports
+    Services --> Evidence
+```
+
+This repository therefore contains more than the cloud refresh path. It also contains the collector-facing review product, curation/reference workflows, normalization and classification rules, evidence handling, reporting/export logic, local development infrastructure, database migrations, browser/session management, and extensive acceptance/unit/integration tests.
 
 ## 3. Deployment-state matrix
 
@@ -512,21 +634,40 @@ In addition:
 
 ## 17. Source and promotion boundary
 
-Accepted Phase-C staging source:
+The controlled staging acceptance was executed from the Phase-C source:
 
 ```text
 77d2927e3ca7fc3ea884ede5c1af451f0f23b51a
 ```
 
-Production-main boundary preserved during staging acceptance:
+During that acceptance, the production baseline remained:
 
 ```text
 9adf009c698d7448a58d280186fc1f3cd16e9644
 ```
 
-A staging deployment or a Vercel environment label does not silently redefine production.
+After the staging architecture and controlled-V3 state were accepted, Phase-C was merged into `main` through pull request #1.
 
-Production promotion must be explicit.
+```text
+Phase-C merge commit:
+a98b82a0e8a1902d59e4f886cc2582adc6544c7d
+
+Collector Ledger architecture commit:
+687ae0d15f67b78dd85b6e7cafddcbf466a4b005
+```
+
+This changes the repository source-history state: `main` now contains the accepted durable-refresh/control-plane implementation.
+
+It does **not** retroactively change what was true during the controlled staging run, and it does **not** imply an automatic production database/runtime cutover.
+
+The boundaries remain separate:
+
+1. source merged to `main`;
+2. Vercel deployment state;
+3. Neon staging/production data state;
+4. persistent worker deployment state.
+
+Production runtime/data promotion must remain explicit.
 
 ## 18. Railway status
 
@@ -563,7 +704,7 @@ Future worker hosting may use Railway or another provider, but that is a separat
 
 ### Accepted now
 
-- Vercel control-plane deployment identity.
+- Vercel staging control-plane deployment identity.
 - Vercel health.
 - Vercel readiness.
 - Database readiness.
@@ -574,9 +715,19 @@ Future worker hosting may use Railway or another provider, but that is a separat
 - Controlled-V3 reconciled completion.
 - Three marketplace tasks completed.
 - Zero active staging refresh jobs.
-- Local worker stopped after acceptance.
+- Local worker stopped after controlled acceptance.
 - Controlled-V3 rerun prohibition.
-- Production source boundary unchanged.
+- Phase-C durable-refresh source merged into `main`.
+
+### Historical acceptance boundary
+
+During the controlled staging acceptance, the production baseline remained at:
+
+```text
+9adf009c698d7448a58d280186fc1f3cd16e9644
+```
+
+That statement describes the safety boundary of the acceptance run. It does not mean the Git `main` branch must remain permanently pinned there.
 
 ### Deferred
 
@@ -584,10 +735,12 @@ Future worker hosting may use Railway or another provider, but that is a separat
 - permanent Buyee profile storage;
 - Railway deployment;
 - Railway volume/profile upload;
-- production cutover;
+- production runtime/data cutover;
 - infrastructure renaming;
 - Python package renaming;
 - repository renaming.
+
+Merging the accepted Phase-C source into `main` is a source-control promotion. It does not by itself assert that every production runtime or production database has been cut over.
 
 ## 20. Naming
 

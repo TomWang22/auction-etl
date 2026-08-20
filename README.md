@@ -1,16 +1,93 @@
-# Auction ETL
+# Collector Ledger
 
-Terminal-first ETL pipeline for collecting, normalizing, classifying, and analyzing collectible auction data from multiple marketplaces.
+> **Compatibility name:** the repository, Python package, and existing infrastructure still use `auction-etl` / `auction_etl`.
+>
+> **Current cloud milestone:** Vercel + Neon staging acceptance is complete. The long-running refresh worker remains a required execution role, but its permanent cloud host is deferred.
+
+Collector Ledger is a collector-focused auction intelligence and ETL system for discovering marketplace sales, preserving source evidence, normalizing auction records, identifying pressings and completeness, reviewing uncertain records, coordinating durable refresh jobs, and exporting collector-ready research.
+
+The repository currently integrates **Buyee, eBay, and Gripsweat** with a PostgreSQL warehouse, Streamlit review and curation workflows, durable refresh coordination, reporting/export tooling, browser-assisted collection, and a lightweight Vercel control plane.
+
+## Architecture overview
+
+```mermaid
+flowchart LR
+    Collector["Collector / operator"]
+
+    subgraph Review["Review and curation"]
+        UI["Streamlit application<br/>app/"]
+        Pages["Workbenches / admin / intake<br/>app/pages/"]
+    end
+
+    subgraph Core["Collector Ledger core"]
+        Services["Domain + application services<br/>auction_etl/services/"]
+        Classify["Classification / normalization<br/>classifiers + domain"]
+        Reporting["Reporting / exports<br/>auction_etl/reporting/"]
+    end
+
+    subgraph Cloud["Accepted staging control + data plane"]
+        Vercel["Vercel control plane<br/>auction_etl/cloud_api.py"]
+        Neon[("Neon PostgreSQL<br/>warehouse + ops + system")]
+    end
+
+    subgraph Execution["Refresh execution role"]
+        Worker["Durable refresh worker<br/>scripts/run_cloud_refresh_worker.py"]
+        Runner["Canonical marketplace refresh"]
+        Profile[("Buyee browser profile")]
+    end
+
+    subgraph Sources["Marketplace sources"]
+        Buyee["Buyee"]
+        Ebay["eBay"]
+        Gripsweat["Gripsweat"]
+    end
+
+    Output["CSV / Excel / JSON / Markdown / Word<br/>reports + evidence"]
+
+    Collector --> UI
+    UI --> Pages
+    UI --> Services
+    Pages --> Services
+
+    Services --> Classify
+    Services --> Reporting
+    Services --> Neon
+    Reporting --> Output
+
+    Collector --> Vercel
+    Vercel --> Neon
+
+    Worker --> Neon
+    Worker --> Runner
+    Runner --> Buyee
+    Runner --> Ebay
+    Runner --> Gripsweat
+    Runner <--> Profile
+    Runner --> Neon
+```
+
+The key architectural boundary is deliberate:
+
+- **Vercel** is the lightweight HTTP control plane.
+- **Neon PostgreSQL** is authoritative managed staging data and durable refresh coordination.
+- **The refresh worker** owns long-running marketplace and browser execution.
+- **The Buyee profile** is worker/browser session state, not database state.
+- **Git/GitHub** is the source and promotion boundary.
+- **Railway** is a deferred worker-host experiment, not part of the accepted Vercel + Neon runtime.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full system architecture, state ownership, deployment boundaries, refresh lifecycle, and accepted/deferred infrastructure.
 
 ## Goals
 
-- PostgreSQL warehouse
-- eBay & Buyee ingestion
-- Classification pipeline
-- Analytics
-- CSV / Markdown / Chatbot exports
+- Preserve marketplace source provenance and deterministic auction identity.
+- Incrementally ingest Buyee, eBay, and Gripsweat auction data.
+- Maintain a canonical PostgreSQL warehouse.
+- Normalize media, pressing, completeness, condition, price, and collector metadata.
+- Support collector review, evidence intake, curation, analytics, and reporting.
+- Coordinate refreshes with durable PostgreSQL job state.
+- Keep long-running browser/marketplace execution outside HTTP request lifecycles.
+- Preserve explicit staging and production promotion boundaries.
 
-<!-- collector-review-ui:start -->
 ## Collector Review web UI
 
 `app/collector_review.py` provides the main Streamlit interface for
@@ -202,84 +279,42 @@ read-only and never deletes or modifies warehouse records.
 
 <!-- BEGIN AUCTION_ETL_CLOUD_ARCHITECTURE -->
 
-## Production and cloud architecture
+## Architecture and deployment status
 
-Validated production baseline:
+The authoritative architecture is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-```text
-commit: 9adf009c698d7448a58d280186fc1f3cd16e9644
-tag:    production-incremental-20260818-9adf009
-```
-
-### Current production
+The Phase-C durable-refresh work has been merged into `main`. The accepted staging architecture separates the runtime into a lightweight Vercel control plane, Neon PostgreSQL for authoritative staging data and durable refresh coordination, and a separate logical marketplace-execution worker.
 
 ```mermaid
 flowchart LR
-    User["Collector"] --> UI["Streamlit UI"]
-    UI --> DB[("Local PostgreSQL")]
-    UI --> Refresh["Latest Refresh"]
-    Refresh --> Runner["Local refresh runner"]
-    Runner --> Buyee["Buyee<br/>new IDs only"]
-    Runner --> Ebay["eBay<br/>bounded newest-first"]
-    Runner --> Grip["Gripsweat<br/>new IDs only"]
-    Buyee --> Owner["Persistent Playwright<br/>Buyee owner"]
-    Owner --> Profile[("Browser profile")]
-    Buyee --> DB
-    Ebay --> DB
-    Grip --> DB
-    Runner --> Files[("Local status / logs / evidence")]
-```
+    Git["GitHub / main"]
+    Vercel["Vercel control plane"]
+    Neon[("Neon PostgreSQL")]
+    Jobs["Durable refresh jobs"]
+    Worker["Marketplace execution worker"]
+    Sources["Buyee / eBay / Gripsweat"]
+    Profile[("Buyee browser profile")]
 
-### Target cloud architecture
+    Git -. source .-> Vercel
+    Git -. source .-> Worker
 
-```mermaid
-flowchart LR
-    User["Collector"] --> Vercel["Vercel<br/>FastAPI control plane"]
-    Vercel --> DB[("Managed PostgreSQL")]
-    Vercel -->|"enqueue"| Jobs[("Durable refresh jobs")]
-    Jobs --> Worker["Persistent marketplace worker"]
-    Worker --> Buyee["Buyee"]
-    Worker --> Ebay["eBay"]
-    Worker --> Grip["Gripsweat"]
-    Buyee --> Owner["Persistent Playwright owner"]
-    Owner --> Volume[("Persistent Buyee profile")]
-    Buyee --> DB
-    Ebay --> DB
-    Grip --> DB
+    Vercel --> Neon
+    Vercel --> Jobs
+    Jobs --> Neon
+
     Worker --> Jobs
-    Worker --> Evidence[("Durable evidence / exports")]
-    Vercel -->|"poll progress"| Jobs
+    Worker --> Sources
+    Worker <--> Profile
+    Worker --> Neon
 ```
 
-The web/control plane and marketplace/browser worker remain separate.
+Current architecture status:
 
-Long-running crawling, Chromium, and the persistent Buyee profile do not belong to one HTTP request lifecycle.
-
-Refresh coordination moves from local subprocess/log-file state to durable PostgreSQL job state.
-
-Detailed documents:
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Cloud deployment plan](docs/DEPLOYMENT.md)
-- [Database deployment plan](docs/DATABASE_DEPLOYMENT.md)
-
-### Migration status
-
-The existing validated application remains production.
-
-Cloud cutover is not complete until these are implemented and accepted:
-
-```text
-durable PostgreSQL refresh jobs
-persistent marketplace worker
-persistent Buyee profile storage
-Vercel control-plane API/UI
-no local detached refresh process
-no local refresh-status dependency
-managed PostgreSQL staging rehearsal
-production migration rehearsal
-end-to-end staging acceptance
-controlled production cutover
-```
-
-<!-- END AUCTION_ETL_CLOUD_ARCHITECTURE -->
+- Vercel staging control-plane identity, health, and readiness were accepted.
+- Neon staging is the accepted authoritative managed staging database.
+- Durable refresh coordination lives in PostgreSQL.
+- The controlled-V3 staging refresh is reconciled and must not be rerun for historical proof.
+- Permanent cloud worker hosting and permanent Buyee profile storage remain separate future decisions.
+- Railway is deferred and is not part of the accepted Vercel + Neon staging runtime.
+- Production runtime/data cutover remains a separate explicit operation.
+- Compatibility identifiers such as `auction_etl`, `~/auction-etl`, and `auction-etl-staging` remain unchanged for now.
