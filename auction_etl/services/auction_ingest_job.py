@@ -257,8 +257,11 @@ def process_is_alive(
     return True
 
 
-def get_latest_status() -> dict[str, Any] | None:
-    """Return the latest job and repair stale running state if required."""
+def get_latest_status(
+    *,
+    account_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the latest status visible to one account."""
 
     ensure_runtime_directories()
 
@@ -268,6 +271,17 @@ def get_latest_status() -> dict[str, Any] | None:
 
     if status is None:
         return None
+
+    if account_id is not None:
+        status_account_id = str(
+            status.get(
+                "account_id",
+                "",
+            )
+        ).strip()
+
+        if status_account_id != str(account_id):
+            return None
 
     state = str(
         status.get(
@@ -405,20 +419,43 @@ def build_runner_command() -> list[str]:
 
 
 
-def snapshot_tracked_artist_targets() -> dict[str, dict[str, Any]]:
-    """Capture enabled artist targets included when a refresh starts."""
+def snapshot_tracked_artist_targets(
+    *,
+    account_id: str | None = None,
+    database_url: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Capture enabled artist targets for one account or legacy local state."""
 
     from auction_etl.services.artist_tracking import (
         SUPPORTED_MARKETPLACES as ARTIST_MARKETPLACES,
+        list_account_tracked_artists,
         list_tracked_artists,
     )
+
+    if account_id is not None:
+        if not database_url:
+            raise ValueError(
+                "database_url is required for account-scoped artist targets."
+            )
+
+        from auction_etl.services.refresh_jobs import build_refresh_engine
+
+        engine = build_refresh_engine(
+            database_url
+        )
+        artists = list_account_tracked_artists(
+            engine,
+            account_id=account_id,
+        )
+    else:
+        artists = list_tracked_artists()
 
     snapshot: dict[
         str,
         dict[str, Any],
     ] = {}
 
-    for artist in list_tracked_artists():
+    for artist in artists:
         if not bool(
             artist.get(
                 "enabled",
@@ -469,24 +506,17 @@ def snapshot_tracked_artist_targets() -> dict[str, dict[str, Any]]:
         snapshot[
             artist_id
         ] = {
+            "id": artist_id,
             "name": str(
                 artist.get(
                     "name",
-                    artist_id,
-                )
-            ),
-            "query": str(
-                artist.get(
-                    "query",
                     "",
                 )
             ),
-            "targets":
-                enabled_targets,
+            "marketplaces": enabled_targets,
         }
 
     return snapshot
-
 
 def build_artist_target_status_snapshot(
     artist_targets: dict[str, dict[str, Any]],
@@ -1007,6 +1037,8 @@ def new_status(
     job_id: str,
     *,
     artist_targets: dict[str, dict[str, Any]] | None = None,
+    account_id: str | None = None,
+    requested_by_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a queued multisource-ingestion status document."""
 
@@ -1015,6 +1047,10 @@ def new_status(
             "auction-ingest-job/v1",
         "job_id":
             job_id,
+        "account_id":
+            account_id,
+        "requested_by_user_id":
+            requested_by_user_id,
         "status":
             "queued",
         "progress":
@@ -1082,8 +1118,13 @@ def new_status(
     }
 
 
-def start_job() -> dict[str, Any]:
-    """Start exactly one background ingestion job."""
+def start_job(
+    *,
+    account_id: str | None = None,
+    requested_by_user_id: str | None = None,
+    database_url: str | None = None,
+) -> dict[str, Any]:
+    """Start one background ingestion job with optional account ownership."""
 
     ensure_runtime_directories()
 
@@ -1096,7 +1137,9 @@ def start_job() -> dict[str, Any]:
             fcntl.LOCK_EX,
         )
 
-        latest = get_latest_status()
+        latest = get_latest_status(
+            account_id=account_id,
+        )
 
         if (
             latest is not None
@@ -1108,12 +1151,17 @@ def start_job() -> dict[str, Any]:
         job_id = uuid.uuid4().hex
 
         artist_targets = (
-            snapshot_tracked_artist_targets()
+            snapshot_tracked_artist_targets(
+                account_id=account_id,
+                database_url=database_url,
+            )
         )
 
         status = new_status(
             job_id,
             artist_targets=artist_targets,
+            account_id=account_id,
+            requested_by_user_id=requested_by_user_id,
         )
 
         persist_status(
@@ -1129,6 +1177,19 @@ def start_job() -> dict[str, Any]:
                 "ab",
                 buffering=0,
             ) as worker_log:
+                worker_environment = os.environ.copy()
+
+                if database_url:
+                    worker_environment["DATABASE_URL"] = database_url
+
+                if account_id:
+                    worker_environment["AUCTION_ACCOUNT_ID"] = account_id
+
+                if requested_by_user_id:
+                    worker_environment[
+                        "AUCTION_REQUESTED_BY_USER_ID"
+                    ] = requested_by_user_id
+
                 worker = subprocess.Popen(
                     [
                         sys.executable,
@@ -1148,6 +1209,7 @@ def start_job() -> dict[str, Any]:
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                     close_fds=True,
+                    env=worker_environment,
                 )
 
         except (
@@ -1923,6 +1985,30 @@ def run_worker(
             + "\n\n"
         )
 
+        runner_environment = os.environ.copy()
+        account_id = str(
+            status.get(
+                "account_id",
+                "",
+            )
+            or ""
+        ).strip()
+        requested_by_user_id = str(
+            status.get(
+                "requested_by_user_id",
+                "",
+            )
+            or ""
+        ).strip()
+
+        if account_id:
+            runner_environment["AUCTION_ACCOUNT_ID"] = account_id
+
+        if requested_by_user_id:
+            runner_environment[
+                "AUCTION_REQUESTED_BY_USER_ID"
+            ] = requested_by_user_id
+
         process = subprocess.Popen(
             command,
             cwd=str(
@@ -1934,7 +2020,7 @@ def run_worker(
             text=True,
             bufsize=1,
             start_new_session=True,
-            env=os.environ.copy(),
+            env=runner_environment,
         )
 
         status["runner_pid"] = process.pid

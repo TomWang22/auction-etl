@@ -1,13 +1,19 @@
-"""Manage artists included in marketplace refreshes."""
+"""Manage account-owned artists stored in account.tracked_artist."""
 
 from __future__ import annotations
 
 import html
+import os
 from datetime import datetime
 
 import streamlit as st
 
 from app.navigation import render_navigation
+from auction_etl.auth.context import AccountContext
+from auction_etl.auth.streamlit_auth import (
+    render_account_menu,
+    require_authenticated_account,
+)
 from auction_etl.services.auction_ingest_job import (
     RUNNING_STATES,
     artist_target_statuses,
@@ -19,18 +25,33 @@ from auction_etl.services.artist_tracking import (
     SUPPORTED_MARKETPLACES,
     build_ebay_search_url,
     build_gripsweat_search_url,
-    list_tracked_artists,
-    remove_artist,
-    set_artist_enabled,
+    list_account_tracked_artists,
+    remove_account_artist,
+    set_account_artist_enabled,
     target_preview_url,
-    upsert_artist,
+    upsert_account_artist,
 )
+from auction_etl.services.refresh_jobs import build_refresh_engine
 
 
 st.set_page_config(
     page_title="Artists to track",
     page_icon="🎵",
     layout="wide",
+)
+
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://auction:auction@127.0.0.1:5544/auction_warehouse",
+)
+ENGINE = build_refresh_engine(
+    DATABASE_URL
+)
+ACCOUNT_CONTEXT = require_authenticated_account(
+    ENGINE
+)
+render_account_menu(
+    ACCOUNT_CONTEXT
 )
 
 render_navigation(
@@ -241,11 +262,14 @@ def active_artist_target_count(
 @st.fragment(
     run_every="3s"
 )
-def render_refresh_workspace() -> None:
-    """Render live production refresh controls and artist coverage."""
+def render_refresh_workspace(
+    account_context: AccountContext,
+) -> None:
+    """Render account-owned refresh controls and artist coverage."""
 
-    current_artists = (
-        list_tracked_artists()
+    current_artists = list_account_tracked_artists(
+        ENGINE,
+        account_id=str(account_context.account_id),
     )
 
     target_count = (
@@ -254,7 +278,9 @@ def render_refresh_workspace() -> None:
         )
     )
 
-    latest = get_latest_status()
+    latest = get_latest_status(
+        account_id=str(account_context.account_id),
+    )
 
     running = bool(
         latest is not None
@@ -289,7 +315,11 @@ def render_refresh_workspace() -> None:
         ),
         key="refresh_tracked_artists",
     ):
-        latest = start_job()
+        latest = start_job(
+            account_id=str(account_context.account_id),
+            requested_by_user_id=str(account_context.user_id),
+            database_url=DATABASE_URL,
+        )
 
         running = bool(
             latest.get(
@@ -674,12 +704,15 @@ st.write(
 )
 
 st.caption(
-    "Saving an artist changes future marketplace refreshes. "
-    "Use Refresh tracked artists below when you want to run "
-    "the production ingestion pipeline."
+    "Artist tracking is stored per account in PostgreSQL. "
+    "Use Refresh tracked artists below only when you want to run "
+    "this account's production ingestion pipeline."
 )
 
-artists = list_tracked_artists()
+artists = list_account_tracked_artists(
+    ENGINE,
+    account_id=str(ACCOUNT_CONTEXT.account_id),
+)
 
 active_artists = [
     artist
@@ -741,7 +774,9 @@ metric_columns[
 
 st.divider()
 
-render_refresh_workspace()
+render_refresh_workspace(
+    ACCOUNT_CONTEXT
+)
 
 st.divider()
 
@@ -815,9 +850,12 @@ with st.form(
 
 if submitted:
     try:
-        upsert_artist(
-            artist_name,
-            selected_marketplace_keys(
+        upsert_account_artist(
+            ENGINE,
+            account_id=str(ACCOUNT_CONTEXT.account_id),
+            user_id=str(ACCOUNT_CONTEXT.user_id),
+            name=artist_name,
+            marketplaces=selected_marketplace_keys(
                 selected_labels
             ),
         )
@@ -1042,13 +1080,16 @@ for artist in artists:
                 use_container_width=True,
             ):
                 try:
-                    upsert_artist(
-                        str(
+                    upsert_account_artist(
+                        ENGINE,
+                        account_id=str(ACCOUNT_CONTEXT.account_id),
+                        user_id=str(ACCOUNT_CONTEXT.user_id),
+                        name=str(
                             artist[
                                 "name"
                             ]
                         ),
-                        selected_marketplace_keys(
+                        marketplaces=selected_marketplace_keys(
                             edited_labels
                         ),
                     )
@@ -1080,9 +1121,12 @@ for artist in artists:
                 ),
                 use_container_width=True,
             ):
-                set_artist_enabled(
-                    artist_id,
-                    not enabled,
+                set_account_artist_enabled(
+                    ENGINE,
+                    account_id=str(ACCOUNT_CONTEXT.account_id),
+                    user_id=str(ACCOUNT_CONTEXT.user_id),
+                    artist_id=artist_id,
+                    enabled=not enabled,
                 )
 
                 rerun_with_message(
@@ -1111,8 +1155,11 @@ for artist in artists:
                 ),
                 disabled=not confirm_remove,
             ):
-                remove_artist(
-                    artist_id
+                remove_account_artist(
+                    ENGINE,
+                    account_id=str(ACCOUNT_CONTEXT.account_id),
+                    user_id=str(ACCOUNT_CONTEXT.user_id),
+                    artist_id=artist_id,
                 )
 
                 rerun_with_message(

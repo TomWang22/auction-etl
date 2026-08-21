@@ -822,6 +822,22 @@ def execute_claimed_job(
         job["id"]
     )
 
+    account_id = str(
+        job.get("account_id")
+        or ""
+    ).strip()
+
+    requested_by_user_id = str(
+        job.get("requested_by_user_id")
+        or ""
+    ).strip()
+
+    if not account_id:
+        raise WorkerError(
+            "Claimed refresh job has no account_id. "
+            "Legacy unowned jobs must not execute in Phase D."
+        )
+
     progress = DurableProgress(
         engine=engine,
         job_id=job_id,
@@ -842,6 +858,14 @@ def execute_claimed_job(
     environment[
         "DATABASE_URL"
     ] = database_url
+    environment[
+        "AUCTION_ACCOUNT_ID"
+    ] = account_id
+
+    if requested_by_user_id:
+        environment[
+            "AUCTION_REQUESTED_BY_USER_ID"
+        ] = requested_by_user_id
 
     child = subprocess.Popen(
         command,
@@ -1106,6 +1130,11 @@ def run_worker(
 
         print(
             f"CLAIMED_REFRESH_JOB={job_id}",
+            flush=True,
+        )
+        print(
+            "CLAIMED_ACCOUNT_ID="
+            + str(job.get("account_id") or ""),
             flush=True,
         )
 

@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
 from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import Engine, text
 
+from auction_etl.auth.context import AccountContext
+from auction_etl.auth.internal_request import verify_account_request_signature
 from auction_etl.services.refresh_jobs import (
     RefreshCoordinationUnavailable,
     RefreshJobNotFound,
@@ -135,6 +138,147 @@ def _authorized(
         True,
         None,
     )
+
+
+def _account_auth_secret() -> str:
+    """Return the internal account-request signing secret."""
+    secret = os.environ.get(
+        "AUCTION_REFRESH_SIGNING_SECRET",
+        "",
+    ).strip()
+
+    if not secret:
+        raise RefreshCoordinationUnavailable(
+            "AUCTION_REFRESH_SIGNING_SECRET is required "
+            "for account-owned refresh endpoints."
+        )
+
+    return secret
+
+
+def _signed_account_context(
+    scope: dict[str, Any],
+) -> AccountContext:
+    """Verify signed server identity and authoritative account membership."""
+    authorized, reason = _authorized(scope)
+
+    if not authorized:
+        raise PermissionError(reason or "Bearer authorization failed.")
+
+    headers = _headers(scope)
+
+    account_text = headers.get(
+        "x-auction-account-id",
+        "",
+    ).strip()
+    user_text = headers.get(
+        "x-auction-user-id",
+        "",
+    ).strip()
+    timestamp_text = headers.get(
+        "x-auction-timestamp",
+        "",
+    ).strip()
+    request_id = headers.get(
+        "x-auction-request-id",
+        "",
+    ).strip()
+    supplied_signature = headers.get(
+        "x-auction-signature",
+        "",
+    ).strip()
+
+    try:
+        account_id = uuid.UUID(account_text)
+        user_id = uuid.UUID(user_text)
+    except ValueError as exc:
+        raise PermissionError(
+            "Signed account/user identity headers are invalid."
+        ) from exc
+
+    try:
+        timestamp = int(timestamp_text)
+    except ValueError as exc:
+        raise PermissionError(
+            "X-Auction-Timestamp must be Unix epoch seconds."
+        ) from exc
+
+    if abs(int(time.time()) - timestamp) > 300:
+        raise PermissionError(
+            "Signed account request timestamp is outside the 5-minute window."
+        )
+
+    if (
+        not request_id
+        or len(request_id) > 128
+        or "\n" in request_id
+        or "\r" in request_id
+    ):
+        raise PermissionError(
+            "X-Auction-Request-ID is required and must be bounded."
+        )
+
+    method = str(scope.get("method", "GET")).upper()
+    path = str(scope.get("path", "/"))
+
+    if not verify_account_request_signature(
+        _account_auth_secret(),
+        supplied_signature,
+        timestamp=timestamp,
+        request_id=request_id,
+        method=method,
+        path=path,
+        account_id=account_id,
+        user_id=user_id,
+    ):
+        raise PermissionError(
+            "Signed account authorization failed."
+        )
+
+    with _engine().connect() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT
+                    member.account_id,
+                    app_user.id AS user_id,
+                    member.role,
+                    app_user.email,
+                    app_user.display_name,
+                    app_user.is_system_admin
+                FROM identity.account_member AS member
+                JOIN identity.app_user AS app_user
+                  ON app_user.id = member.user_id
+                WHERE member.account_id = :account_id
+                  AND member.user_id = :user_id
+                """
+            ),
+            {
+                "account_id": account_id,
+                "user_id": user_id,
+            },
+        ).mappings().one_or_none()
+
+    if row is None:
+        raise PermissionError(
+            "Authenticated user is not a member of the requested account."
+        )
+
+    return AccountContext(
+        user_id=row["user_id"],
+        account_id=row["account_id"],
+        role=str(row["role"]),
+        email=str(row["email"]),
+        display_name=str(row["display_name"] or ""),
+        is_system_admin=bool(row["is_system_admin"]),
+    )
+
+
+def _audit_requested_by(context: AccountContext) -> str:
+    """Return a bounded server-derived audit label."""
+    label = context.email or context.display_name or str(context.user_id)
+    return label[:200]
+
 
 
 def _refresh_enabled() -> bool:
@@ -502,75 +646,52 @@ async def _create_job(
     receive,
     send,
 ) -> None:
-    """Queue a durable refresh job and return immediately."""
-    authorized, reason = (
-        _authorized(
-            scope
-        )
-    )
-
-    if not authorized:
-        status = (
-            503
-            if (
-                reason
-                and "required in production"
-                in reason
-            )
-            else 401
-        )
-
-        await _respond(
-            send,
-            status,
-            {
-                "error":
-                    reason,
-            },
-        )
-        return
-
+    """Queue one account-owned durable refresh job."""
     if not _refresh_enabled():
         await _respond(
             send,
             503,
-            {
-                "error":
-                    "Refresh dispatch is disabled.",
-            },
+            {"error": "Refresh dispatch is disabled."},
         )
         return
 
     try:
-        body = await _request_json(
-            receive
-        )
+        body = await _request_json(receive)
 
-        job, created = (
-            create_refresh_job(
-                _engine(),
-                requested_by=(
-                    _requested_by(
-                        scope,
-                        body,
-                    )
-                ),
-                source_commit=(
-                    _source_commit(
-                        body
-                    )
-                ),
-                trigger="api",
+        if "account_id" in body or "user_id" in body:
+            raise ValueError(
+                "account_id/user_id are derived from signed server context."
             )
+
+        context = _signed_account_context(scope)
+
+        job, created = create_refresh_job(
+            _engine(),
+            account_id=context.account_id,
+            requested_by_user_id=context.user_id,
+            requested_by=_audit_requested_by(context),
+            source_commit=_source_commit(body),
+            trigger="api",
         )
+    except PermissionError as exc:
+        await _respond(
+            send,
+            403,
+            {"error": str(exc)},
+        )
+        return
     except ValueError as exc:
         await _respond(
             send,
             400,
-            {
-                "error":
-                    str(exc),
-            },
+            {"error": str(exc)},
+        )
+        return
+    except RefreshCoordinationUnavailable as exc:
+        await _respond(
+            send,
+            503,
+            {"error": str(exc)},
         )
         return
     except Exception as exc:
@@ -578,66 +699,48 @@ async def _create_job(
             send,
             503,
             {
-                "error":
-                    "Durable refresh dispatch failed.",
-                "detail":
-                    str(exc),
+                "error": "Durable refresh dispatch failed.",
+                "detail": str(exc),
             },
         )
         return
 
     await _respond(
         send,
-        (
-            202
-            if created
-            else 200
-        ),
+        202 if created else 200,
         {
-            "created":
-                created,
-            "job":
-                job,
+            "created": created,
+            "job": job,
         },
     )
+
 
 
 async def _latest_job(
     scope: dict[str, Any],
     send,
 ) -> None:
-    """Return the most recent durable refresh job."""
-    authorized, reason = (
-        _authorized(
-            scope
-        )
-    )
-
-    if not authorized:
-        await _respond(
-            send,
-            401,
-            {
-                "error":
-                    reason,
-            },
-        )
-        return
-
+    """Return the caller account's most recent durable refresh job."""
     try:
+        context = _signed_account_context(scope)
         job = get_latest_refresh_job(
             _engine(),
+            account_id=context.account_id,
             include_events=True,
         )
+    except PermissionError as exc:
+        await _respond(send, 403, {"error": str(exc)})
+        return
+    except RefreshCoordinationUnavailable as exc:
+        await _respond(send, 503, {"error": str(exc)})
+        return
     except Exception as exc:
         await _respond(
             send,
             503,
             {
-                "error":
-                    "Durable refresh status failed.",
-                "detail":
-                    str(exc),
+                "error": "Durable refresh status failed.",
+                "detail": str(exc),
             },
         )
         return
@@ -646,21 +749,12 @@ async def _latest_job(
         await _respond(
             send,
             404,
-            {
-                "error":
-                    "No refresh job exists.",
-            },
+            {"error": "No refresh job exists for this account."},
         )
         return
 
-    await _respond(
-        send,
-        200,
-        {
-            "job":
-                job,
-        },
-    )
+    await _respond(send, 200, {"job": job})
+
 
 
 async def _job_by_id(
@@ -668,64 +762,37 @@ async def _job_by_id(
     send,
     job_id: str,
 ) -> None:
-    """Return one durable refresh job by UUID."""
-    authorized, reason = (
-        _authorized(
-            scope
-        )
-    )
-
-    if not authorized:
-        await _respond(
-            send,
-            401,
-            {
-                "error":
-                    reason,
-            },
-        )
-        return
-
+    """Return one durable job only when it belongs to the caller account."""
     try:
+        context = _signed_account_context(scope)
         job = get_refresh_job(
             _engine(),
             job_id,
+            account_id=context.account_id,
             include_events=True,
         )
-    except (
-        ValueError,
-        RefreshJobNotFound,
-    ) as exc:
-        await _respond(
-            send,
-            404,
-            {
-                "error":
-                    str(exc),
-            },
-        )
+    except PermissionError as exc:
+        await _respond(send, 403, {"error": str(exc)})
+        return
+    except (ValueError, RefreshJobNotFound) as exc:
+        await _respond(send, 404, {"error": str(exc)})
+        return
+    except RefreshCoordinationUnavailable as exc:
+        await _respond(send, 503, {"error": str(exc)})
         return
     except Exception as exc:
         await _respond(
             send,
             503,
             {
-                "error":
-                    "Durable refresh status failed.",
-                "detail":
-                    str(exc),
+                "error": "Durable refresh status failed.",
+                "detail": str(exc),
             },
         )
         return
 
-    await _respond(
-        send,
-        200,
-        {
-            "job":
-                job,
-        },
-    )
+    await _respond(send, 200, {"job": job})
+
 
 
 async def app(

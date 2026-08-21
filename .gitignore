@@ -44,3 +44,6 @@ scripts/*.backup.*
 app/*.backup.*
 .env.auction-etl.private
 /backups/private/
+
+# Streamlit authentication secrets
+.streamlit/secrets.toml

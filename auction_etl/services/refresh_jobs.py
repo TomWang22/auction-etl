@@ -10,6 +10,8 @@ from typing import Any
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from auction_etl.services.account_scope import account_transaction
+
 MARKETPLACES: tuple[tuple[str, int], ...] = (
     ("buyee", 1),
     ("ebay", 2),
@@ -140,6 +142,21 @@ def _job_uuid(
         ) from exc
 
 
+def _account_uuid(
+    value: str | uuid.UUID,
+    *,
+    name: str = "account_id",
+) -> uuid.UUID:
+    """Return one validated account/user UUID."""
+    if isinstance(value, uuid.UUID):
+        return value
+
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"Invalid {name}: {value!r}") from exc
+
+
 def _worker_id(
     value: str,
 ) -> str:
@@ -215,38 +232,48 @@ def _counter(
 def _require_schema(
     connection,
 ) -> None:
-    """Raise when the Phase-C operational schema is unavailable."""
+    """Raise when the durable account-owned refresh schema is unavailable."""
     row = connection.execute(
         text(
             """
             SELECT
-                to_regclass(
-                    'ops.refresh_job'
-                ) IS NOT NULL
+                to_regclass('ops.refresh_job') IS NOT NULL
                     AS refresh_job,
-                to_regclass(
-                    'ops.refresh_marketplace'
-                ) IS NOT NULL
+                to_regclass('ops.refresh_marketplace') IS NOT NULL
                     AS refresh_marketplace,
-                to_regclass(
-                    'ops.refresh_event'
-                ) IS NOT NULL
-                    AS refresh_event
+                to_regclass('ops.refresh_event') IS NOT NULL
+                    AS refresh_event,
+                EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'ops'
+                      AND table_name = 'refresh_job'
+                      AND column_name = 'account_id'
+                ) AS refresh_job_account_id,
+                EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'ops'
+                      AND table_name = 'refresh_job'
+                      AND column_name = 'requested_by_user_id'
+                ) AS refresh_job_requested_by_user_id
             """
         )
     ).mappings().one()
 
-    if not all(
-        bool(row[key])
-        for key in (
-            "refresh_job",
-            "refresh_marketplace",
-            "refresh_event",
-        )
-    ):
+    required = (
+        "refresh_job",
+        "refresh_marketplace",
+        "refresh_event",
+        "refresh_job_account_id",
+        "refresh_job_requested_by_user_id",
+    )
+
+    if not all(bool(row[key]) for key in required):
         raise RefreshCoordinationUnavailable(
-            "Phase-C durable refresh tables are not installed."
+            "Phase-D account-owned durable refresh schema is not installed."
         )
+
 
 
 def coordination_schema_ready(
@@ -456,14 +483,24 @@ def _select_job(
     connection,
     job_id: uuid.UUID,
     *,
+    account_id: uuid.UUID | None = None,
     include_events: bool = False,
 ) -> dict[str, Any] | None:
-    """Select one durable refresh job."""
+    """Select one durable refresh job, optionally enforcing ownership."""
+    account_predicate = ""
+    parameters: dict[str, Any] = {"job_id": job_id}
+
+    if account_id is not None:
+        account_predicate = " AND account_id = :account_id"
+        parameters["account_id"] = account_id
+
     row = connection.execute(
         text(
-            """
+            f"""
             SELECT
                 id,
+                account_id,
+                requested_by_user_id,
                 state,
                 requested_at,
                 requested_by,
@@ -482,11 +519,10 @@ def _select_job(
                 updated_at
             FROM ops.refresh_job
             WHERE id = :job_id
+            {account_predicate}
             """
         ),
-        {
-            "job_id": job_id,
-        },
+        parameters,
     ).mappings().one_or_none()
 
     if row is None:
@@ -499,25 +535,25 @@ def _select_job(
     )
 
 
+
 def get_refresh_job(
     engine: Engine,
     job_id: str | uuid.UUID,
     *,
+    account_id: str | uuid.UUID,
     include_events: bool = False,
 ) -> dict[str, Any]:
-    """Return one durable refresh job."""
-    validated_job_id = _job_uuid(
-        job_id
-    )
+    """Return one durable refresh job only within the owning account."""
+    validated_job_id = _job_uuid(job_id)
+    validated_account_id = _account_uuid(account_id)
 
     with engine.connect() as connection:
-        _require_schema(
-            connection
-        )
+        _require_schema(connection)
 
         job = _select_job(
             connection,
             validated_job_id,
+            account_id=validated_account_id,
             include_events=include_events,
         )
 
@@ -529,22 +565,26 @@ def get_refresh_job(
     return job
 
 
+
 def get_latest_refresh_job(
     engine: Engine,
     *,
+    account_id: str | uuid.UUID,
     include_events: bool = False,
 ) -> dict[str, Any] | None:
-    """Return the newest durable refresh job."""
+    """Return the newest durable refresh job owned by one account."""
+    validated_account_id = _account_uuid(account_id)
+
     with engine.connect() as connection:
-        _require_schema(
-            connection
-        )
+        _require_schema(connection)
 
         row = connection.execute(
             text(
                 """
                 SELECT
                     id,
+                    account_id,
+                    requested_by_user_id,
                     state,
                     requested_at,
                     requested_by,
@@ -561,14 +601,16 @@ def get_latest_refresh_job(
                     error,
                     created_at,
                     updated_at
-                FROM ops.refresh_job
+                FROM ops.refresh_job AS job
+                WHERE job.account_id = :account_id
                 ORDER BY
                     requested_at DESC,
                     created_at DESC,
                     id DESC
                 LIMIT 1
                 """
-            )
+            ),
+            {"account_id": validated_account_id},
         ).mappings().one_or_none()
 
         if row is None:
@@ -581,24 +623,19 @@ def get_latest_refresh_job(
         )
 
 
+
 def list_refresh_jobs(
     engine: Engine,
     *,
+    account_id: str | uuid.UUID,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Return newest durable refresh jobs."""
-    bounded_limit = max(
-        1,
-        min(
-            int(limit),
-            200,
-        ),
-    )
+    """Return newest durable refresh jobs owned by one account."""
+    validated_account_id = _account_uuid(account_id)
+    bounded_limit = max(1, min(int(limit), 200))
 
     with engine.connect() as connection:
-        _require_schema(
-            connection
-        )
+        _require_schema(connection)
 
         rows = list(
             connection.execute(
@@ -606,6 +643,8 @@ def list_refresh_jobs(
                     """
                     SELECT
                         id,
+                        account_id,
+                        requested_by_user_id,
                         state,
                         requested_at,
                         requested_by,
@@ -622,7 +661,8 @@ def list_refresh_jobs(
                         error,
                         created_at,
                         updated_at
-                    FROM ops.refresh_job
+                    FROM ops.refresh_job AS job
+                    WHERE job.account_id = :account_id
                     ORDER BY
                         requested_at DESC,
                         created_at DESC,
@@ -631,6 +671,7 @@ def list_refresh_jobs(
                     """
                 ),
                 {
+                    "account_id": validated_account_id,
                     "limit": bounded_limit,
                 },
             ).mappings()
@@ -646,38 +687,59 @@ def list_refresh_jobs(
         ]
 
 
+
 def create_refresh_job(
     engine: Engine,
     *,
+    account_id: str | uuid.UUID,
+    requested_by_user_id: str | uuid.UUID,
     requested_by: str | None = None,
     source_commit: str | None = None,
     trigger: str = "api",
 ) -> tuple[dict[str, Any], bool]:
-    """Create one queued job or return the existing active job."""
-    normalized_trigger = (
-        trigger.strip()
-        or "api"
+    """Create/reuse one queued job within the authenticated account."""
+    validated_account_id = _account_uuid(account_id)
+    validated_user_id = _account_uuid(
+        requested_by_user_id,
+        name="requested_by_user_id",
     )
-
+    normalized_trigger = trigger.strip() or "api"
     job_id = uuid.uuid4()
 
-    with engine.begin() as connection:
-        _require_schema(
-            connection
-        )
+    with account_transaction(
+        engine,
+        account_id=validated_account_id,
+        user_id=validated_user_id,
+    ) as connection:
+        _require_schema(connection)
+
+        membership = connection.execute(
+            text(
+                """
+                SELECT 1
+                FROM identity.account_member
+                WHERE account_id = :account_id
+                  AND user_id = :user_id
+                """
+            ),
+            {
+                "account_id": validated_account_id,
+                "user_id": validated_user_id,
+            },
+        ).scalar_one_or_none()
+
+        if membership is None:
+            raise RefreshCoordinationError(
+                "Requested user is not a member of the refresh account."
+            )
 
         connection.execute(
             text(
                 """
-                SELECT pg_advisory_xact_lock(
-                    :lock_key
-                )
+                SELECT pg_advisory_xact_lock(:lock_key)
                 """
             ),
-            {
-                "lock_key":
-                    _COORDINATION_LOCK_KEY,
-            },
+            {"lock_key": _COORDINATION_LOCK_KEY},
         )
 
         active = connection.execute(
@@ -685,6 +747,8 @@ def create_refresh_job(
                 """
                 SELECT
                     id,
+                    account_id,
+                    requested_by_user_id,
                     state,
                     requested_at,
                     requested_by,
@@ -701,24 +765,20 @@ def create_refresh_job(
                     error,
                     created_at,
                     updated_at
-                FROM ops.refresh_job
-                WHERE state IN (
-                    'queued',
-                    'running'
-                )
+                FROM ops.refresh_job AS job
+                WHERE job.account_id = :account_id
+                  AND state IN ('queued', 'running')
                 ORDER BY requested_at
                 LIMIT 1
                 FOR UPDATE
                 """
-            )
+            ),
+            {"account_id": validated_account_id},
         ).mappings().one_or_none()
 
         if active is not None:
             return (
-                _job_from_row(
-                    connection,
-                    active,
-                ),
+                _job_from_row(connection, active),
                 False,
             )
 
@@ -727,6 +787,8 @@ def create_refresh_job(
                 """
                 INSERT INTO ops.refresh_job (
                     id,
+                    account_id,
+                    requested_by_user_id,
                     state,
                     requested_by,
                     trigger,
@@ -735,6 +797,8 @@ def create_refresh_job(
                 )
                 VALUES (
                     :job_id,
+                    :account_id,
+                    :requested_by_user_id,
                     'queued',
                     :requested_by,
                     :trigger,
@@ -743,6 +807,8 @@ def create_refresh_job(
                 )
                 RETURNING
                     id,
+                    account_id,
+                    requested_by_user_id,
                     state,
                     requested_at,
                     requested_by,
@@ -763,12 +829,11 @@ def create_refresh_job(
             ),
             {
                 "job_id": job_id,
-                "requested_by":
-                    requested_by,
-                "trigger":
-                    normalized_trigger,
-                "source_commit":
-                    source_commit,
+                "account_id": validated_account_id,
+                "requested_by_user_id": validated_user_id,
+                "requested_by": requested_by,
+                "trigger": normalized_trigger,
+                "source_commit": source_commit,
             },
         ).mappings().one()
 
@@ -794,13 +859,10 @@ def create_refresh_job(
             [
                 {
                     "job_id": job_id,
-                    "marketplace":
-                        marketplace,
-                    "ordinal":
-                        ordinal,
+                    "marketplace": marketplace,
+                    "ordinal": ordinal,
                 }
-                for marketplace, ordinal
-                in MARKETPLACES
+                for marketplace, ordinal in MARKETPLACES
             ],
         )
 
@@ -808,26 +870,21 @@ def create_refresh_job(
             connection,
             job_id=job_id,
             event_type="job_queued",
-            message=(
-                "Durable marketplace refresh job queued."
-            ),
+            message="Durable marketplace refresh job queued.",
             payload={
-                "trigger":
-                    normalized_trigger,
-                "requested_by":
-                    requested_by,
-                "source_commit":
-                    source_commit,
+                "account_id": str(validated_account_id),
+                "requested_by_user_id": str(validated_user_id),
+                "trigger": normalized_trigger,
+                "requested_by": requested_by,
+                "source_commit": source_commit,
             },
         )
 
         return (
-            _job_from_row(
-                connection,
-                row,
-            ),
+            _job_from_row(connection, row),
             True,
         )
+
 
 
 def requeue_expired_refresh_jobs(
@@ -1065,6 +1122,8 @@ def claim_next_refresh_job(
                   AND state = 'queued'
                 RETURNING
                     id,
+                    account_id,
+                    requested_by_user_id,
                     state,
                     requested_at,
                     requested_by,
@@ -1497,6 +1556,8 @@ def mark_refresh_job_completed(
                         >= now()
                 RETURNING
                     id,
+                    account_id,
+                    requested_by_user_id,
                     state,
                     requested_at,
                     requested_by,
@@ -1627,6 +1688,8 @@ def mark_refresh_job_failed(
                         >= now()
                 RETURNING
                     id,
+                    account_id,
+                    requested_by_user_id,
                     state,
                     requested_at,
                     requested_by,
@@ -1814,6 +1877,8 @@ def request_refresh_job_cancel(
                   )
                 RETURNING
                     id,
+                    account_id,
+                    requested_by_user_id,
                     state,
                     requested_at,
                     requested_by,
