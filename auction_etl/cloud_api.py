@@ -160,6 +160,7 @@ def _signed_account_context(
     scope: dict[str, Any],
 ) -> AccountContext:
     """Verify signed server identity and authoritative account membership."""
+    _account_auth_secret()
     authorized, reason = _authorized(scope)
 
     if not authorized:

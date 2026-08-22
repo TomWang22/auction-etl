@@ -36,11 +36,12 @@ from auction_etl.reporting.recent_ingestion import (  # noqa: E402
     get_report_rows,
     write_formatted_csv,
 )
+from auction_etl.services.control_plane_refresh import (  # noqa: E402
+    enqueue_refresh_via_control_plane,
+)
 from auction_etl.services.refresh_jobs import (  # noqa: E402
-    RefreshCoordinationUnavailable,
     build_refresh_engine,
     coordination_schema_ready,
-    create_refresh_job,
     get_latest_refresh_job,
     list_refresh_jobs,
     refresh_job_to_ui_status,
@@ -56,6 +57,14 @@ DATABASE_URL = os.environ.get(
         "127.0.0.1:5544/auction_warehouse"
     ),
 )
+CONTROL_PLANE_URL = os.environ.get(
+    "AUCTION_CONTROL_PLANE_URL",
+    "",
+).strip()
+REFRESH_SIGNING_SECRET = os.environ.get(
+    "AUCTION_REFRESH_SIGNING_SECRET",
+    "",
+).strip()
 
 MEDIA_CONFIG_PATH = (
     ROOT / "config/report_media_types.json"
@@ -261,51 +270,13 @@ def load_refresh_status(
 
 
 def enqueue_refresh_job(
-    database_url: str,
     account_context: AccountContext,
 ) -> tuple[dict[str, Any], bool]:
-    """Create or reuse one durable refresh job."""
-    engine = refresh_engine(
-        database_url
-    )
-
-    if not coordination_schema_ready(
-        engine
-    ):
-        raise RefreshCoordinationUnavailable(
-            "Run the Phase-C Alembic migration before "
-            "queueing a cloud refresh."
-        )
-
-    source_commit = (
-        os.environ.get(
-            "VERCEL_GIT_COMMIT_SHA"
-        )
-        or os.environ.get(
-            "AUCTION_SOURCE_COMMIT"
-        )
-    )
-
-    requested_by = (
-        account_context.email
-        or account_context.display_name
-        or str(account_context.user_id)
-    )
-
-    job, created = create_refresh_job(
-        engine,
-        account_id=str(account_context.account_id),
-        requested_by_user_id=str(account_context.user_id),
-        requested_by=requested_by,
-        source_commit=source_commit,
-        trigger="ui",
-    )
-
-    return (
-        refresh_job_to_ui_status(
-            job
-        ),
-        created,
+    """Create or reuse one durable refresh through Vercel."""
+    return enqueue_refresh_via_control_plane(
+        base_url=CONTROL_PLANE_URL,
+        signing_secret=REFRESH_SIGNING_SECRET,
+        account_context=account_context,
     )
 
 
@@ -609,7 +580,6 @@ with refresh_tab:
         try:
             queued_status, created = (
                 enqueue_refresh_job(
-                    DATABASE_URL,
                     ACCOUNT_CONTEXT,
                 )
             )
