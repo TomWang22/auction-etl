@@ -329,3 +329,18 @@ state.
 
 See `docs/PHASE_D_AUTH_ACCOUNT_ARCHITECTURE.md` and the generated
 `docs/ACCOUNT_SCOPING_MATRIX.generated.md`.
+
+## Phase D auth/account tenancy closeout
+
+Phase D is merged into `main` and accepted for the current staging architecture.
+
+- Visible listings: **1440**
+- Tracked artists: **3**
+- Marketplace searches: **5**
+- Owner account acceptance: **PASS**
+- Historical 58-identity staging restore: **complete**
+- Owner backfill: **complete**
+- Stale `1441` acceptance invariant: **removed**
+- Phase-D post-merge smoke: **PASS**
+
+This milestone records the completed staging/account-tenancy state. It does not represent production runtime/data cutover; refresh-worker hosting and production promotion remain separate explicit operations.
