@@ -15,13 +15,18 @@ UI = (
 )
 
 
-def test_latest_refresh_uses_postgres_dispatch() -> None:
-    """Latest Refresh no longer owns machine-local worker state."""
+def test_latest_refresh_uses_signed_vercel_dispatch() -> None:
+    """Latest Refresh sends mutations through the signed Vercel API."""
     source = UI.read_text(
         encoding="utf-8"
     )
 
-    assert "create_refresh_job" in source
+    assert "enqueue_refresh_via_control_plane" in source
+    assert "AUCTION_CONTROL_PLANE_URL" in source
+    assert "AUCTION_REFRESH_SIGNING_SECRET" in source
+
+    assert "create_refresh_job(" not in source
+
     assert "get_latest_refresh_job" in source
     assert "list_refresh_jobs" in source
 

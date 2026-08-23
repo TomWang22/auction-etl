@@ -318,3 +318,14 @@ Current architecture status:
 - Railway is deferred and is not part of the accepted Vercel + Neon staging runtime.
 - Production runtime/data cutover remains a separate explicit operation.
 - Compatibility identifiers such as `auction_etl`, `~/auction-etl`, and `auction-etl-staging` remain unchanged for now.
+
+<!-- COLLECTOR_LEDGER_PHASE_D_AUTH_ACCOUNTS -->
+## Phase D — authentication and private accounts
+
+Collector Ledger's next milestone adds OIDC authentication, personal accounts,
+account-scoped marketplace visibility, private collector curation,
+account-owned tracked artists/refresh jobs, and isolated Buyee connection
+state.
+
+See `docs/PHASE_D_AUTH_ACCOUNT_ARCHITECTURE.md` and the generated
+`docs/ACCOUNT_SCOPING_MATRIX.generated.md`.

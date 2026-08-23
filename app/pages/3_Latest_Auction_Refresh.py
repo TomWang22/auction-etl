@@ -20,6 +20,12 @@ if str(ROOT) not in sys.path:
         str(ROOT),
     )
 
+from auction_etl.auth.context import AccountContext  # noqa: E402
+from auction_etl.auth.streamlit_auth import (  # noqa: E402
+    render_account_menu,
+    require_authenticated_account,
+)
+
 from auction_etl.reporting.recent_ingestion import (  # noqa: E402
     CSVExportOptions,
     QueryFilters,
@@ -30,11 +36,12 @@ from auction_etl.reporting.recent_ingestion import (  # noqa: E402
     get_report_rows,
     write_formatted_csv,
 )
+from auction_etl.services.control_plane_refresh import (  # noqa: E402
+    enqueue_refresh_via_control_plane,
+)
 from auction_etl.services.refresh_jobs import (  # noqa: E402
-    RefreshCoordinationUnavailable,
     build_refresh_engine,
     coordination_schema_ready,
-    create_refresh_job,
     get_latest_refresh_job,
     list_refresh_jobs,
     refresh_job_to_ui_status,
@@ -50,6 +57,14 @@ DATABASE_URL = os.environ.get(
         "127.0.0.1:5544/auction_warehouse"
     ),
 )
+CONTROL_PLANE_URL = os.environ.get(
+    "AUCTION_CONTROL_PLANE_URL",
+    "",
+).strip()
+REFRESH_SIGNING_SECRET = os.environ.get(
+    "AUCTION_REFRESH_SIGNING_SECRET",
+    "",
+).strip()
 
 MEDIA_CONFIG_PATH = (
     ROOT / "config/report_media_types.json"
@@ -200,6 +215,7 @@ def refresh_engine(
 @st.cache_data(ttl=2)
 def load_refresh_status(
     database_url: str,
+    account_id: str,
 ) -> dict[str, Any]:
     """Load the latest durable refresh state from PostgreSQL."""
     try:
@@ -221,7 +237,8 @@ def load_refresh_status(
             }
 
         job = get_latest_refresh_job(
-            engine
+            engine,
+            account_id=account_id,
         )
     except Exception as exc:
         return {
@@ -253,47 +270,13 @@ def load_refresh_status(
 
 
 def enqueue_refresh_job(
-    database_url: str,
+    account_context: AccountContext,
 ) -> tuple[dict[str, Any], bool]:
-    """Create or reuse one durable refresh job."""
-    engine = refresh_engine(
-        database_url
-    )
-
-    if not coordination_schema_ready(
-        engine
-    ):
-        raise RefreshCoordinationUnavailable(
-            "Run the Phase-C Alembic migration before "
-            "queueing a cloud refresh."
-        )
-
-    source_commit = (
-        os.environ.get(
-            "VERCEL_GIT_COMMIT_SHA"
-        )
-        or os.environ.get(
-            "AUCTION_SOURCE_COMMIT"
-        )
-    )
-
-    requested_by = os.environ.get(
-        "AUCTION_REFRESH_REQUESTED_BY",
-        "streamlit",
-    )
-
-    job, created = create_refresh_job(
-        engine,
-        requested_by=requested_by,
-        source_commit=source_commit,
-        trigger="ui",
-    )
-
-    return (
-        refresh_job_to_ui_status(
-            job
-        ),
-        created,
+    """Create or reuse one durable refresh through Vercel."""
+    return enqueue_refresh_via_control_plane(
+        base_url=CONTROL_PLANE_URL,
+        signing_secret=REFRESH_SIGNING_SECRET,
+        account_context=account_context,
     )
 
 
@@ -432,6 +415,14 @@ st.set_page_config(
     page_icon="↻",
     layout="wide",
 )
+ACCOUNT_CONTEXT = require_authenticated_account(
+    refresh_engine(
+        DATABASE_URL
+    )
+)
+render_account_menu(
+    ACCOUNT_CONTEXT
+)
 render_navigation(current_page="pages/3_Latest_Auction_Refresh.py")
 
 st.title("Latest Auction Refresh")
@@ -441,7 +432,8 @@ st.caption(
 )
 
 status = load_refresh_status(
-    DATABASE_URL
+    DATABASE_URL,
+    str(ACCOUNT_CONTEXT.account_id),
 )
 
 status_columns = st.columns(4)
@@ -588,7 +580,7 @@ with refresh_tab:
         try:
             queued_status, created = (
                 enqueue_refresh_job(
-                    DATABASE_URL
+                    ACCOUNT_CONTEXT,
                 )
             )
         except Exception as exc:
@@ -649,499 +641,506 @@ with refresh_tab:
 
 
 with report_tab:
-    st.subheader("Auction data browser")
-
-    available_columns, represented_types = (
-        load_schema_contract(
-            DATABASE_URL
+    if not ACCOUNT_CONTEXT.is_system_admin:
+        st.info(
+            "Browse & export remains system-admin only until the "
+            "reporting query itself is account-scoped. Refresh controls "
+            "and refresh history are already account-owned."
         )
-    )
+    else:
+        st.subheader("Auction data browser")
 
-    media_config = read_json(
-        MEDIA_CONFIG_PATH,
-        {
-            "allowed_media_types": list(
-                represented_types
+        available_columns, represented_types = (
+            load_schema_contract(
+                DATABASE_URL
+            )
+        )
+
+        media_config = read_json(
+            MEDIA_CONFIG_PATH,
+            {
+                "allowed_media_types": list(
+                    represented_types
+                ),
+            },
+        )
+
+        configured_types = [
+            str(value)
+            for value in media_config.get(
+                "allowed_media_types",
+                [],
+            )
+            if str(value).strip()
+        ]
+
+        with st.expander(
+            "Allowed media classifications",
+            expanded=False,
+        ):
+            edited_types = st.text_area(
+                "One media type per line",
+                value="\n".join(
+                    configured_types
+                ),
+                height=220,
+            )
+
+            if st.button(
+                "Save allowed media types",
+            ):
+                normalized_types = sorted(
+                    {
+                        line.strip().upper()
+                        for line in edited_types.splitlines()
+                        if line.strip()
+                    }
+                )
+
+                write_json(
+                    MEDIA_CONFIG_PATH,
+                    {
+                        "allowed_media_types": normalized_types,
+                    },
+                )
+
+                st.success(
+                    "Allowed media types were saved."
+                )
+                st.cache_data.clear()
+
+        filter_columns = st.columns(3)
+
+        marketplaces = filter_columns[0].multiselect(
+            "Marketplace",
+            options=("buyee", "ebay"),
+            default=("buyee", "ebay"),
+        )
+
+        all_media_options = sorted(
+            set(configured_types)
+            | set(represented_types)
+        )
+
+        selected_media_types = filter_columns[1].multiselect(
+            "Media type",
+            options=all_media_options,
+            default=[],
+            help=(
+                "Leave empty to include every represented media type."
             ),
-        },
-    )
-
-    configured_types = [
-        str(value)
-        for value in media_config.get(
-            "allowed_media_types",
-            [],
         )
-        if str(value).strip()
-    ]
 
-    with st.expander(
-        "Allowed media classifications",
-        expanded=False,
-    ):
-        edited_types = st.text_area(
-            "One media type per line",
-            value="\n".join(
-                configured_types
+        recent_additions = filter_columns[2].checkbox(
+            "Recent additions",
+            value=True,
+        )
+
+        recent_days = (
+            filter_columns[2].number_input(
+                "Added within the last N days",
+                min_value=0,
+                max_value=3_650,
+                value=7,
+                step=1,
+                disabled=not recent_additions,
+            )
+            if recent_additions
+            else None
+        )
+
+        date_columns = st.columns(2)
+
+        use_added_dates = date_columns[0].checkbox(
+            "Use exact first-seen date range",
+            value=False,
+        )
+
+        if use_added_dates:
+            default_added_start = (
+                date.today()
+                - timedelta(days=30)
+            )
+
+            added_range = date_columns[0].date_input(
+                "First-seen range",
+                value=(
+                    default_added_start,
+                    date.today(),
+                ),
+            )
+
+            if isinstance(
+                added_range,
+                tuple,
+            ):
+                added_from, added_to = added_range
+            else:
+                added_from = added_range
+                added_to = added_range
+        else:
+            added_from = None
+            added_to = None
+
+        use_ended_dates = date_columns[1].checkbox(
+            "Use auction-ended date range",
+            value=False,
+        )
+
+        if use_ended_dates:
+            default_ended_start = (
+                date.today()
+                - timedelta(days=90)
+            )
+
+            ended_range = date_columns[1].date_input(
+                "Auction-ended range",
+                value=(
+                    default_ended_start,
+                    date.today(),
+                ),
+            )
+
+            if isinstance(
+                ended_range,
+                tuple,
+            ):
+                ended_from, ended_to = ended_range
+            else:
+                ended_from = ended_range
+                ended_to = ended_range
+        else:
+            ended_from = None
+            ended_to = None
+
+        search_columns = st.columns(3)
+
+        seller = search_columns[0].text_input(
+            "Seller contains",
+        )
+        search = search_columns[1].text_input(
+            "Search title, artist, seller, listing, or catalog",
+        )
+        row_limit = search_columns[2].number_input(
+            "Maximum report rows",
+            min_value=1,
+            max_value=100_000,
+            value=5_000,
+            step=100,
+        )
+
+        preset = st.selectbox(
+            "Report field preset",
+            options=tuple(REPORT_PRESETS),
+            index=0,
+        )
+
+        preset_fields = [
+            field
+            for field in REPORT_PRESETS[preset]
+            if field in available_columns
+        ]
+
+        selected_fields = st.multiselect(
+            "Report fields",
+            options=available_columns,
+            default=preset_fields,
+            help=(
+                "Column order follows the selected order shown here."
             ),
-            height=220,
         )
+
+        required_fields = [
+            "marketplace",
+            "listing_id",
+        ]
+
+        for required_field in reversed(
+            required_fields
+        ):
+            if required_field not in selected_fields:
+                selected_fields.insert(
+                    0,
+                    required_field,
+                )
 
         if st.button(
-            "Save allowed media types",
-        ):
-            normalized_types = sorted(
-                {
-                    line.strip().upper()
-                    for line in edited_types.splitlines()
-                    if line.strip()
-                }
-            )
-
-            write_json(
-                MEDIA_CONFIG_PATH,
-                {
-                    "allowed_media_types": normalized_types,
-                },
-            )
-
-            st.success(
-                "Allowed media types were saved."
-            )
-            st.cache_data.clear()
-
-    filter_columns = st.columns(3)
-
-    marketplaces = filter_columns[0].multiselect(
-        "Marketplace",
-        options=("buyee", "ebay"),
-        default=("buyee", "ebay"),
-    )
-
-    all_media_options = sorted(
-        set(configured_types)
-        | set(represented_types)
-    )
-
-    selected_media_types = filter_columns[1].multiselect(
-        "Media type",
-        options=all_media_options,
-        default=[],
-        help=(
-            "Leave empty to include every represented media type."
-        ),
-    )
-
-    recent_additions = filter_columns[2].checkbox(
-        "Recent additions",
-        value=True,
-    )
-
-    recent_days = (
-        filter_columns[2].number_input(
-            "Added within the last N days",
-            min_value=0,
-            max_value=3_650,
-            value=7,
-            step=1,
-            disabled=not recent_additions,
-        )
-        if recent_additions
-        else None
-    )
-
-    date_columns = st.columns(2)
-
-    use_added_dates = date_columns[0].checkbox(
-        "Use exact first-seen date range",
-        value=False,
-    )
-
-    if use_added_dates:
-        default_added_start = (
-            date.today()
-            - timedelta(days=30)
-        )
-
-        added_range = date_columns[0].date_input(
-            "First-seen range",
-            value=(
-                default_added_start,
-                date.today(),
-            ),
-        )
-
-        if isinstance(
-            added_range,
-            tuple,
-        ):
-            added_from, added_to = added_range
-        else:
-            added_from = added_range
-            added_to = added_range
-    else:
-        added_from = None
-        added_to = None
-
-    use_ended_dates = date_columns[1].checkbox(
-        "Use auction-ended date range",
-        value=False,
-    )
-
-    if use_ended_dates:
-        default_ended_start = (
-            date.today()
-            - timedelta(days=90)
-        )
-
-        ended_range = date_columns[1].date_input(
-            "Auction-ended range",
-            value=(
-                default_ended_start,
-                date.today(),
-            ),
-        )
-
-        if isinstance(
-            ended_range,
-            tuple,
-        ):
-            ended_from, ended_to = ended_range
-        else:
-            ended_from = ended_range
-            ended_to = ended_range
-    else:
-        ended_from = None
-        ended_to = None
-
-    search_columns = st.columns(3)
-
-    seller = search_columns[0].text_input(
-        "Seller contains",
-    )
-    search = search_columns[1].text_input(
-        "Search title, artist, seller, listing, or catalog",
-    )
-    row_limit = search_columns[2].number_input(
-        "Maximum report rows",
-        min_value=1,
-        max_value=100_000,
-        value=5_000,
-        step=100,
-    )
-
-    preset = st.selectbox(
-        "Report field preset",
-        options=tuple(REPORT_PRESETS),
-        index=0,
-    )
-
-    preset_fields = [
-        field
-        for field in REPORT_PRESETS[preset]
-        if field in available_columns
-    ]
-
-    selected_fields = st.multiselect(
-        "Report fields",
-        options=available_columns,
-        default=preset_fields,
-        help=(
-            "Column order follows the selected order shown here."
-        ),
-    )
-
-    required_fields = [
-        "marketplace",
-        "listing_id",
-    ]
-
-    for required_field in reversed(
-        required_fields
-    ):
-        if required_field not in selected_fields:
-            selected_fields.insert(
-                0,
-                required_field,
-            )
-
-    if st.button(
-        "Load report",
-        type="primary",
-        width="stretch",
-    ):
-        rows = load_report(
-            DATABASE_URL,
-            tuple(selected_fields),
-            tuple(marketplaces),
-            tuple(selected_media_types),
-            added_from,
-            added_to,
-            ended_from,
-            ended_to,
-            (
-                int(recent_days)
-                if recent_additions
-                and recent_days is not None
-                else None
-            ),
-            seller,
-            search,
-            int(row_limit),
-        )
-
-        st.session_state[
-            "latest_auction_rows"
-        ] = rows
-        st.session_state[
-            "latest_auction_fields"
-        ] = list(selected_fields)
-
-    rows = st.session_state.get(
-        "latest_auction_rows",
-        [],
-    )
-    fields = st.session_state.get(
-        "latest_auction_fields",
-        selected_fields,
-    )
-
-    if rows:
-        frame = pd.DataFrame(rows)
-
-        metric_columns = st.columns(4)
-        metric_columns[0].metric(
-            "Matching rows",
-            len(frame),
-        )
-        metric_columns[1].metric(
-            "Buyee",
-            int(
-                (
-                    frame.get(
-                        "marketplace",
-                        pd.Series(dtype=str),
-                    )
-                    == "buyee"
-                ).sum()
-            ),
-        )
-        metric_columns[2].metric(
-            "eBay",
-            int(
-                (
-                    frame.get(
-                        "marketplace",
-                        pd.Series(dtype=str),
-                    )
-                    == "ebay"
-                ).sum()
-            ),
-        )
-
-        recent_count = 0
-
-        if "first_seen_source" in frame:
-            recent_count = int(
-                (
-                    frame["first_seen_source"]
-                    == "new-only-export"
-                ).sum()
-            )
-
-        metric_columns[3].metric(
-            "Explicit recent additions",
-            recent_count,
-        )
-
-        st.dataframe(
-            frame,
+            "Load report",
+            type="primary",
             width="stretch",
-            hide_index=True,
+        ):
+            rows = load_report(
+                DATABASE_URL,
+                tuple(selected_fields),
+                tuple(marketplaces),
+                tuple(selected_media_types),
+                added_from,
+                added_to,
+                ended_from,
+                ended_to,
+                (
+                    int(recent_days)
+                    if recent_additions
+                    and recent_days is not None
+                    else None
+                ),
+                seller,
+                search,
+                int(row_limit),
+            )
+
+            st.session_state[
+                "latest_auction_rows"
+            ] = rows
+            st.session_state[
+                "latest_auction_fields"
+            ] = list(selected_fields)
+
+        rows = st.session_state.get(
+            "latest_auction_rows",
+            [],
+        )
+        fields = st.session_state.get(
+            "latest_auction_fields",
+            selected_fields,
         )
 
-        media_column = None
+        if rows:
+            frame = pd.DataFrame(rows)
 
-        for candidate in (
-            "display_media_type",
-            "effective_media_type",
-            "media_type",
-        ):
-            if candidate in frame:
-                media_column = candidate
-                break
-
-        if media_column:
-            breakdown = (
-                frame[media_column]
-                .fillna("UNKNOWN")
-                .astype(str)
-                .value_counts()
-                .rename_axis("Media type")
-                .reset_index(name="Rows")
+            metric_columns = st.columns(4)
+            metric_columns[0].metric(
+                "Matching rows",
+                len(frame),
+            )
+            metric_columns[1].metric(
+                "Buyee",
+                int(
+                    (
+                        frame.get(
+                            "marketplace",
+                            pd.Series(dtype=str),
+                        )
+                        == "buyee"
+                    ).sum()
+                ),
+            )
+            metric_columns[2].metric(
+                "eBay",
+                int(
+                    (
+                        frame.get(
+                            "marketplace",
+                            pd.Series(dtype=str),
+                        )
+                        == "ebay"
+                    ).sum()
+                ),
             )
 
-            st.subheader("Media-type breakdown")
+            recent_count = 0
 
-            breakdown_columns = st.columns(
-                (1, 2)
+            if "first_seen_source" in frame:
+                recent_count = int(
+                    (
+                        frame["first_seen_source"]
+                        == "new-only-export"
+                    ).sum()
+                )
+
+            metric_columns[3].metric(
+                "Explicit recent additions",
+                recent_count,
             )
 
-            breakdown_columns[0].dataframe(
-                breakdown,
+            st.dataframe(
+                frame,
                 width="stretch",
                 hide_index=True,
             )
-            breakdown_columns[1].bar_chart(
-                breakdown.set_index(
-                    "Media type"
-                )
-            )
 
-        st.subheader("Formatted export")
+            media_column = None
 
-        export_columns = st.columns(4)
-
-        delimiter_label = export_columns[0].selectbox(
-            "Delimiter",
-            options=(
-                "Comma",
-                "Tab",
-                "Semicolon",
-                "Pipe",
-            ),
-        )
-        quote_style = export_columns[1].selectbox(
-            "Quoting",
-            options=(
-                "minimal",
-                "all",
-                "nonnumeric",
-                "none",
-            ),
-        )
-        date_format = export_columns[2].selectbox(
-            "Date format",
-            options=(
-                "iso",
-                "date",
-                "us",
-                "eu",
-            ),
-        )
-        decimal_places = export_columns[3].number_input(
-            "Decimal places",
-            min_value=0,
-            max_value=8,
-            value=2,
-            step=1,
-        )
-
-        option_columns = st.columns(3)
-
-        include_bom = option_columns[0].checkbox(
-            "Excel-compatible UTF-8 BOM",
-            value=True,
-        )
-        friendly_headers = option_columns[1].checkbox(
-            "Friendly column headings",
-            value=True,
-        )
-        null_text = option_columns[2].text_input(
-            "Null value text",
-            value="",
-        )
-
-        delimiter_values = {
-            "Comma": ",",
-            "Tab": "\t",
-            "Semicolon": ";",
-            "Pipe": "|",
-        }
-
-        csv_payload = write_formatted_csv(
-            rows,
-            columns=fields,
-            options=CSVExportOptions(
-                delimiter=delimiter_values[
-                    delimiter_label
-                ],
-                quote_style=quote_style,
-                include_bom=include_bom,
-                date_format=date_format,
-                decimal_places=int(
-                    decimal_places
-                ),
-                null_text=null_text,
-            ),
-            header_aliases=(
-                FRIENDLY_HEADERS
-                if friendly_headers
-                else None
-            ),
-        )
-
-        extension = (
-            "tsv"
-            if delimiter_label == "Tab"
-            else "csv"
-        )
-
-        filename = (
-            "auction-report-"
-            + datetime.now().strftime(
-                "%Y%m%d-%H%M%S"
-            )
-            + f".{extension}"
-        )
-
-        st.download_button(
-            "Download formatted CSV",
-            data=csv_payload,
-            file_name=filename,
-            mime=(
-                "text/tab-separated-values"
-                if extension == "tsv"
-                else "text/csv"
-            ),
-            width="stretch",
-        )
-
-        with st.expander(
-            "Manual and effective classification fields",
-            expanded=False,
-        ):
-            classification_fields = [
-                column
-                for column in available_columns
-                if column.startswith(
-                    ("manual_", "effective_")
-                )
-            ]
-
-            st.write(
-                ", ".join(
-                    classification_fields
-                )
-            )
-
-            st.caption(
-                "Manual overrides remain managed by Collector Review. "
-                "This page reports both manual and effective values."
-            )
-
-            if hasattr(
-                st,
-                "page_link",
+            for candidate in (
+                "display_media_type",
+                "effective_media_type",
+                "media_type",
             ):
-                st.page_link(
-                    "app/collector_review.py",
-                    label="Open Collector Review",
+                if candidate in frame:
+                    media_column = candidate
+                    break
+
+            if media_column:
+                breakdown = (
+                    frame[media_column]
+                    .fillna("UNKNOWN")
+                    .astype(str)
+                    .value_counts()
+                    .rename_axis("Media type")
+                    .reset_index(name="Rows")
                 )
-    else:
-        st.info(
-            "Choose filters and press Load report."
-        )
+
+                st.subheader("Media-type breakdown")
+
+                breakdown_columns = st.columns(
+                    (1, 2)
+                )
+
+                breakdown_columns[0].dataframe(
+                    breakdown,
+                    width="stretch",
+                    hide_index=True,
+                )
+                breakdown_columns[1].bar_chart(
+                    breakdown.set_index(
+                        "Media type"
+                    )
+                )
+
+            st.subheader("Formatted export")
+
+            export_columns = st.columns(4)
+
+            delimiter_label = export_columns[0].selectbox(
+                "Delimiter",
+                options=(
+                    "Comma",
+                    "Tab",
+                    "Semicolon",
+                    "Pipe",
+                ),
+            )
+            quote_style = export_columns[1].selectbox(
+                "Quoting",
+                options=(
+                    "minimal",
+                    "all",
+                    "nonnumeric",
+                    "none",
+                ),
+            )
+            date_format = export_columns[2].selectbox(
+                "Date format",
+                options=(
+                    "iso",
+                    "date",
+                    "us",
+                    "eu",
+                ),
+            )
+            decimal_places = export_columns[3].number_input(
+                "Decimal places",
+                min_value=0,
+                max_value=8,
+                value=2,
+                step=1,
+            )
+
+            option_columns = st.columns(3)
+
+            include_bom = option_columns[0].checkbox(
+                "Excel-compatible UTF-8 BOM",
+                value=True,
+            )
+            friendly_headers = option_columns[1].checkbox(
+                "Friendly column headings",
+                value=True,
+            )
+            null_text = option_columns[2].text_input(
+                "Null value text",
+                value="",
+            )
+
+            delimiter_values = {
+                "Comma": ",",
+                "Tab": "\t",
+                "Semicolon": ";",
+                "Pipe": "|",
+            }
+
+            csv_payload = write_formatted_csv(
+                rows,
+                columns=fields,
+                options=CSVExportOptions(
+                    delimiter=delimiter_values[
+                        delimiter_label
+                    ],
+                    quote_style=quote_style,
+                    include_bom=include_bom,
+                    date_format=date_format,
+                    decimal_places=int(
+                        decimal_places
+                    ),
+                    null_text=null_text,
+                ),
+                header_aliases=(
+                    FRIENDLY_HEADERS
+                    if friendly_headers
+                    else None
+                ),
+            )
+
+            extension = (
+                "tsv"
+                if delimiter_label == "Tab"
+                else "csv"
+            )
+
+            filename = (
+                "auction-report-"
+                + datetime.now().strftime(
+                    "%Y%m%d-%H%M%S"
+                )
+                + f".{extension}"
+            )
+
+            st.download_button(
+                "Download formatted CSV",
+                data=csv_payload,
+                file_name=filename,
+                mime=(
+                    "text/tab-separated-values"
+                    if extension == "tsv"
+                    else "text/csv"
+                ),
+                width="stretch",
+            )
+
+            with st.expander(
+                "Manual and effective classification fields",
+                expanded=False,
+            ):
+                classification_fields = [
+                    column
+                    for column in available_columns
+                    if column.startswith(
+                        ("manual_", "effective_")
+                    )
+                ]
+
+                st.write(
+                    ", ".join(
+                        classification_fields
+                    )
+                )
+
+                st.caption(
+                    "Manual overrides remain managed by Collector Review. "
+                    "This page reports both manual and effective values."
+                )
+
+                if hasattr(
+                    st,
+                    "page_link",
+                ):
+                    st.page_link(
+                        "app/collector_review.py",
+                        label="Open Collector Review",
+                    )
+        else:
+            st.info(
+                "Choose filters and press Load report."
+            )
 
 with history_tab:
     st.subheader("Refresh and report history")
@@ -1158,6 +1157,7 @@ with history_tab:
         ):
             for job in list_refresh_jobs(
                 coordination_engine,
+                account_id=str(ACCOUNT_CONTEXT.account_id),
                 limit=50,
             ):
                 history_rows.append(

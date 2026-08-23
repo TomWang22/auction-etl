@@ -4,15 +4,32 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Iterable
+
+ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(
+        0,
+        str(ROOT),
+    )
 
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, JsCode
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
+from auction_etl.auth.context import AccountContext
+from auction_etl.auth.streamlit_auth import (
+    render_account_menu,
+    require_authenticated_account,
+)
+from auction_etl.services.account_scope import account_transaction
 
 from app.collector_analytics_editor import (
     render_collector_analytics_editor,
@@ -192,6 +209,14 @@ def get_engine() -> Engine:
     )
 
 
+ACCOUNT_CONTEXT = require_authenticated_account(
+    get_engine()
+)
+render_account_menu(
+    ACCOUNT_CONTEXT
+)
+
+
 def quote_identifier(
     identifier: str,
 ) -> str:
@@ -320,8 +345,8 @@ def collector_value(
     ttl=30,
     show_spinner=False,
 )
-def load_records() -> pd.DataFrame:
-    """Load native review rows plus Gripsweat-only archived sales."""
+def load_records(account_id: str) -> pd.DataFrame:
+    """Load only listings visible to the authenticated account."""
     relation = review_relation()
 
     collector_columns = relation_columns(
@@ -329,11 +354,18 @@ def load_records() -> pd.DataFrame:
         "auction_collector",
     )
 
+    if "account_id" not in collector_columns:
+        raise RuntimeError(
+            "Phase D account scoping is not installed for "
+            "warehouse.auction_collector."
+        )
+
     joined_columns = []
 
     for column_name in collector_columns:
         if column_name in {
             "id",
+            "account_id",
             "marketplace",
             "listing_id",
         }:
@@ -360,20 +392,72 @@ def load_records() -> pd.DataFrame:
             {joined_sql}
         FROM {relation} AS r
         LEFT JOIN warehouse.auction_collector AS c
-          ON c.marketplace = r.marketplace
+          ON c.account_id = CAST(:account_id AS uuid)
+         AND c.marketplace = r.marketplace
          AND c.listing_id = r.listing_id
+        WHERE EXISTS (
+            SELECT 1
+            FROM account.auction_listing AS visible
+            WHERE visible.account_id = CAST(:account_id AS uuid)
+              AND lower(btrim(visible.marketplace)) =
+                  lower(btrim(r.marketplace))
+              AND visible.listing_id = r.listing_id
+        )
         """
     )
+
+    visible_query = text(
+        """
+        SELECT
+            lower(btrim(marketplace)) AS marketplace,
+            listing_id
+        FROM account.auction_listing
+        WHERE account_id = CAST(:account_id AS uuid)
+        """
+    )
+
+    parameters = {
+        "account_id": account_id,
+    }
 
     with get_engine().connect() as connection:
         native_records = pd.read_sql_query(
             query,
             connection,
+            params=parameters,
+        )
+        visible_identities = pd.read_sql_query(
+            visible_query,
+            connection,
+            params=parameters,
         )
 
     gripsweat_records = load_gripsweat_records(
         database_url=DATABASE_URL,
     )
+
+    if not gripsweat_records.empty:
+        gripsweat_records = gripsweat_records.copy()
+        gripsweat_records["marketplace"] = (
+            gripsweat_records["marketplace"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+        visible_identities["marketplace"] = (
+            visible_identities["marketplace"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+        gripsweat_records = gripsweat_records.merge(
+            visible_identities,
+            how="inner",
+            on=[
+                "marketplace",
+                "listing_id",
+            ],
+        )
 
     if gripsweat_records.empty:
         combined = native_records
@@ -638,6 +722,7 @@ def prepare_records(
             if value
         ),
         axis=1,
+        result_type="reduce",
     )
 
     frame["sale_type_display"] = frame.apply(
@@ -851,11 +936,13 @@ def render_pending_notification() -> None:
 
 
 def save_collector_record(
+    account_id: str,
+    user_id: str,
     marketplace: str,
     listing_id: str,
     values: dict[str, Any],
 ) -> int:
-    """Insert or update one collector override record."""
+    """Insert or update one collector override owned by an account."""
     columns = set(
         relation_columns(
             "warehouse",
@@ -863,18 +950,78 @@ def save_collector_record(
         )
     )
 
+    if "account_id" not in columns:
+        raise RuntimeError(
+            "Phase D account scoping is not installed for "
+            "warehouse.auction_collector."
+        )
+
     allowed_values = {
         column_name: value
         for column_name, value in values.items()
-        if column_name in columns
+        if (
+            column_name in columns
+            and column_name
+            not in {
+                "account_id",
+                "marketplace",
+                "listing_id",
+            }
+        )
     }
 
-    with get_engine().begin() as connection:
-        connection.execute(
+    with account_transaction(
+        get_engine(),
+        account_id=account_id,
+        user_id=user_id,
+    ) as connection:
+        visible = connection.execute(
             text(
-                'INSERT INTO warehouse.auction_collector (\n    marketplace,\n    listing_id\n)\nVALUES (\n    CAST(:marketplace AS character varying),\n    CAST(:listing_id AS character varying)\n)\nON CONFLICT (\n    marketplace,\n    listing_id\n)\nDO NOTHING'
+                """
+                SELECT 1
+                FROM account.auction_listing
+                WHERE account_id = CAST(:account_id AS uuid)
+                  AND lower(btrim(marketplace)) =
+                      lower(btrim(:marketplace))
+                  AND listing_id = :listing_id
+                """
             ),
             {
+                "account_id": account_id,
+                "marketplace": marketplace,
+                "listing_id": listing_id,
+            },
+        ).scalar_one_or_none()
+
+        if visible is None:
+            raise PermissionError(
+                "The selected listing is not visible to this account."
+            )
+
+        connection.execute(
+            text(
+                """
+                INSERT INTO warehouse.auction_collector (
+                    account_id,
+                    marketplace,
+                    listing_id
+                )
+                VALUES (
+                    CAST(:account_id AS uuid),
+                    CAST(:marketplace AS character varying),
+                    CAST(:listing_id AS character varying)
+                )
+                ON CONFLICT (
+                    account_id,
+                    marketplace,
+                    listing_id
+                )
+                WHERE account_id IS NOT NULL
+                DO NOTHING
+                """
+            ),
+            {
+                "account_id": account_id,
                 "marketplace": marketplace,
                 "listing_id": listing_id,
             },
@@ -898,6 +1045,7 @@ def save_collector_record(
 
         parameters = {
             **allowed_values,
+            "account_id": account_id,
             "marketplace": marketplace,
             "listing_id": listing_id,
         }
@@ -907,7 +1055,8 @@ def save_collector_record(
                 f"""
                 UPDATE warehouse.auction_collector
                 SET {", ".join(assignments)}
-                WHERE marketplace = :marketplace
+                WHERE account_id = CAST(:account_id AS uuid)
+                  AND marketplace = :marketplace
                   AND listing_id = :listing_id
                 """
             ),
@@ -2465,6 +2614,7 @@ def render_pagination(
 
 def render_listing_editor(
     dataframe: pd.DataFrame,
+    account_context: AccountContext,
 ) -> None:
     """Render the editor for the stable selected identity."""
     selected = _selected_listing_row(
@@ -3202,6 +3352,8 @@ def render_listing_editor(
     }
 
     changed_rows = save_collector_record(
+        str(account_context.account_id),
+        str(account_context.user_id),
         marketplace,
         listing_id,
         payload,
@@ -3735,7 +3887,7 @@ st.caption(
 )
 
 try:
-    records = load_records()
+    records = load_records(str(ACCOUNT_CONTEXT.account_id))
     records = integrate_recent_activity(records)
 except Exception as error:
     st.error(
@@ -3887,7 +4039,8 @@ with tabs[0]:
         )
 
         render_listing_editor(
-            filtered_records
+            filtered_records,
+            ACCOUNT_CONTEXT,
         )
 
 with tabs[1]:
@@ -3923,11 +4076,18 @@ with tabs[3]:
         "Assign exact pressings, record expected and observed components, normalize condition, note bidder-data limitations, and review collection insights."
     )
 
-    render_collector_analytics_editor(
-        get_engine(),
-        records,
-        st.session_state.get(
-            SELECTED_LISTING_KEY
-        ),
-    )
+    if ACCOUNT_CONTEXT.is_system_admin:
+        render_collector_analytics_editor(
+            get_engine(),
+            records,
+            st.session_state.get(
+                SELECTED_LISTING_KEY
+            ),
+        )
+    else:
+        st.info(
+            "Collection analytics editing is temporarily restricted "
+            "to system administrators until its Phase D account-owned "
+            "write path is migrated."
+        )
 # collector-analytics-editor:end

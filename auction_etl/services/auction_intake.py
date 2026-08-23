@@ -7,11 +7,14 @@ import hmac
 import json
 import os
 import re
+import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
+
+from auction_etl.services.account_scope import set_transaction_account_context
 
 
 def engine_from_environment() -> Engine:
@@ -55,120 +58,126 @@ def _confidence(value: Any) -> Decimal:
     return result.quantize(Decimal("0.0001"))
 
 
-def queue_count(engine: Engine) -> int:
-    """Return the number of auctions awaiting assignment."""
+def queue_count(
+    engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
+) -> int:
+    """Return the number of visible auctions awaiting account assignment."""
     with engine.connect() as connection:
         return int(
             connection.execute(
                 text(
                     """
                     SELECT COUNT(*)
-                    FROM system.new_auction_assignment_queue
+                    FROM system.new_auction_assignment_queue AS queue
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM account.auction_listing AS account_listing
+                        WHERE account_listing.account_id = :account_id
+                          AND account_listing.marketplace = queue.marketplace
+                          AND account_listing.listing_id = queue.listing_id
+                    )
                     """
-                )
+                ),
+                {"account_id": str(account_id)},
             ).scalar_one()
         )
+
 
 
 def list_unassigned_auctions(
     engine: Engine,
     *,
+    account_id: uuid.UUID | str,
     limit: int = 500,
     marketplace: str | None = None,
     search: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return the prioritized derived assignment queue."""
-    bounded_limit = max(
-        1,
-        min(
-            int(limit),
-            5000,
-        ),
-    )
-
-    marketplace_value = _clean_text(
-        marketplace
-    )
-
-    search_value = _clean_text(
-        search
-    )
+    """Return the prioritized assignment queue visible to one account."""
+    bounded_limit = max(1, min(int(limit), 5000))
+    marketplace_value = _clean_text(marketplace)
+    search_value = _clean_text(search)
 
     with engine.connect() as connection:
         rows = connection.execute(
             text(
                 """
                 SELECT
-                    marketplace,
-                    listing_id,
-                    display_title,
-                    catalog_hint,
-                    source_url,
-                    source_changed_at,
-                    queue_status,
-                    identity_fingerprint,
-                    auction_payload
-                FROM system.new_auction_assignment_queue
-                WHERE (
+                    queue.marketplace,
+                    queue.listing_id,
+                    queue.display_title,
+                    queue.catalog_hint,
+                    queue.source_url,
+                    queue.source_changed_at,
+                    queue.queue_status,
+                    queue.identity_fingerprint,
+                    queue.auction_payload
+                FROM system.new_auction_assignment_queue AS queue
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM account.auction_listing AS account_listing
+                    WHERE account_listing.account_id = :account_id
+                      AND account_listing.marketplace = queue.marketplace
+                      AND account_listing.listing_id = queue.listing_id
+                )
+                  AND (
                     :marketplace = ''
-                    OR marketplace = :marketplace
+                    OR queue.marketplace = :marketplace
                 )
                   AND (
                     :search = ''
-                    OR display_title ILIKE
+                    OR queue.display_title ILIKE '%' || :search || '%'
+                    OR COALESCE(queue.catalog_hint, '') ILIKE
                         '%' || :search || '%'
-                    OR COALESCE(
-                        catalog_hint,
-                        ''
-                    ) ILIKE
-                        '%' || :search || '%'
-                    OR listing_id ILIKE
-                        '%' || :search || '%'
+                    OR queue.listing_id ILIKE '%' || :search || '%'
                 )
                 ORDER BY
-                    source_changed_at DESC NULLS LAST,
-                    marketplace,
-                    listing_id
+                    queue.source_changed_at DESC NULLS LAST,
+                    queue.marketplace,
+                    queue.listing_id
                 LIMIT :limit
                 """
             ),
             {
-                "marketplace":
-                    marketplace_value,
-                "search":
-                    search_value,
-                "limit":
-                    bounded_limit,
+                "account_id": str(account_id),
+                "marketplace": marketplace_value,
+                "search": search_value,
+                "limit": bounded_limit,
             },
         ).mappings().all()
 
-    return [
-        _dictionary(
-            row
-        )
-        for row in rows
-    ]
+    return [_dictionary(row) for row in rows]
+
 
 
 def list_queue_marketplaces(
     engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
 ) -> list[str]:
-    """Return marketplaces represented in the queue."""
+    """Return queue marketplaces visible to one account."""
     with engine.connect() as connection:
         values = connection.execute(
             text(
                 """
-                SELECT DISTINCT marketplace
-                FROM system.new_auction_assignment_queue
-                ORDER BY marketplace
+                SELECT DISTINCT queue.marketplace
+                FROM system.new_auction_assignment_queue AS queue
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM account.auction_listing AS account_listing
+                    WHERE account_listing.account_id = :account_id
+                      AND account_listing.marketplace = queue.marketplace
+                      AND account_listing.listing_id = queue.listing_id
+                )
+                ORDER BY queue.marketplace
                 """
-            )
+            ),
+            {"account_id": str(account_id)},
         ).scalars().all()
 
-    return [
-        str(value)
-        for value in values
-    ]
+    return [str(value) for value in values]
+
 
 
 def list_exact_pressings(
@@ -306,6 +315,7 @@ def list_match_basis_options(
 def _preview_with_connection(
     connection: Connection,
     *,
+    account_id: uuid.UUID | str,
     marketplace: str,
     listing_id: str,
     pressing_id: int,
@@ -315,53 +325,27 @@ def _preview_with_connection(
     reason: str,
     scope_confirmed: bool,
 ) -> dict[str, Any]:
-    """Build one deterministic assignment preview."""
-    marketplace_value = _clean_text(
-        marketplace
-    )
-
-    listing_value = _clean_text(
-        listing_id
-    )
-
-    reviewer_value = _clean_text(
-        reviewer
-    )
-
-    reason_value = _clean_text(
-        reason
-    )
-
-    basis_value = _clean_text(
-        match_basis
-    )
+    """Build one deterministic assignment preview for one account."""
+    account_value = uuid.UUID(str(account_id))
+    marketplace_value = _clean_text(marketplace)
+    listing_value = _clean_text(listing_id)
+    reviewer_value = _clean_text(reviewer)
+    reason_value = _clean_text(reason)
+    basis_value = _clean_text(match_basis)
 
     if not marketplace_value:
         raise ValueError("Marketplace is required.")
-
     if not listing_value:
         raise ValueError("Listing ID is required.")
-
     if not reviewer_value:
         raise ValueError("Reviewer is required.")
-
     if len(reason_value) < 12:
-        raise ValueError(
-            "Reason must contain at least 12 characters."
-        )
-
+        raise ValueError("Reason must contain at least 12 characters.")
     if not scope_confirmed:
-        raise ValueError(
-            "Exact-pressing scope confirmation is required."
-        )
+        raise ValueError("Exact-pressing scope confirmation is required.")
 
-    confidence_value = _confidence(
-        match_confidence
-    )
-
-    permitted_basis = _match_basis_options_with_connection(
-        connection
-    )
+    confidence_value = _confidence(match_confidence)
+    permitted_basis = _match_basis_options_with_connection(connection)
 
     if basis_value not in permitted_basis:
         raise ValueError(
@@ -372,23 +356,29 @@ def _preview_with_connection(
         text(
             """
             SELECT
-                marketplace,
-                listing_id,
-                display_title,
-                catalog_hint,
-                source_url,
-                source_changed_at,
-                auction_payload
-            FROM system.new_auction_assignment_queue
-            WHERE marketplace = :marketplace
-              AND listing_id = :listing_id
+                queue.marketplace,
+                queue.listing_id,
+                queue.display_title,
+                queue.catalog_hint,
+                queue.source_url,
+                queue.source_changed_at,
+                queue.auction_payload
+            FROM system.new_auction_assignment_queue AS queue
+            WHERE queue.marketplace = :marketplace
+              AND queue.listing_id = :listing_id
+              AND EXISTS (
+                  SELECT 1
+                  FROM account.auction_listing AS account_listing
+                  WHERE account_listing.account_id = :account_id
+                    AND account_listing.marketplace = queue.marketplace
+                    AND account_listing.listing_id = queue.listing_id
+              )
             """
         ),
         {
-            "marketplace":
-                marketplace_value,
-            "listing_id":
-                listing_value,
+            "account_id": account_value,
+            "marketplace": marketplace_value,
+            "listing_id": listing_value,
         },
     ).mappings().one_or_none()
 
@@ -398,25 +388,25 @@ def _preview_with_connection(
                 """
                 SELECT pressing_id
                 FROM warehouse.auction_pressing_assignment
-                WHERE marketplace = :marketplace
+                WHERE account_id = :account_id
+                  AND marketplace = :marketplace
                   AND listing_id = :listing_id
                 """
             ),
             {
-                "marketplace":
-                    marketplace_value,
-                "listing_id":
-                    listing_value,
+                "account_id": account_value,
+                "marketplace": marketplace_value,
+                "listing_id": listing_value,
             },
         ).scalar_one_or_none()
 
         if existing_assignment is not None:
             raise ValueError(
-                "This auction already has a reviewed pressing assignment."
+                "This account already has a reviewed pressing assignment."
             )
 
         raise ValueError(
-            "The auction is not present in the unassigned queue."
+            "The auction is not visible in this account's unassigned queue."
         )
 
     pressing = connection.execute(
@@ -431,17 +421,11 @@ def _preview_with_connection(
                 pressing.generation
             FROM warehouse.pressing_identity AS pressing
             JOIN warehouse.release_family AS family
-              ON family.id =
-                    pressing.release_family_id
+              ON family.id = pressing.release_family_id
             WHERE pressing.id = :pressing_id
             """
         ),
-        {
-            "pressing_id":
-                int(
-                    pressing_id
-                ),
-        },
+        {"pressing_id": int(pressing_id)},
     ).mappings().one_or_none()
 
     if pressing is None:
@@ -450,39 +434,21 @@ def _preview_with_connection(
         )
 
     mutation = {
-        "marketplace":
-            marketplace_value,
-        "listing_id":
-            listing_value,
-        "pressing_id":
-            int(
-                pressing_id
-            ),
-        "match_basis":
-            basis_value,
-        "match_confidence":
-            str(
-                confidence_value
-            ),
-        "is_manual_override":
-            True,
-        "reviewer":
-            reviewer_value,
-        "reason":
-            reason_value,
+        "account_id": account_value,
+        "marketplace": marketplace_value,
+        "listing_id": listing_value,
+        "pressing_id": int(pressing_id),
+        "match_basis": basis_value,
+        "match_confidence": str(confidence_value),
+        "is_manual_override": True,
+        "reviewer": reviewer_value,
+        "reason": reason_value,
     }
 
     token_payload = {
-        "auction":
-            _dictionary(
-                auction
-            ),
-        "pressing":
-            _dictionary(
-                pressing
-            ),
-        "mutation":
-            mutation,
+        "auction": _dictionary(auction),
+        "pressing": _dictionary(pressing),
+        "mutation": mutation,
     }
 
     digest = hashlib.sha256(
@@ -491,164 +457,117 @@ def _preview_with_connection(
             ensure_ascii=False,
             sort_keys=True,
             default=str,
-            separators=(
-                ",",
-                ":",
-            ),
-        ).encode(
-            "utf-8"
-        )
-    ).hexdigest()[
-        :16
-    ].upper()
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16].upper()
 
     confirmation_token = (
-        f"ASSIGN:{marketplace_value}:"
+        f"ASSIGN:{account_value}:{marketplace_value}:"
         f"{listing_value}:{pressing_id}:{digest}"
     )
 
     return {
-        "status":
-            "READY",
-        "auction":
-            _dictionary(
-                auction
-            ),
-        "pressing":
-            _dictionary(
-                pressing
-            ),
-        "mutation":
-            mutation,
-        "confirmation_token":
-            confirmation_token,
+        "status": "READY",
+        "auction": _dictionary(auction),
+        "pressing": _dictionary(pressing),
+        "mutation": mutation,
+        "confirmation_token": confirmation_token,
         "expected_effects": [
-            "Insert one reviewed exact-pressing assignment.",
-            "Generate one immutable assignment audit event.",
-            "Generate the first completeness snapshot through the existing trigger.",
-            "Remove the auction from the unassigned queue.",
+            "Insert one account-owned reviewed exact-pressing assignment.",
+            "Generate one account-owned immutable assignment audit event.",
+            "Generate the first account-owned completeness snapshot.",
+            "Remove the auction from this account's unassigned queue.",
         ],
-        "database_writes":
-            0,
+        "database_writes": 0,
     }
+
 
 
 def preview_assignment(
     engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
     **values: Any,
 ) -> dict[str, Any]:
-    """Preview one assignment without writing PostgreSQL."""
+    """Preview one account-owned assignment without writing PostgreSQL."""
     with engine.connect() as connection:
         return _preview_with_connection(
             connection,
+            account_id=account_id,
             **values,
         )
+
 
 
 def apply_assignment(
     engine: Engine,
     *,
+    account_id: uuid.UUID | str,
+    user_id: uuid.UUID | str,
     confirmation_token: str,
     **values: Any,
 ) -> dict[str, Any]:
-    """Apply one reviewed assignment atomically."""
-    supplied_token = _clean_text(
-        confirmation_token
-    )
+    """Apply one account-owned reviewed assignment atomically."""
+    validated_account_id = uuid.UUID(str(account_id))
+    validated_user_id = uuid.UUID(str(user_id))
+    supplied_token = _clean_text(confirmation_token)
 
     with engine.connect().execution_options(
         isolation_level="SERIALIZABLE"
     ) as connection:
         with connection.begin():
-            marketplace = _clean_text(
-                values.get(
-                    "marketplace"
-                )
+            set_transaction_account_context(
+                connection,
+                account_id=validated_account_id,
+                user_id=validated_user_id,
             )
 
-            listing_id = _clean_text(
-                values.get(
-                    "listing_id"
-                )
-            )
+            marketplace = _clean_text(values.get("marketplace"))
+            listing_id = _clean_text(values.get("listing_id"))
 
             connection.execute(
                 text(
                     """
                     SELECT pg_advisory_xact_lock(
-                        hashtextextended(
-                            :lock_key,
-                            0
-                        )
+                        hashtextextended(:lock_key, 0)
                     )
                     """
                 ),
                 {
-                    "lock_key":
-                        (
-                            "auction-assignment:"
-                            f"{marketplace}:"
-                            f"{listing_id}"
-                        ),
+                    "lock_key": (
+                        "auction-assignment:"
+                        f"{validated_account_id}:"
+                        f"{marketplace}:{listing_id}"
+                    ),
                 },
             )
 
             preview = _preview_with_connection(
                 connection,
+                account_id=validated_account_id,
                 **values,
             )
 
-            expected_token = str(
-                preview[
-                    "confirmation_token"
-                ]
-            )
+            expected_token = str(preview["confirmation_token"])
 
-            if not hmac.compare_digest(
-                supplied_token,
-                expected_token,
-            ):
+            if not hmac.compare_digest(supplied_token, expected_token):
                 raise PermissionError(
                     "Confirmation token does not match the recomputed preview."
                 )
 
-            mutation = preview[
-                "mutation"
-            ]
+            mutation = preview["mutation"]
 
             connection.execute(
                 text(
                     """
-                    SELECT set_config(
-                        'app.actor',
-                        :actor,
-                        true
-                    )
+                    SELECT
+                        set_config('app.actor', :actor, true),
+                        set_config('app.reason', :reason, true)
                     """
                 ),
                 {
-                    "actor":
-                        mutation[
-                            "reviewer"
-                        ],
-                },
-            )
-
-            connection.execute(
-                text(
-                    """
-                    SELECT set_config(
-                        'app.reason',
-                        :reason,
-                        true
-                    )
-                    """
-                ),
-                {
-                    "reason":
-                        mutation[
-                            "reason"
-                        ],
+                    "actor": mutation["reviewer"],
+                    "reason": mutation["reason"],
                 },
             )
 
@@ -658,7 +577,8 @@ def apply_assignment(
                         """
                         SELECT COUNT(*)
                         FROM system.listing_completeness_snapshot
-                        WHERE marketplace = :marketplace
+                        WHERE account_id = :account_id
+                          AND marketplace = :marketplace
                           AND listing_id = :listing_id
                         """
                     ),
@@ -670,6 +590,7 @@ def apply_assignment(
                 text(
                     """
                     INSERT INTO warehouse.auction_pressing_assignment (
+                        account_id,
                         marketplace,
                         listing_id,
                         pressing_id,
@@ -681,14 +602,12 @@ def apply_assignment(
                         updated_at
                     )
                     VALUES (
+                        :account_id,
                         :marketplace,
                         :listing_id,
                         :pressing_id,
                         :match_basis,
-                        CAST(
-                            :match_confidence
-                            AS numeric
-                        ),
+                        CAST(:match_confidence AS numeric),
                         TRUE,
                         :reason,
                         now(),
@@ -696,6 +615,7 @@ def apply_assignment(
                     )
                     RETURNING
                         id,
+                        account_id,
                         marketplace,
                         listing_id,
                         pressing_id,
@@ -716,7 +636,8 @@ def apply_assignment(
                         """
                         SELECT COUNT(*)
                         FROM system.listing_completeness_snapshot
-                        WHERE marketplace = :marketplace
+                        WHERE account_id = :account_id
+                          AND marketplace = :marketplace
                           AND listing_id = :listing_id
                         """
                     ),
@@ -729,16 +650,16 @@ def apply_assignment(
                     """
                     SELECT
                         id,
+                        account_id,
                         action,
                         actor,
                         reason,
                         occurred_at
                     FROM system.auction_pressing_assignment_audit_event
-                    WHERE marketplace = :marketplace
+                    WHERE account_id = :account_id
+                      AND marketplace = :marketplace
                       AND listing_id = :listing_id
-                    ORDER BY
-                        occurred_at DESC,
-                        id DESC
+                    ORDER BY occurred_at DESC, id DESC
                     LIMIT 1
                     """
                 ),
@@ -750,17 +671,17 @@ def apply_assignment(
                     """
                     SELECT
                         id,
+                        account_id,
                         status,
                         pressing_id,
                         trigger_event,
                         blocking_reasons,
                         created_at
                     FROM system.listing_completeness_snapshot
-                    WHERE marketplace = :marketplace
+                    WHERE account_id = :account_id
+                      AND marketplace = :marketplace
                       AND listing_id = :listing_id
-                    ORDER BY
-                        created_at DESC,
-                        id DESC
+                    ORDER BY created_at DESC, id DESC
                     LIMIT 1
                     """
                 ),
@@ -768,46 +689,34 @@ def apply_assignment(
             ).mappings().one_or_none()
 
     return {
-        "status":
-            "COMPLETED",
-        "assignment":
-            _dictionary(
-                inserted
-            ),
-        "audit_event":
-            _dictionary(
-                audit_event
-            ),
-        "latest_snapshot":
-            (
-                _dictionary(
-                    latest_snapshot
-                )
-                if latest_snapshot is not None
-                else None
-            ),
-        "snapshot_created":
-            (
-                snapshot_count_after
-                > snapshot_count_before
-            ),
-        "database_writes":
-            1,
+        "status": "COMPLETED",
+        "assignment": _dictionary(inserted),
+        "audit_event": _dictionary(audit_event),
+        "latest_snapshot": (
+            _dictionary(latest_snapshot)
+            if latest_snapshot is not None
+            else None
+        ),
+        "snapshot_created": snapshot_count_after > snapshot_count_before,
+        "database_writes": 1,
     }
+
 
 
 def list_assignment_audit(
     engine: Engine,
     *,
+    account_id: uuid.UUID | str,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    """Return immutable reviewed-assignment history."""
+    """Return immutable reviewed-assignment history for one account."""
     with engine.connect() as connection:
         rows = connection.execute(
             text(
                 """
                 SELECT
                     id,
+                    account_id,
                     marketplace,
                     listing_id,
                     pressing_id,
@@ -816,174 +725,160 @@ def list_assignment_audit(
                     reason,
                     occurred_at
                 FROM system.auction_pressing_assignment_audit_event
-                ORDER BY
-                    occurred_at DESC,
-                    id DESC
+                WHERE account_id = :account_id
+                ORDER BY occurred_at DESC, id DESC
                 LIMIT :limit
                 """
             ),
             {
-                "limit":
-                    max(
-                        1,
-                        min(
-                            int(limit),
-                            5000,
-                        ),
-                    ),
+                "account_id": str(account_id),
+                "limit": max(1, min(int(limit), 5000)),
             },
         ).mappings().all()
 
-    return [
-        _dictionary(
-            row
-        )
-        for row in rows
-    ]
+    return [_dictionary(row) for row in rows]
+
 
 
 def list_current_alerts(
     engine: Engine,
     *,
+    account_id: uuid.UUID | str,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
-    """Return each listing's current derived completeness alert."""
+    """Return current derived completeness alerts visible to one account."""
     with engine.connect() as connection:
         rows = connection.execute(
             text(
                 """
-                SELECT
-                    snapshot_id,
-                    marketplace,
-                    listing_id,
-                    pressing_id,
-                    media_type,
-                    status,
-                    previous_status,
-                    alert_type,
-                    severity,
-                    missing_required_unit_count,
-                    missing_components,
-                    blocking_reasons,
-                    trigger_event,
-                    created_at
-                FROM system.current_listing_completeness_alert
+                SELECT alert.*
+                FROM system.current_listing_completeness_alert AS alert
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM account.auction_listing AS account_listing
+                    WHERE account_listing.account_id = :account_id
+                      AND account_listing.marketplace = alert.marketplace
+                      AND account_listing.listing_id = alert.listing_id
+                )
                 ORDER BY
-                    CASE severity
+                    CASE alert.severity
                         WHEN 'CRITICAL' THEN 1
                         WHEN 'WARNING' THEN 2
                         ELSE 3
                     END,
-                    created_at DESC,
-                    snapshot_id DESC
+                    alert.created_at DESC,
+                    alert.snapshot_id DESC
                 LIMIT :limit
                 """
             ),
             {
-                "limit":
-                    max(
-                        1,
-                        min(
-                            int(limit),
-                            5000,
-                        ),
-                    ),
+                "account_id": str(account_id),
+                "limit": max(1, min(int(limit), 5000)),
             },
         ).mappings().all()
 
-    return [
-        _dictionary(
-            row
-        )
-        for row in rows
-    ]
+    return [_dictionary(row) for row in rows]
+
 
 
 def list_alert_history(
     engine: Engine,
     *,
+    account_id: uuid.UUID | str,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
-    """Return chronological snapshot-derived alert history."""
+    """Return snapshot-derived alert history visible to one account."""
     with engine.connect() as connection:
         rows = connection.execute(
             text(
                 """
-                SELECT
-                    snapshot_id,
-                    marketplace,
-                    listing_id,
-                    pressing_id,
-                    media_type,
-                    status,
-                    previous_status,
-                    alert_type,
-                    severity,
-                    trigger_event,
-                    actor,
-                    reason,
-                    created_at
-                FROM system.listing_completeness_alert
-                ORDER BY
-                    created_at DESC,
-                    snapshot_id DESC
+                SELECT alert.*
+                FROM system.listing_completeness_alert AS alert
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM account.auction_listing AS account_listing
+                    WHERE account_listing.account_id = :account_id
+                      AND account_listing.marketplace = alert.marketplace
+                      AND account_listing.listing_id = alert.listing_id
+                )
+                ORDER BY alert.created_at DESC, alert.snapshot_id DESC
                 LIMIT :limit
                 """
             ),
             {
-                "limit":
-                    max(
-                        1,
-                        min(
-                            int(limit),
-                            10000,
-                        ),
-                    ),
+                "account_id": str(account_id),
+                "limit": max(1, min(int(limit), 10000)),
             },
         ).mappings().all()
 
-    return [
-        _dictionary(
-            row
-        )
-        for row in rows
-    ]
+    return [_dictionary(row) for row in rows]
+
 
 
 def list_cohort_summary(
     engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
 ) -> list[dict[str, Any]]:
-    """Return current completeness totals by exact pressing."""
+    """Return current completeness totals for listings visible to one account."""
     with engine.connect() as connection:
         rows = connection.execute(
             text(
                 """
+                WITH latest_snapshots AS (
+                    SELECT DISTINCT ON (
+                        snapshot.marketplace,
+                        snapshot.listing_id
+                    )
+                        snapshot.*
+                    FROM system.listing_completeness_snapshot AS snapshot
+                    JOIN account.auction_listing AS account_listing
+                      ON account_listing.marketplace = snapshot.marketplace
+                     AND account_listing.listing_id = snapshot.listing_id
+                     AND account_listing.account_id = :account_id
+                    ORDER BY
+                        snapshot.marketplace,
+                        snapshot.listing_id,
+                        snapshot.created_at DESC,
+                        snapshot.id DESC
+                )
                 SELECT
-                    pressing_id,
-                    display_artist,
-                    display_title,
-                    catalog_number,
-                    media_type,
-                    status,
-                    listing_count,
-                    required_unit_count,
-                    verified_present_unit_count,
-                    missing_required_unit_count,
-                    unknown_observation_count
-                FROM system.completeness_cohort_summary
+                    latest_snapshots.pressing_id,
+                    family.display_artist,
+                    family.display_title,
+                    pressing.catalog_number,
+                    latest_snapshots.media_type,
+                    latest_snapshots.status,
+                    COUNT(*)::integer AS listing_count,
+                    SUM(latest_snapshots.required_unit_count)::integer
+                        AS required_unit_count,
+                    SUM(latest_snapshots.verified_present_unit_count)::integer
+                        AS verified_present_unit_count,
+                    SUM(latest_snapshots.missing_required_unit_count)::integer
+                        AS missing_required_unit_count,
+                    SUM(latest_snapshots.unknown_observation_count)::integer
+                        AS unknown_observation_count
+                FROM latest_snapshots
+                LEFT JOIN warehouse.pressing_identity AS pressing
+                  ON pressing.id = latest_snapshots.pressing_id
+                LEFT JOIN warehouse.release_family AS family
+                  ON family.id = pressing.release_family_id
+                GROUP BY
+                    latest_snapshots.pressing_id,
+                    family.display_artist,
+                    family.display_title,
+                    pressing.catalog_number,
+                    latest_snapshots.media_type,
+                    latest_snapshots.status
                 ORDER BY
-                    display_artist,
-                    display_title,
-                    catalog_number,
-                    media_type,
-                    status
+                    family.display_artist,
+                    family.display_title,
+                    pressing.catalog_number,
+                    latest_snapshots.media_type,
+                    latest_snapshots.status
                 """
-            )
+            ),
+            {"account_id": str(account_id)},
         ).mappings().all()
 
-    return [
-        _dictionary(
-            row
-        )
-        for row in rows
-    ]
+    return [_dictionary(row) for row in rows]

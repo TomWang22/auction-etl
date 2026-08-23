@@ -1,0 +1,1740 @@
+[
+  {
+    "path": "app/collector_review.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector",
+      "warehouse.auction_collector_effective",
+      "warehouse.auction_collector_review"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.auction_collector",
+        "UPDATE warehouse.auction_collector"
+      ],
+      "reads": [
+        "warehouse.auction_collector"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "app/pages/10_Listing_Completeness_Review.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "app/pages/13_New_Auction_Intake.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "app/pages/15_Ingest_New_Auctions.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "app/pages/16_Artists_to_Track.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "app/pages/2_Completeness_Reference.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P0",
+    "relations": [
+      "identity.get"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "app/pages/2_Pressing_Analytics.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P0",
+    "relations": [
+      "warehouse.auction_collector_effective"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction_collector_effective"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "app/pages/3_Latest_Auction_Refresh.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [
+      "ops.refresh_job"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "app/pages/4_Reference_Record_Admin.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P0",
+    "relations": [
+      "warehouse.pressing_component_expectation"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/artist_tracking.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": true
+    }
+  },
+  {
+    "path": "auction_etl/services/auction_intake.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [
+      "system.auction_pressing_assignment_audit_event",
+      "system.completeness_cohort_summary",
+      "system.current_listing_completeness_alert",
+      "system.listing_completeness_alert",
+      "system.listing_completeness_snapshot",
+      "system.new_auction_assignment_queue",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_component_expectation",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.auction_pressing_assignment"
+      ],
+      "reads": [
+        "system.auction_pressing_assignment_audit_event",
+        "system.completeness_cohort_summary",
+        "system.current_listing_completeness_alert",
+        "system.listing_completeness_alert",
+        "system.listing_completeness_snapshot",
+        "system.new_auction_assignment_queue",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_component_expectation",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/collector_curation.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [
+      "analytics.auction_scores",
+      "analytics.emotional_damage",
+      "system.component_type",
+      "system.condition_grade",
+      "warehouse.auction_analysis_input",
+      "warehouse.auction_completeness",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.auction_pressing_assignment",
+        "INSERT INTO warehouse.pressing_identity",
+        "INSERT INTO warehouse.release_family"
+      ],
+      "reads": [
+        "system.component_type",
+        "system.condition_grade",
+        "warehouse.auction_analysis_input",
+        "warehouse.auction_completeness",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/refresh_jobs.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [
+      "ops.refresh_event",
+      "ops.refresh_job",
+      "ops.refresh_marketplace"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO ops.refresh_event",
+        "INSERT INTO ops.refresh_job",
+        "INSERT INTO ops.refresh_marketplace",
+        "UPDATE ops.refresh_job",
+        "UPDATE ops.refresh_marketplace"
+      ],
+      "reads": [
+        "ops.refresh_event",
+        "ops.refresh_job",
+        "ops.refresh_marketplace"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/run_cloud_refresh_worker.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P0",
+    "relations": [],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/reporting/main_review_integration.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "system.auction_ingestion_identity",
+      "warehouse.auction",
+      "warehouse.auction_collector",
+      "warehouse.gripsweat_sale"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.auction_ingestion_identity",
+        "warehouse.auction",
+        "warehouse.auction_collector",
+        "warehouse.gripsweat_sale"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/reporting/recent_ingestion.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "system.auction_ingestion_identity",
+      "warehouse.auction",
+      "warehouse.auction_collector_review"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO system.auction_ingestion_identity",
+        "UPDATE system.auction_ingestion_identity"
+      ],
+      "reads": [
+        "system.auction_ingestion_identity",
+        "warehouse.auction",
+        "warehouse.auction_collector_review"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/cohort_curation_wizard.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "analytics.auction_collector_base",
+      "system.component_type",
+      "system.evidence_attachment",
+      "system.evidence_source_registry",
+      "system.normalization_work_audit_event",
+      "system.reference_audit_event",
+      "warehouse.auction",
+      "warehouse.auction_analysis_input",
+      "warehouse.auction_comparable_review",
+      "warehouse.auction_completeness",
+      "warehouse.auction_component_observation",
+      "warehouse.auction_condition_normalization",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_component_expectation",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE FROM warehouse.auction_component_observation",
+        "DELETE FROM warehouse.pressing_component_expectation",
+        "INSERT INTO system.evidence_attachment",
+        "INSERT INTO warehouse.auction_component_observation",
+        "INSERT INTO warehouse.pressing_component_expectation"
+      ],
+      "reads": [
+        "system.component_type",
+        "system.evidence_attachment",
+        "system.evidence_source_registry",
+        "system.normalization_work_audit_event",
+        "system.reference_audit_event",
+        "warehouse.auction",
+        "warehouse.auction_analysis_input",
+        "warehouse.auction_comparable_review",
+        "warehouse.auction_completeness",
+        "warehouse.auction_component_observation",
+        "warehouse.auction_condition_normalization",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_component_expectation",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/collector_evidence.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "analytics.auction_collector_base",
+      "system.condition_grade",
+      "warehouse.auction",
+      "warehouse.auction_analysis_input",
+      "warehouse.auction_price_snapshot"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.condition_grade",
+        "warehouse.auction",
+        "warehouse.auction_analysis_input",
+        "warehouse.auction_price_snapshot"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/collector_observation_bulk.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "system.component_type",
+      "system.evidence_source_registry",
+      "warehouse.auction",
+      "warehouse.auction_component_observation",
+      "warehouse.auction_pressing_assignment"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE FROM warehouse.auction_component_observation",
+        "INSERT INTO system.evidence_source_registry",
+        "INSERT INTO warehouse.auction_component_observation",
+        "UPDATE system.evidence_source_registry"
+      ],
+      "reads": [
+        "system.component_type",
+        "system.evidence_source_registry",
+        "warehouse.auction",
+        "warehouse.auction_component_observation",
+        "warehouse.auction_pressing_assignment"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/completeness_history.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "system.listing_completeness_snapshot",
+      "system.listing_completeness_timeline",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.listing_completeness_snapshot",
+        "system.listing_completeness_timeline",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/completeness_reference.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "system.component_type",
+      "warehouse.auction",
+      "warehouse.auction_component_observation",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_identity"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE FROM warehouse.auction_component_observation",
+        "INSERT INTO warehouse.auction_component_observation"
+      ],
+      "reads": [
+        "system.component_type",
+        "warehouse.auction",
+        "warehouse.auction_component_observation",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_identity"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/crawl.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "raw.id",
+      "raw.url"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/deterministic_verdicts.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "analytics.auction_alerts",
+      "analytics.auction_collector_base",
+      "analytics.auction_scores",
+      "analytics.emotional_damage",
+      "analytics.midfication_detection",
+      "system.deterministic_verdict_rule",
+      "system.deterministic_verdict_rule_audit",
+      "warehouse.auction",
+      "warehouse.auction_completeness"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO system.deterministic_verdict_rule",
+        "UPDATE system.deterministic_verdict_rule"
+      ],
+      "reads": [
+        "system.deterministic_verdict_rule",
+        "system.deterministic_verdict_rule_audit"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/evidence_intake.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "system.component_type",
+      "system.evidence_source_registry"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.component_type",
+        "system.evidence_source_registry"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/ingest.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "raw.id"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/media_aware_reference.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "system.component_type",
+      "system.evidence_source_registry",
+      "system.media_profile_component",
+      "system.reference_audit_event",
+      "warehouse.auction",
+      "warehouse.auction_component_observation",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_component_expectation",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.component_type",
+        "system.evidence_source_registry",
+        "system.media_profile_component",
+        "system.reference_audit_event",
+        "warehouse.auction",
+        "warehouse.auction_component_observation",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_component_expectation",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/media_profile_admin.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "system.component_type",
+      "system.media_profile_audit_event",
+      "system.media_profile_component",
+      "warehouse.pressing_identity"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE FROM system.media_profile_component",
+        "INSERT INTO system.media_profile_component",
+        "UPDATE system.media_profile_component"
+      ],
+      "reads": [
+        "system.component_type",
+        "system.media_profile_audit_event",
+        "system.media_profile_component",
+        "warehouse.pressing_identity"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/normalization_readiness.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "analytics.auction_collector_base",
+      "warehouse.auction",
+      "warehouse.auction_completeness",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_component_expectation"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.auction_completeness",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_component_expectation"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/normalization_workbench.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "analytics.auction_collector_base",
+      "analytics.normalization_work_queue",
+      "system.normalization_work_audit_event",
+      "system.normalization_work_batch",
+      "system.normalization_work_batch_row",
+      "warehouse.auction",
+      "warehouse.auction_analysis_input",
+      "warehouse.auction_comparable_review",
+      "warehouse.auction_component_observation",
+      "warehouse.auction_condition_normalization",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_component_expectation",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO system.normalization_work_batch",
+        "INSERT INTO system.normalization_work_batch_row",
+        "INSERT INTO warehouse.auction_comparable_review",
+        "UPDATE system.normalization_work_batch"
+      ],
+      "reads": [
+        "system.normalization_work_audit_event",
+        "system.normalization_work_batch",
+        "warehouse.auction",
+        "warehouse.auction_comparable_review",
+        "warehouse.auction_component_observation",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_component_expectation",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/parse.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "raw.html",
+      "raw.id",
+      "raw.listing_count",
+      "raw.parsed_at",
+      "raw.source"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/pressing_reference_admin.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "system.component_type",
+      "warehouse.auction",
+      "warehouse.auction_completeness",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_component_expectation",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE FROM warehouse.pressing_component_expectation",
+        "INSERT INTO warehouse.pressing_component_expectation",
+        "INSERT INTO warehouse.pressing_identity",
+        "INSERT INTO warehouse.release_family"
+      ],
+      "reads": [
+        "system.component_type",
+        "warehouse.auction",
+        "warehouse.auction_completeness",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_component_expectation",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/pressing_reference_catalog.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "system.reference_audit_event",
+      "warehouse.pressing_identity",
+      "warehouse.pressing_matrix_runout",
+      "warehouse.pressing_reference_catalog",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE FROM warehouse.pressing_matrix_runout",
+        "INSERT INTO system.reference_audit_event",
+        "INSERT INTO warehouse.pressing_identity",
+        "INSERT INTO warehouse.pressing_matrix_runout",
+        "INSERT INTO warehouse.release_family",
+        "UPDATE warehouse.pressing_identity"
+      ],
+      "reads": [
+        "warehouse.pressing_identity",
+        "warehouse.pressing_matrix_runout",
+        "warehouse.pressing_reference_catalog"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/pressing_reference_workbench.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "system.component_type",
+      "warehouse.auction",
+      "warehouse.auction_completeness",
+      "warehouse.auction_component_observation",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_component_expectation",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE FROM warehouse.pressing_component_expectation",
+        "INSERT INTO warehouse.pressing_component_expectation"
+      ],
+      "reads": [
+        "system.component_type",
+        "warehouse.auction",
+        "warehouse.auction_completeness",
+        "warehouse.auction_component_observation",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_component_expectation",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/reference_record_admin.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P1",
+    "relations": [
+      "system.bulk_observation_batch",
+      "system.bulk_observation_batch_row",
+      "system.component_type",
+      "system.evidence_attachment",
+      "system.evidence_source_registry",
+      "system.reference_audit_event",
+      "warehouse.auction_component_observation",
+      "warehouse.pressing_component_expectation",
+      "warehouse.pressing_identity"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE FROM warehouse.auction_component_observation",
+        "DELETE FROM warehouse.pressing_component_expectation",
+        "INSERT INTO system.bulk_observation_batch",
+        "INSERT INTO system.bulk_observation_batch_row",
+        "INSERT INTO system.evidence_attachment",
+        "INSERT INTO warehouse.auction_component_observation",
+        "INSERT INTO warehouse.pressing_component_expectation",
+        "UPDATE system.bulk_observation_batch",
+        "UPDATE system.evidence_attachment",
+        "UPDATE warehouse.pressing_component_expectation"
+      ],
+      "reads": [
+        "system.bulk_observation_batch",
+        "system.bulk_observation_batch_row",
+        "system.component_type",
+        "system.evidence_attachment",
+        "system.evidence_source_registry",
+        "system.reference_audit_event",
+        "warehouse.auction_component_observation",
+        "warehouse.pressing_component_expectation",
+        "warehouse.pressing_identity"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/services/state_safe_completeness.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P1",
+    "relations": [
+      "system.component_type",
+      "system.media_profile_component",
+      "warehouse.auction",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.component_type",
+        "system.media_profile_component",
+        "warehouse.auction",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/cli/stats.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/database/collector_views.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector",
+      "warehouse.auction_collector_effective",
+      "warehouse.auction_collector_review",
+      "warehouse.auction_detail"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.auction_collector",
+        "warehouse.auction_collector_effective",
+        "warehouse.auction_collector_review",
+        "warehouse.auction_detail"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/models/raw.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "system.crawl_job"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "auction_etl/models/staging.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "raw.page"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/audit_auction_docker_contexts.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/audit_collector_db.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector",
+      "warehouse.auction_collector_effective",
+      "warehouse.auction_detail"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.auction_collector",
+        "warehouse.auction_collector_effective",
+        "warehouse.auction_detail"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/backfill_buyee_displayed_usd.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "system.auction_ingestion_identity",
+      "warehouse.auction"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "UPDATE warehouse.auction"
+      ],
+      "reads": [
+        "system.auction_ingestion_identity",
+        "warehouse.auction"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/collector_features.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector",
+      "warehouse.auction_collector_effective",
+      "warehouse.auction_detail"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.auction_collector",
+        "UPDATE warehouse.auction_collector"
+      ],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.auction_collector",
+        "warehouse.auction_collector_effective",
+        "warehouse.auction_detail"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/crawl_buyee_live_details.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "system.auction_ingestion_identity",
+      "warehouse.auction",
+      "warehouse.auction_detail"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.auction_detail",
+        "UPDATE warehouse.auction"
+      ],
+      "reads": [
+        "system.auction_ingestion_identity",
+        "warehouse.auction",
+        "warehouse.auction_detail"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/crawl_ebay_chrome_cdp.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "raw.id"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/crawl_ebay_sources.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "raw.id",
+      "warehouse.auction"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/enrich_buyee_details.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_detail"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.auction_detail",
+        "UPDATE warehouse.auction"
+      ],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.auction_detail"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/enrich_gripsweat_details.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "raw.strip",
+      "warehouse.gripsweat_sale"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "UPDATE warehouse.gripsweat_sale"
+      ],
+      "reads": [
+        "warehouse.gripsweat_sale"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/export_pressing_curation_packet.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/hard_test_ingestion_round_ui.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "raw.page",
+      "system.crawl_job",
+      "system.listing_completeness_snapshot",
+      "system.listing_completeness_timeline",
+      "system.new_auction_assignment_queue",
+      "warehouse.auction",
+      "warehouse.auction_pressing_assignment"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.crawl_job",
+        "system.listing_completeness_snapshot",
+        "system.listing_completeness_timeline",
+        "system.new_auction_assignment_queue",
+        "warehouse.auction",
+        "warehouse.auction_pressing_assignment"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/hard_test_latest_refresh_ui.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector",
+      "warehouse.auction_collector_effective",
+      "warehouse.auction_collector_review"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.auction_collector",
+        "warehouse.auction_collector_effective",
+        "warehouse.auction_collector_review"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/import_gripsweat_pagination_audit.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.gripsweat_sale",
+      "warehouse.gripsweat_source"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.gripsweat_sale",
+        "UPDATE warehouse.gripsweat_sale"
+      ],
+      "reads": [
+        "warehouse.gripsweat_sale",
+        "warehouse.gripsweat_source"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/import_gripsweat_probe.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.gripsweat_sale",
+      "warehouse.gripsweat_source"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.gripsweat_sale",
+        "INSERT INTO warehouse.gripsweat_source",
+        "UPDATE warehouse.gripsweat_sale"
+      ],
+      "reads": [
+        "warehouse.gripsweat_sale"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/normalize_gripsweat_sales.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.gripsweat_sale"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "UPDATE warehouse.gripsweat_sale"
+      ],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.gripsweat_sale"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/normalize_gripsweat_source_schema.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.gripsweat_source"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.gripsweat_source",
+        "UPDATE warehouse.gripsweat_source"
+      ],
+      "reads": [],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/probe_buyee_details.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/reclassify_collector.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "UPDATE warehouse.auction_collector"
+      ],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/recover_auction_warehouse.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.auction"
+      ],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/repair_recovered_auction_fields.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector",
+      "warehouse.auction_detail"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "UPDATE warehouse.auction",
+        "UPDATE warehouse.auction_collector"
+      ],
+      "reads": [],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/review_and_apply_pressing_packet.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "system.evidence_attachment",
+      "system.evidence_source_registry",
+      "system.normalization_work_audit_event",
+      "system.normalization_work_batch",
+      "system.reference_audit_event",
+      "warehouse.auction",
+      "warehouse.auction_analysis_input",
+      "warehouse.auction_behavior_observation",
+      "warehouse.auction_component_observation",
+      "warehouse.auction_condition_normalization",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_component_expectation",
+      "warehouse.pressing_identity",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "DELETE\n            FROM warehouse.pressing_component_expectation",
+        "INSERT INTO system.evidence_attachment",
+        "INSERT INTO warehouse.pressing_component_expectation"
+      ],
+      "reads": [
+        "system.evidence_attachment",
+        "system.evidence_source_registry",
+        "system.normalization_work_audit_event",
+        "system.normalization_work_batch",
+        "system.reference_audit_event",
+        "warehouse.auction",
+        "warehouse.auction_analysis_input",
+        "warehouse.auction_behavior_observation",
+        "warehouse.auction_component_observation",
+        "warehouse.auction_condition_normalization",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_component_expectation",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": false,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/run_buyee_owner.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "raw.decode"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/run_fresh_ebay_ingestion_round.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "identity.listing_id",
+      "identity.marketplace",
+      "raw.page",
+      "system.crawl_job",
+      "system.listing_completeness_snapshot",
+      "system.listing_completeness_timeline",
+      "system.new_auction_assignment_queue",
+      "warehouse.auction",
+      "warehouse.auction_pressing_assignment"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.crawl_job",
+        "system.listing_completeness_snapshot",
+        "system.listing_completeness_timeline",
+        "system.new_auction_assignment_queue",
+        "warehouse.auction",
+        "warehouse.auction_pressing_assignment"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/run_ingest_with_assignment_queue.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "system.listing_completeness_snapshot",
+      "system.listing_completeness_timeline",
+      "system.new_auction_assignment_queue",
+      "warehouse.auction",
+      "warehouse.auction_pressing_assignment"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.listing_completeness_snapshot",
+        "system.listing_completeness_timeline",
+        "system.new_auction_assignment_queue",
+        "warehouse.auction",
+        "warehouse.auction_pressing_assignment"
+      ],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/run_latest_auction_refresh.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector",
+      "warehouse.auction_collector_effective",
+      "warehouse.auction_collector_review",
+      "warehouse.gripsweat_sale"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.auction_collector",
+        "warehouse.auction_collector_effective",
+        "warehouse.auction_collector_review",
+        "warehouse.gripsweat_sale"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/run_multisource_ingestion_round.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "identity.listing_id",
+      "identity.marketplace",
+      "raw.page",
+      "system.crawl_job",
+      "system.listing_completeness_snapshot",
+      "system.listing_completeness_timeline",
+      "system.new_auction_assignment_queue",
+      "warehouse.auction",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.gripsweat_sale",
+      "warehouse.pressing_identity",
+      "warehouse.pressing_matrix_runout",
+      "warehouse.pressing_reference_catalog",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.crawl_job",
+        "system.listing_completeness_snapshot",
+        "system.listing_completeness_timeline",
+        "system.new_auction_assignment_queue",
+        "warehouse.auction",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.gripsweat_sale",
+        "warehouse.pressing_identity",
+        "warehouse.release_family"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/setup_collector_review_v2.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction_collector"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/setup_gripsweat_schema.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.gripsweat_sale",
+      "warehouse.gripsweat_source"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [],
+      "database_url": false,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/setup_pressing_reference_catalog.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_pressing_assignment",
+      "warehouse.pressing_identity",
+      "warehouse.pressing_matrix_runout",
+      "warehouse.pressing_reference_catalog",
+      "warehouse.release_family"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "INSERT INTO warehouse.pressing_matrix_runout",
+        "UPDATE warehouse.pressing_identity"
+      ],
+      "reads": [
+        "warehouse.auction",
+        "warehouse.auction_pressing_assignment",
+        "warehouse.pressing_identity",
+        "warehouse.pressing_matrix_runout",
+        "warehouse.pressing_reference_catalog",
+        "warehouse.release_family"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/sync_warehouse_incremental.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": true,
+      "streamlit": true,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/update_auction_fx.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "UPDATE warehouse.auction"
+      ],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/update_ingestion_audit.py",
+    "classification": "MANUAL_REVIEW",
+    "priority": "P2",
+    "relations": [
+      "system.auction_ingestion_identity"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [],
+      "reads": [
+        "system.auction_ingestion_identity"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  },
+  {
+    "path": "scripts/upgrade_collector_review_schema.py",
+    "classification": "ACCOUNT_SCOPE_REQUIRED",
+    "priority": "P2",
+    "relations": [
+      "warehouse.auction",
+      "warehouse.auction_collector"
+    ],
+    "signals": {
+      "missing": false,
+      "writes": [
+        "UPDATE warehouse.auction",
+        "UPDATE warehouse.auction_collector"
+      ],
+      "reads": [
+        "warehouse.auction"
+      ],
+      "database_url": true,
+      "streamlit": false,
+      "artist_runtime_state": false
+    }
+  }
+]

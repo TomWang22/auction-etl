@@ -790,3 +790,16 @@ Buyee profile = worker/browser session state; permanent cloud storage deferred
 Git/GitHub    = source and promotion boundary
 Railway       = deferred hosting experiment, not accepted runtime
 ```
+
+<!-- COLLECTOR_LEDGER_PHASE_D_AUTH_ACCOUNTS -->
+## Phase D — identity, authorization, and account tenancy
+
+Phase D places an authenticated account boundary around the existing
+architecture. Canonical marketplace facts remain shared while workspace
+visibility, configuration, curation, refresh ownership, and marketplace
+connections become account-owned.
+
+Historical Vercel + Neon staging acceptance remains unchanged.
+
+Authoritative design:
+`docs/PHASE_D_AUTH_ACCOUNT_ARCHITECTURE.md`.

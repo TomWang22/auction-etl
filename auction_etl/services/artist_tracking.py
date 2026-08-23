@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,11 @@ from urllib.parse import parse_qs
 from urllib.parse import quote_plus
 from urllib.parse import unquote_plus
 from urllib.parse import urlsplit
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+
+from auction_etl.services.account_scope import account_transaction
 
 
 STATE_SCHEMA = "auction-etl-artist-tracking/v1"
@@ -844,6 +850,374 @@ def ensure_tracking_state(
     return state
 
 
+
+def _account_uuid(value: uuid.UUID | str) -> uuid.UUID:
+    """Return a validated account/user UUID."""
+    if isinstance(value, uuid.UUID):
+        return value
+
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"Invalid UUID: {value!r}") from exc
+
+
+def _sqlalchemy_database_url(value: str) -> str:
+    """Normalize a PostgreSQL URL for SQLAlchemy + Psycopg 3."""
+    database_url = value.strip()
+    if database_url.startswith("postgresql://"):
+        return database_url.replace(
+            "postgresql://",
+            "postgresql+psycopg://",
+            1,
+        )
+    return database_url
+
+
+def _runtime_account_engine() -> Engine:
+    """Build the account-aware runtime engine from DATABASE_URL."""
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL is required when AUCTION_ACCOUNT_ID is set."
+        )
+
+    return create_engine(
+        _sqlalchemy_database_url(database_url),
+        pool_pre_ping=True,
+        future=True,
+    )
+
+
+def list_account_tracked_artists(
+    engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
+) -> list[dict[str, Any]]:
+    """Return tracked artists owned by exactly one account."""
+    validated_account_id = _account_uuid(account_id)
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT
+                    artist.id,
+                    artist.name,
+                    artist.normalized_name,
+                    artist.enabled,
+                    artist.legacy_payload,
+                    marketplace.marketplace,
+                    marketplace.enabled AS marketplace_enabled,
+                    marketplace.search_query,
+                    marketplace.search_url,
+                    marketplace.config_json
+                FROM account.tracked_artist AS artist
+                LEFT JOIN account.artist_marketplace AS marketplace
+                  ON marketplace.tracked_artist_id = artist.id
+                WHERE artist.account_id = :account_id
+                ORDER BY
+                    lower(artist.name),
+                    artist.id,
+                    marketplace.marketplace
+                """
+            ),
+            {"account_id": validated_account_id},
+        ).mappings().all()
+
+    artists: dict[str, dict[str, Any]] = {}
+
+    for row in rows:
+        artist_id = str(row["id"])
+        artist = artists.get(artist_id)
+
+        if artist is None:
+            legacy_payload = row.get("legacy_payload")
+            if not isinstance(legacy_payload, dict):
+                legacy_payload = {}
+
+            query = normalize_query(
+                str(legacy_payload.get("query") or row["name"])
+            )
+
+            artist = {
+                "id": artist_id,
+                "name": str(row["name"]),
+                "query": query,
+                "enabled": bool(row["enabled"]),
+                "targets": {},
+            }
+            artists[artist_id] = artist
+
+        marketplace = row.get("marketplace")
+        if marketplace is None:
+            continue
+
+        marketplace_key = str(marketplace).casefold()
+        if marketplace_key not in SUPPORTED_MARKETPLACES:
+            continue
+
+        config_json = row.get("config_json")
+        metadata = (
+            dict(config_json)
+            if isinstance(config_json, dict)
+            else {}
+        )
+
+        artist["targets"][marketplace_key] = {
+            "enabled": bool(row["marketplace_enabled"]),
+            "mode": "database",
+            "source": None,
+            "metadata": metadata,
+            "search_query": str(row.get("search_query") or ""),
+            "search_url": str(row.get("search_url") or ""),
+        }
+
+    return sorted(
+        artists.values(),
+        key=lambda value: str(value["name"]).casefold(),
+    )
+
+
+def upsert_account_artist(
+    engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
+    user_id: uuid.UUID | str,
+    name: str,
+    marketplaces: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Create/update one account-owned artist and marketplace targets."""
+    validated_account_id = _account_uuid(account_id)
+    validated_user_id = _account_uuid(user_id)
+    artist_name = normalize_query(name)
+
+    if not artist_name:
+        raise ValueError("Artist name is required.")
+
+    selected = {
+        str(marketplace).strip().casefold()
+        for marketplace in marketplaces
+    }
+    unsupported = selected - set(SUPPORTED_MARKETPLACES)
+
+    if unsupported:
+        raise ValueError(
+            "Unsupported marketplaces: "
+            + ", ".join(sorted(unsupported))
+        )
+
+    if not selected:
+        raise ValueError("Choose at least one marketplace.")
+
+    normalized_name = normalized_key(artist_name)
+    generated_id = uuid.uuid5(
+        validated_account_id,
+        f"tracked-artist:{normalized_name}",
+    )
+
+    legacy_payload = json.dumps(
+        {
+            "query": artist_name,
+            "source": "phase-d4-account-runtime",
+        },
+        sort_keys=True,
+    )
+
+    with account_transaction(
+        engine,
+        account_id=validated_account_id,
+        user_id=validated_user_id,
+    ) as connection:
+        artist_id = connection.execute(
+            text(
+                """
+                INSERT INTO account.tracked_artist (
+                    id,
+                    account_id,
+                    name,
+                    normalized_name,
+                    enabled,
+                    legacy_payload
+                )
+                VALUES (
+                    :id,
+                    :account_id,
+                    :name,
+                    :normalized_name,
+                    TRUE,
+                    CAST(:legacy_payload AS jsonb)
+                )
+                ON CONFLICT (account_id, normalized_name)
+                DO UPDATE SET
+                    name = EXCLUDED.name,
+                    enabled = TRUE,
+                    legacy_payload = EXCLUDED.legacy_payload,
+                    updated_at = now()
+                RETURNING id
+                """
+            ),
+            {
+                "id": generated_id,
+                "account_id": validated_account_id,
+                "name": artist_name,
+                "normalized_name": normalized_name,
+                "legacy_payload": legacy_payload,
+            },
+        ).scalar_one()
+
+        for marketplace in SUPPORTED_MARKETPLACES:
+            enabled = marketplace in selected
+            search_url = (
+                build_ebay_search_url(artist_name)
+                if marketplace == "ebay"
+                else build_gripsweat_search_url(artist_name)
+            )
+
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO account.artist_marketplace (
+                        tracked_artist_id,
+                        marketplace,
+                        enabled,
+                        search_query,
+                        search_url,
+                        config_json
+                    )
+                    VALUES (
+                        :tracked_artist_id,
+                        :marketplace,
+                        :enabled,
+                        :search_query,
+                        :search_url,
+                        '{}'::jsonb
+                    )
+                    ON CONFLICT (tracked_artist_id, marketplace)
+                    DO UPDATE SET
+                        enabled = EXCLUDED.enabled,
+                        search_query = EXCLUDED.search_query,
+                        search_url = EXCLUDED.search_url,
+                        updated_at = now()
+                    """
+                ),
+                {
+                    "tracked_artist_id": artist_id,
+                    "marketplace": marketplace,
+                    "enabled": enabled,
+                    "search_query": artist_name,
+                    "search_url": search_url,
+                },
+            )
+
+    artists = list_account_tracked_artists(
+        engine,
+        account_id=validated_account_id,
+    )
+
+    for artist in artists:
+        if str(artist["id"]) == str(artist_id):
+            return artist
+
+    raise RuntimeError(
+        f"Account artist {artist_id} disappeared after upsert."
+    )
+
+
+def set_account_artist_enabled(
+    engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
+    user_id: uuid.UUID | str,
+    artist_id: uuid.UUID | str,
+    enabled: bool,
+) -> None:
+    """Pause/resume one artist only within the owning account."""
+    validated_account_id = _account_uuid(account_id)
+    validated_user_id = _account_uuid(user_id)
+    validated_artist_id = _account_uuid(artist_id)
+
+    with account_transaction(
+        engine,
+        account_id=validated_account_id,
+        user_id=validated_user_id,
+    ) as connection:
+        result = connection.execute(
+            text(
+                """
+                UPDATE account.tracked_artist
+                SET
+                    enabled = :enabled,
+                    updated_at = now()
+                WHERE id = :artist_id
+                  AND account_id = :account_id
+                """
+            ),
+            {
+                "enabled": bool(enabled),
+                "artist_id": validated_artist_id,
+                "account_id": validated_account_id,
+            },
+        )
+
+        if result.rowcount != 1:
+            raise KeyError(
+                f"Unknown account artist: {validated_artist_id}"
+            )
+
+
+def remove_account_artist(
+    engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
+    user_id: uuid.UUID | str,
+    artist_id: uuid.UUID | str,
+) -> None:
+    """Delete one artist only from the owning account."""
+    validated_account_id = _account_uuid(account_id)
+    validated_user_id = _account_uuid(user_id)
+    validated_artist_id = _account_uuid(artist_id)
+
+    with account_transaction(
+        engine,
+        account_id=validated_account_id,
+        user_id=validated_user_id,
+    ) as connection:
+        result = connection.execute(
+            text(
+                """
+                DELETE FROM account.tracked_artist
+                WHERE id = :artist_id
+                  AND account_id = :account_id
+                """
+            ),
+            {
+                "artist_id": validated_artist_id,
+                "account_id": validated_account_id,
+            },
+        )
+
+        if result.rowcount != 1:
+            raise KeyError(
+                f"Unknown account artist: {validated_artist_id}"
+            )
+
+
+def account_tracking_state(
+    engine: Engine,
+    *,
+    account_id: uuid.UUID | str,
+) -> dict[str, Any]:
+    """Return the product state shape backed by account-owned PostgreSQL."""
+    return {
+        "schema": STATE_SCHEMA,
+        "artists": list_account_tracked_artists(
+            engine,
+            account_id=account_id,
+        ),
+    }
+
+
 def list_tracked_artists(
     *,
     state_path: Path | None = None,
@@ -1458,14 +1832,38 @@ def prepare_runtime_marketplace_configs(
     ebay_config: Path = DEFAULT_EBAY_CONFIG,
     gripsweat_config: Path = DEFAULT_GRIPSWEAT_CONFIG,
     output_directory: Path | None = None,
+    engine: Engine | None = None,
+    account_id: uuid.UUID | str | None = None,
 ) -> dict[str, Path]:
-    """Materialize enabled artists and expose them to ingestion subprocesses."""
-
-    state = load_tracking_state(
-        state_path=state_path,
-        ebay_config=ebay_config,
-        gripsweat_config=gripsweat_config,
+    """Materialize enabled sources from account PostgreSQL or legacy input."""
+    runtime_account_id = (
+        account_id
+        or os.environ.get("AUCTION_ACCOUNT_ID", "").strip()
+        or None
     )
+
+    owned_engine = False
+    effective_engine = engine
+
+    if runtime_account_id is not None:
+        if effective_engine is None:
+            effective_engine = _runtime_account_engine()
+            owned_engine = True
+
+        try:
+            state = account_tracking_state(
+                effective_engine,
+                account_id=runtime_account_id,
+            )
+        finally:
+            if owned_engine:
+                effective_engine.dispose()
+    else:
+        state = load_tracking_state(
+            state_path=state_path,
+            ebay_config=ebay_config,
+            gripsweat_config=gripsweat_config,
+        )
 
     output = (
         output_directory
