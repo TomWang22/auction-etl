@@ -2,7 +2,7 @@
 
 > **Compatibility name:** the repository, Python package, and existing infrastructure still use `auction-etl` / `auction_etl`.
 >
-> **Current cloud milestone:** Vercel + Neon staging acceptance is complete. The long-running refresh worker remains a required execution role, but its permanent cloud host is deferred.
+> **Current cloud milestone:** Vercel + Neon staging acceptance and the Phase-D auth/account-tenancy closeout are complete. The long-running refresh worker remains a required execution role, but its permanent cloud host is deferred.
 
 Collector Ledger is a collector-focused auction intelligence and ETL system for discovering marketplace sales, preserving source evidence, normalizing auction records, identifying pressings and completeness, reviewing uncertain records, coordinating durable refresh jobs, and exporting collector-ready research.
 
@@ -283,7 +283,7 @@ read-only and never deletes or modifies warehouse records.
 
 The authoritative architecture is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-The Phase-C durable-refresh work has been merged into `main`. The accepted staging architecture separates the runtime into a lightweight Vercel control plane, Neon PostgreSQL for authoritative staging data and durable refresh coordination, and a separate logical marketplace-execution worker.
+The Phase-D auth/account-tenancy closeout has been merged into `main`. The accepted staging architecture separates the runtime into a lightweight Vercel control plane, Neon PostgreSQL for authoritative staging data and durable refresh coordination, and a separate logical marketplace-execution worker.
 
 ```mermaid
 flowchart LR
@@ -309,6 +309,8 @@ flowchart LR
 ```
 
 Current architecture status:
+  * Phase-D account tenancy is accepted in Neon staging; the existing collector state is assigned to the accepted owner account.
+  * Accepted owner-state counts are 1440 visible listings, 3 tracked artists, and 5 marketplace searches.
 
 - Vercel staging control-plane identity, health, and readiness were accepted.
 - Neon staging is the accepted authoritative managed staging database.
