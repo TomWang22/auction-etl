@@ -27,7 +27,7 @@ def test_runbook_locks_owner_acceptance_counts() -> None:
     text = (
         ROOT / "docs" / "PHASE_D_MIGRATION_RUNBOOK.md"
     ).read_text(encoding="utf-8")
-    assert "VISIBLE_LISTING_COUNT=1441" in text
+    assert "VISIBLE_LISTING_COUNT=1440" in text
     assert "TRACKED_ARTIST_COUNT=3" in text
     assert "MARKETPLACE_SEARCH_COUNT=5" in text
 

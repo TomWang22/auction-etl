@@ -68,7 +68,7 @@ python scripts/phase_d_owner_backfill.py \
   --subject '...' \
   --email '...' \
   --display-name '...' \
-  --expected-visible-listings 1441 \
+  --expected-visible-listings 1440 \
   --expected-tracked-artists 3 \
   --expected-marketplace-searches 5
 ```
@@ -76,7 +76,7 @@ python scripts/phase_d_owner_backfill.py \
 Required:
 
 ```text
-VISIBLE_LISTING_COUNT=1441
+VISIBLE_LISTING_COUNT=1440
 TRACKED_ARTIST_COUNT=3
 MARKETPLACE_SEARCH_COUNT=5
 OWNER_BACKFILL_ACCEPTANCE_GATE=PASS
