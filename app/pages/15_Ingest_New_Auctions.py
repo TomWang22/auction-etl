@@ -946,7 +946,11 @@ st.set_page_config(
 render_navigation(current_page="pages/15_Ingest_New_Auctions.py")
 
 
-account_context = require_authenticated_account()
+account_context = require_authenticated_account(
+    refresh_engine(
+        DATABASE_URL
+    )
+)
 
 render_account_menu(
     account_context
