@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from datetime import datetime
@@ -26,11 +27,41 @@ if str(
     )
 
 
-from auction_etl.services.auction_ingest_job import (  # noqa: E402
-    PLANNED_SOURCES,
-    get_latest_status,
-    start_job,
-    tail_log,
+from auction_etl.auth.context import AccountContext  # noqa: E402
+from auction_etl.auth.streamlit_auth import (  # noqa: E402
+    render_account_menu,
+    require_authenticated_account,
+)
+from auction_etl.services.control_plane_refresh import (  # noqa: E402
+    enqueue_refresh_via_control_plane,
+)
+from auction_etl.services.refresh_jobs import (  # noqa: E402
+    build_refresh_engine,
+    coordination_schema_ready,
+    get_latest_refresh_job,
+    refresh_job_to_ui_status,
+)
+
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    (
+        "postgresql://auction:auction@"
+        "127.0.0.1:5544/auction_warehouse"
+    ),
+)
+CONTROL_PLANE_URL = os.environ.get(
+    "AUCTION_CONTROL_PLANE_URL",
+    "",
+).strip()
+REFRESH_SIGNING_SECRET = os.environ.get(
+    "AUCTION_REFRESH_SIGNING_SECRET",
+    "",
+).strip()
+
+PLANNED_SOURCES = (
+    "buyee",
+    "ebay",
+    "gripsweat",
 )
 from app.navigation import render_navigation
 
@@ -688,33 +719,224 @@ def render_status(
 
 
 
-def start_refresh() -> dict[str, Any] | None:
-    """Start the background refresh and report launch errors."""
+@st.cache_resource
+def refresh_engine(
+    database_url: str,
+):
+    """Return the durable refresh coordination engine."""
+    return build_refresh_engine(
+        database_url
+    )
+
+
+@st.cache_data(ttl=2)
+def get_latest_status(
+    database_url: str,
+    account_id: str,
+) -> dict[str, Any] | None:
+    """Load the latest account-scoped durable refresh."""
+    engine = refresh_engine(
+        database_url
+    )
+
+    if not coordination_schema_ready(
+        engine
+    ):
+        raise RuntimeError(
+            "Durable refresh coordination is not installed "
+            "in the configured database."
+        )
+
+    job = get_latest_refresh_job(
+        engine,
+        account_id=account_id,
+    )
+
+    if job is None:
+        return None
+
+    raw_status = refresh_job_to_ui_status(
+        job
+    )
+
+    result = dict(
+        raw_status
+    )
+
+    state = str(
+        result.get(
+            "state",
+            result.get(
+                "status",
+                "",
+            ),
+        )
+    ).casefold()
+
+    result["status"] = {
+        "idle": "idle",
+        "queued": "queued",
+        "running": "running",
+        "success": "completed",
+        "succeeded": "completed",
+        "completed": "completed",
+        "failed": "failed",
+        "cancelled": "failed",
+        "canceled": "failed",
+    }.get(
+        state,
+        state,
+    )
+
+    if not result.get(
+        "job_id"
+    ):
+        identifier = result.get(
+            "id"
+        )
+
+        if identifier is not None:
+            result[
+                "job_id"
+            ] = str(
+                identifier
+            )
+
+    return result
+
+
+def tail_log(
+    *args: Any,
+    **kwargs: Any,
+) -> str:
+    """Return durable worker details without relying on local log files."""
+    del kwargs
+
+    status = (
+        args[0]
+        if args
+        and isinstance(
+            args[0],
+            dict,
+        )
+        else {}
+    )
+
+    for key in (
+        "log",
+        "log_text",
+        "worker_log",
+        "output",
+        "error",
+        "message",
+    ):
+        value = status.get(
+            key
+        )
+
+        if value:
+            return str(
+                value
+            )
+
+    return ""
+
+
+def start_refresh(
+    account_context: AccountContext,
+) -> dict[str, Any] | None:
+    """Queue or reuse one durable refresh for this account."""
+    if not CONTROL_PLANE_URL:
+        st.error(
+            "Marketplace refresh is not configured: "
+            "AUCTION_CONTROL_PLANE_URL is missing.",
+            icon="❌",
+        )
+        return None
+
+    if not REFRESH_SIGNING_SECRET:
+        st.error(
+            "Marketplace refresh is not configured: "
+            "AUCTION_REFRESH_SIGNING_SECRET is missing.",
+            icon="❌",
+        )
+        return None
 
     try:
-        status = start_job()
+        job, created = enqueue_refresh_via_control_plane(
+            base_url=CONTROL_PLANE_URL,
+            signing_secret=REFRESH_SIGNING_SECRET,
+            account_context=account_context,
+        )
     except Exception as exc:
         st.error(
-            "Could not start the marketplace refresh. "
+            "Could not queue the marketplace refresh. "
             f"{exc}",
             icon="❌",
         )
-
         return None
+
+    job_id = str(
+        job.get(
+            "job_id",
+            job.get(
+                "id",
+                "",
+            ),
+        )
+        or ""
+    )
 
     st.session_state[
         "auction_ingest_started_job"
-    ] = status.get(
-        "job_id"
-    )
+    ] = job_id
+
+    get_latest_status.clear()
 
     st.toast(
-        "Marketplace refresh started.",
+        (
+            "Marketplace refresh queued."
+            if created
+            else
+            "A marketplace refresh is already queued or running."
+        ),
         icon="🔄",
     )
 
-    return status
+    result = dict(
+        refresh_job_to_ui_status(
+            job
+        )
+    )
 
+    state = str(
+        result.get(
+            "state",
+            result.get(
+                "status",
+                "",
+            ),
+        )
+    ).casefold()
+
+    result["status"] = {
+        "queued": "queued",
+        "running": "running",
+        "success": "completed",
+        "succeeded": "completed",
+        "completed": "completed",
+        "failed": "failed",
+    }.get(
+        state,
+        state,
+    )
+
+    if job_id:
+        result[
+            "job_id"
+        ] = job_id
+
+    return result
 
 st.set_page_config(
     page_title="Refresh Marketplace Sales",
@@ -723,6 +945,12 @@ st.set_page_config(
 )
 render_navigation(current_page="pages/15_Ingest_New_Auctions.py")
 
+
+account_context = require_authenticated_account()
+
+render_account_menu(
+    account_context
+)
 st.title(
     "🔄 Refresh Marketplace Sales"
 )
@@ -740,8 +968,21 @@ st.caption(
     "and Gripsweat. The refresh continues in the background."
 )
 
-status = get_latest_status()
+try:
+    status = get_latest_status(
+        DATABASE_URL,
+        str(
+            account_context.account_id
+        ),
+    )
+except Exception as exc:
+    status = None
 
+    st.error(
+        "Could not load durable marketplace refresh status. "
+        f"{exc}",
+        icon="❌",
+    )
 is_running = bool(
     status
     and status.get(
@@ -812,8 +1053,9 @@ button_clicked = st.button(
 )
 
 if button_clicked:
-    started_status = start_refresh()
-
+    started_status = start_refresh(
+        account_context
+    )
     if started_status is not None:
         st.rerun()
 
