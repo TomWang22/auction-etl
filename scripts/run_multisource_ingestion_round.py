@@ -494,26 +494,64 @@ def assert_pressing_reference_schema(
 
 
 def git_tracked_hash() -> str:
-    """Hash tracked repository differences relative to HEAD."""
+    """Hash tracked state in Git checkouts and deployed cloud images."""
 
-    completed = subprocess.run(
+    probe = subprocess.run(
         [
             "git",
-            "diff",
-            "--binary",
-            "HEAD",
-            "--",
+            "rev-parse",
+            "--is-inside-work-tree",
         ],
         cwd=ROOT,
-        check=True,
+        check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    if (
+        probe.returncode == 0
+        and probe.stdout.strip() == "true"
+    ):
+        completed = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--binary",
+                "HEAD",
+                "--",
+            ],
+            cwd=ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        return hashlib.sha256(
+            completed.stdout
+        ).hexdigest()
+
+    deployment_revision = (
+        os.environ.get(
+            "RAILWAY_GIT_COMMIT_SHA"
+        )
+        or os.environ.get(
+            "SOURCE_COMMIT"
+        )
+        or os.environ.get(
+            "VERCEL_GIT_COMMIT_SHA"
+        )
+        or "cloud-image-without-git-metadata"
     )
 
     return hashlib.sha256(
-        completed.stdout
+        (
+            "deployed-source:"
+            + deployment_revision
+        ).encode(
+            "utf-8"
+        )
     ).hexdigest()
-
 
 def auction_keys(
     database_url: str,
