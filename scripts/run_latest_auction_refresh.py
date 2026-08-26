@@ -678,15 +678,23 @@ def ebay_access_blocked(
     return_code: int,
     output: str,
 ) -> bool:
-    """Return whether the eBay crawler was blocked by HTTP 403."""
+    """Return whether eBay blocked anonymous programmatic access."""
     if return_code == 0:
         return False
 
     normalized = output.casefold()
 
-    return (
-        "blocked http status 403"
-        in normalized
+    blocked_signals = (
+        "blocked http status 403",
+        (
+            "ebay unexpectedly redirected the anonymous "
+            "completed-search page to sign-in"
+        ),
+    )
+
+    return any(
+        signal in normalized
+        for signal in blocked_signals
     )
 
 
