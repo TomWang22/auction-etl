@@ -41,11 +41,16 @@ BUYEE_AUTHENTICATION_REQUIRED_EXIT_CODE = 2
 BUYEE_VERIFICATION_TIMEOUT_EXIT_CODE = 3
 BUYEE_ACCESS_BLOCKED_EXIT_CODE = 4
 
+BUYEE_MAINTENANCE_EXIT_CODE = 5
 BUYEE_SOURCE_AVAILABLE = (
     "BUYEE_SOURCE_AVAILABLE"
 )
 BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED = (
     "BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
+)
+
+BUYEE_SOURCE_UNAVAILABLE_MAINTENANCE = (
+    "BUYEE_SOURCE_UNAVAILABLE_MAINTENANCE"
 )
 
 # BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED_CONTRACT_V2
@@ -1588,6 +1593,50 @@ def main() -> int:
             logger.warning(
                 "Buyee source unavailable: programmatic "
                 "access is blocked."
+            )
+            logger.warning(
+                "Skipping Buyee crawl, parse, synchronization, "
+                "and detail enrichment."
+            )
+            logger.warning(
+                "Continuing eBay and Gripsweat refreshes."
+            )
+        elif (
+            auth_status
+            == BUYEE_MAINTENANCE_EXIT_CODE
+        ):
+            status["buyee_source_state"] = (
+                "unavailable_maintenance"
+            )
+            status["buyee_runtime_semantics"] = (
+                BUYEE_SOURCE_UNAVAILABLE_MAINTENANCE
+            )
+            status["degraded"] = True
+            status["message"] = (
+                "Buyee is undergoing maintenance; "
+                "continuing the remaining sources."
+            )
+            status["updated_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+
+            write_json_atomic(
+                status_file,
+                status,
+            )
+
+            logger.warning("")
+            emit_source_state(
+                logger,
+                "Buyee",
+                "unavailable",
+                status_file=status_file,
+                status=status,
+            )
+
+            logger.warning(
+                "Buyee source unavailable: site maintenance "
+                "was detected."
             )
             logger.warning(
                 "Skipping Buyee crawl, parse, synchronization, "

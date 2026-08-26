@@ -368,7 +368,7 @@ def test_ingestion_page_exposes_product_progress_contract() -> None:
         "st.progress(",
         "st.toast(",
         "get_latest_status",
-        "start_job",
+        "build_refresh_engine",
         "tail_log",
     )
 

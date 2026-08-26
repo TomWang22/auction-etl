@@ -592,6 +592,101 @@ def deployment_revision() -> str:
     return result.stdout.strip() or "unknown"
 
 
+def durable_progress(
+    status: dict[str, Any],
+) -> tuple[int, int]:
+    """Return success and execution percentages from durable source states."""
+    source_states = durable_source_states(
+        status
+    )
+
+    states = [
+        str(
+            source_states.get(
+                source,
+                "waiting",
+            )
+        ).casefold()
+        for source in PLANNED_SOURCES
+    ]
+
+    meaningful_states = {
+        "running",
+        "observed",
+        "unavailable",
+        "done",
+        "failed",
+    }
+
+    if not any(
+        state in meaningful_states
+        for state in states
+    ):
+        success = int(
+            status.get(
+                "progress",
+                0,
+            )
+            or 0
+        )
+        execution = int(
+            status.get(
+                "execution_progress",
+                0,
+            )
+            or 0
+        )
+
+        return (
+            max(
+                0,
+                min(
+                    success,
+                    100,
+                ),
+            ),
+            max(
+                0,
+                min(
+                    execution,
+                    100,
+                ),
+            ),
+        )
+
+    successful = sum(
+        state == "done"
+        for state in states
+    )
+
+    terminal = sum(
+        state
+        in {
+            "done",
+            "unavailable",
+            "failed",
+        }
+        for state in states
+    )
+
+    total = len(
+        PLANNED_SOURCES
+    )
+
+    return (
+        int(
+            successful
+            / total
+            * 100
+        ),
+        int(
+            terminal
+            / total
+            * 100
+        ),
+    )
+
+
 def render_status(
     status: dict[str, Any],
 ) -> None:
@@ -604,17 +699,10 @@ def render_status(
         )
     )
 
-    progress = max(
-        0,
-        min(
-            int(
-                status.get(
-                    "progress",
-                    0,
-                )
-            ),
-            100,
-        ),
+    progress, execution_progress = (
+        durable_progress(
+            status
+        )
     )
 
     phase = str(
@@ -640,7 +728,7 @@ def render_status(
         f"{deployment_revision()} · "
         f"job={status.get('job_id', 'unknown')} · "
         f"progress={progress} · "
-        f"execution={status.get('execution_progress', 'unknown')}"
+        f"execution={execution_progress}"
     )
 
     display_phase = phase

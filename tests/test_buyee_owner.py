@@ -55,7 +55,8 @@ def test_owner_server_has_no_cdp_transport() -> None:
     assert "connect_over_cdp" not in source
     assert "--remote-debugging-port" not in source
     assert "launch_persistent_context" in source
-    assert "headless=False" in source
+    assert "headless=headless" in source
+    assert '"headless": False' in source
     assert "--window-position=-32000,-32000" in source
 
 

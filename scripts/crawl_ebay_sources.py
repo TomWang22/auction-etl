@@ -9,6 +9,11 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from scripts.marketplace_access import (
+    MarketplaceAccessState,
+    classify_ebay_page,
+)
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -742,26 +747,8 @@ def crawl_source(
                     status = (
                         response.status
                         if response is not None
-                        else 0
+                        else None
                     )
-
-                    if status in {
-                        401,
-                        403,
-                        429,
-                        503,
-                    }:
-                        stats.blocked_sources += 1
-
-                        raise RuntimeError(
-                            f"Blocked HTTP status "
-                            f"{status}"
-                        )
-
-                    if status >= 400:
-                        raise RuntimeError(
-                            f"HTTP status {status}"
-                        )
 
                     wait_for_results(
                         page,
@@ -772,25 +759,30 @@ def crawl_source(
                     title = page.title()
                     current_url = page.url
 
-                    if "signin.ebay." in current_url.casefold():
-                        raise RuntimeError(
-                            "eBay unexpectedly redirected the anonymous "
-                            "completed-search page to sign-in."
+                    try:
+                        body = page.locator(
+                            "body"
+                        ).inner_text(
+                            timeout=5_000
                         )
+                    except Exception:
+                        body = html
 
-                    count = listing_count(html)
-
-                    reason = blocked_reason(
-                        page,
-                        title,
-                        current_url,
-                        count,
+                    page_result = classify_ebay_page(
+                        status_code=status,
+                        title=title,
+                        body=body,
                     )
 
-                    if reason:
+                    if (
+                        page_result.state
+                        is MarketplaceAccessState.ACCESS_BLOCKED
+                    ):
                         stats.blocked_sources += 1
 
-                        diagnostic_dir = Path("logs")
+                        diagnostic_dir = Path(
+                            "logs"
+                        )
                         diagnostic_dir.mkdir(
                             parents=True,
                             exist_ok=True,
@@ -806,7 +798,9 @@ def crawl_source(
                         )
 
                         page.screenshot(
-                            path=str(screenshot_path),
+                            path=str(
+                                screenshot_path
+                            ),
                             full_page=True,
                         )
                         html_path.write_text(
@@ -815,10 +809,27 @@ def crawl_source(
                         )
 
                         raise RuntimeError(
-                            "Verification or block page "
-                            f"detected: {reason}. "
-                            f"Screenshot: {screenshot_path}"
+                            page_result.message
+                            + " "
+                            + f"Screenshot: {screenshot_path}"
                         )
+
+                    if (
+                        page_result.state
+                        is MarketplaceAccessState.UNKNOWN_ERROR
+                    ):
+                        raise RuntimeError(
+                            page_result.message
+                        )
+
+                    if "signin.ebay." in current_url.casefold():
+                        raise RuntimeError(
+                            "eBay unexpectedly redirected the anonymous "
+                            "completed-search page to sign-in."
+                        )
+
+                    count = listing_count(html)
+
 
                     digest = hashlib.sha256(
                         html.encode("utf-8")

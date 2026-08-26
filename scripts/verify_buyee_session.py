@@ -19,6 +19,16 @@ from playwright.sync_api import (
     sync_playwright,
 )
 from auction_etl.browser.buyee_cdp import open_buyee_context
+from scripts.buyee_http_session import (
+    BuyeeHttpSessionError,
+    BuyeeHttpState,
+    fetch_closed_watchlist,
+)
+from scripts.marketplace_access import (
+    MarketplaceAccessState,
+    MarketplacePageResult,
+    classify_buyee_page,
+)
 
 
 DEFAULT_TARGET_URL = (
@@ -42,7 +52,231 @@ AUTH_MARKERS = (
 MAX_NAVIGATION_TIMEOUT_MS = 15_000
 VERIFICATION_TIMEOUT_EXIT_CODE = 3
 ACCESS_BLOCKED_EXIT_CODE = 4
+MAINTENANCE_EXIT_CODE = 5
 # BUYEE_VERIFIER_ACCESS_BLOCKED_CONTRACT_V2
+# BUYEE_VERIFIER_MAINTENANCE_CONTRACT_V1
+
+
+def default_storage_state_path() -> Path:
+    """Return the preferred private Buyee storage-state path."""
+    configured = os.environ.get(
+        "BUYEE_STORAGE_STATE_FILE",
+        "",
+    ).strip()
+
+    if configured:
+        return Path(configured).expanduser()
+
+    railway_path = Path(
+        "/data/private/buyee-storage-state.json"
+    )
+
+    if railway_path.is_file():
+        return railway_path
+
+    return (
+        Path.home()
+        / ".auction-etl"
+        / "private"
+        / "buyee-storage-state.json"
+    )
+
+
+def save_http_evidence(
+    *,
+    evidence_dir: Path,
+    body: str,
+    links: tuple[str, ...],
+    suffix: str,
+) -> None:
+    """Save non-secret HTTP response evidence."""
+    evidence_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    (
+        evidence_dir
+        / f"buyee-{suffix}.html"
+    ).write_text(
+        body,
+        encoding="utf-8",
+    )
+
+    (
+        evidence_dir
+        / "candidate-links.txt"
+    ).write_text(
+        "".join(
+            f"{link}\n"
+            for link in links
+        ),
+        encoding="utf-8",
+    )
+
+
+def verify_saved_http_session(
+    *,
+    storage_state_path: Path,
+    status_file: Path,
+    evidence_dir: Path,
+) -> int | None:
+    """Verify Buyee directly over HTTPS when saved state exists."""
+    if not storage_state_path.is_file():
+        return None
+
+    try:
+        result = fetch_closed_watchlist(
+            storage_state_path=storage_state_path,
+        )
+    except BuyeeHttpSessionError as exc:
+        write_json_atomic(
+            status_file,
+            status_payload(
+                state="failed",
+                message=(
+                    "Buyee saved HTTPS session could not be used."
+                ),
+                evidence_dir=evidence_dir,
+                error=str(exc),
+            ),
+        )
+
+        print(
+            "ERROR: Buyee saved HTTPS session failed: "
+            + str(exc)
+        )
+        return 1
+
+    if result.state is BuyeeHttpState.AUTHENTICATED:
+        save_http_evidence(
+            evidence_dir=evidence_dir,
+            body=result.body,
+            links=result.auction_links,
+            suffix="verified-http",
+        )
+
+        write_json_atomic(
+            status_file,
+            status_payload(
+                state="success",
+                message=(
+                    "Buyee authentication and closed watchlist "
+                    "verified over HTTPS."
+                ),
+                evidence_dir=evidence_dir,
+                candidate_count=len(
+                    result.auction_links
+                ),
+                url=result.final_url,
+            ),
+        )
+
+        print()
+        print("Buyee HTTPS session verified")
+        print("============================")
+        print(
+            f"URL          : {result.final_url}"
+        )
+        print(
+            "Auction links: "
+            f"{len(result.auction_links)}"
+        )
+        print(
+            f"Evidence     : {evidence_dir}"
+        )
+        return 0
+
+    if result.state is BuyeeHttpState.AUTHENTICATION_REQUIRED:
+        save_http_evidence(
+            evidence_dir=evidence_dir,
+            body=result.body,
+            links=(),
+            suffix="authentication-required",
+        )
+
+        write_json_atomic(
+            status_file,
+            status_payload(
+                state="authentication_required",
+                message=(
+                    "Buyee saved session requires authentication."
+                ),
+                evidence_dir=evidence_dir,
+                url=result.final_url,
+                error=result.state.value,
+            ),
+        )
+        return 2
+
+    if result.state is BuyeeHttpState.ACCESS_BLOCKED:
+        save_http_evidence(
+            evidence_dir=evidence_dir,
+            body=result.body,
+            links=(),
+            suffix="access-blocked",
+        )
+
+        write_json_atomic(
+            status_file,
+            status_payload(
+                state="access_blocked",
+                message=(
+                    "Buyee HTTPS access is blocked."
+                ),
+                evidence_dir=evidence_dir,
+                url=result.final_url,
+                error=result.state.value,
+            ),
+        )
+        return ACCESS_BLOCKED_EXIT_CODE
+
+    if result.state is BuyeeHttpState.MAINTENANCE:
+        save_http_evidence(
+            evidence_dir=evidence_dir,
+            body=result.body,
+            links=(),
+            suffix="maintenance",
+        )
+
+        write_json_atomic(
+            status_file,
+            status_payload(
+                state="maintenance",
+                message=(
+                    "Buyee maintenance was detected."
+                ),
+                evidence_dir=evidence_dir,
+                url=result.final_url,
+                error=result.state.value,
+            ),
+        )
+        return MAINTENANCE_EXIT_CODE
+
+    save_http_evidence(
+        evidence_dir=evidence_dir,
+        body=result.body,
+        links=result.auction_links,
+        suffix="indeterminate",
+    )
+
+    write_json_atomic(
+        status_file,
+        status_payload(
+            state="failed",
+            message=(
+                "Buyee HTTPS session state was indeterminate."
+            ),
+            evidence_dir=evidence_dir,
+            candidate_count=len(
+                result.auction_links
+            ),
+            url=result.final_url,
+            error=result.state.value,
+        ),
+    )
+
+    return 1
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -53,6 +287,11 @@ def parse_arguments() -> argparse.Namespace:
         description=(
             "Verify an authenticated Buyee closed-watchlist session."
         ),
+    )
+    parser.add_argument(
+        "--storage-state",
+        type=Path,
+        default=default_storage_state_path(),
     )
     parser.add_argument(
         "--profile-dir",
@@ -178,34 +417,47 @@ def navigation_timeout_ms(deadline: float) -> int:
 
 
 
-def access_block_reason(page: Page) -> str | None:
-    """Return a stable reason for a rendered Buyee access-denied page."""
+def marketplace_page_result(
+    page: Page,
+    status_code: int | None = None,
+) -> MarketplacePageResult:
+    """Classify the currently rendered Buyee page."""
     try:
         title = page.title().strip()
-    except Exception:
+    except PlaywrightError:
         title = ""
 
     try:
-        document = page.content()
-    except Exception:
-        document = ""
+        body = page.locator("body").inner_text(
+            timeout=5_000
+        )
+    except PlaywrightError:
+        try:
+            body = page.content()
+        except PlaywrightError:
+            body = ""
 
-    combined = (
-        title
-        + "\n"
-        + document
-    ).casefold()
-
-    markers = (
-        "403 forbidden",
-        "access denied",
+    return classify_buyee_page(
+        status_code=status_code,
+        title=title,
+        body=body,
     )
 
-    for blocked_marker in markers:
-        if blocked_marker in combined:
-            return blocked_marker
 
-    return None
+def navigation_status_for_page(
+    *,
+    page: Page,
+    navigation_url: str | None,
+    navigation_status: int | None,
+) -> int | None:
+    """Use an HTTP status only while it still belongs to this page URL."""
+    if (
+        navigation_url is None
+        or page.url != navigation_url
+    ):
+        return None
+
+    return navigation_status
 
 
 def auction_links(page: Page) -> list[str]:
@@ -325,6 +577,19 @@ def main() -> int:
         )
     )
 
+    storage_state_path = (
+        arguments.storage_state.expanduser().resolve()
+    )
+
+    http_verification = verify_saved_http_session(
+        storage_state_path=storage_state_path,
+        status_file=status_file,
+        evidence_dir=evidence_dir,
+    )
+
+    if http_verification is not None:
+        return http_verification
+
     if not profile_dir.is_dir():
         write_json_atomic(
             status_file,
@@ -369,16 +634,14 @@ def main() -> int:
             try:
                 page = current_page(context)
 
-                blocked_reason = access_block_reason(
+                initial_result = marketplace_page_result(
                     page
                 )
 
-                if blocked_reason is not None:
-                    blocked_message = (
-                        "Buyee access was blocked before "
-                        "authentication state could be determined."
-                    )
-
+                if (
+                    initial_result.state
+                    is MarketplaceAccessState.ACCESS_BLOCKED
+                ):
                     save_evidence(
                         page,
                         evidence_dir,
@@ -390,30 +653,68 @@ def main() -> int:
                         status_file,
                         status_payload(
                             state="access_blocked",
-                            message=blocked_message,
+                            message=initial_result.message,
                             evidence_dir=evidence_dir,
                             url=page.url,
-                            error=blocked_reason,
+                            error=initial_result.state.value,
                         ),
                     )
 
                     print(
                         "ERROR: "
-                        + blocked_message
-                        + " "
-                        + f"Reason: {blocked_reason}"
+                        + initial_result.message
                     )
 
                     return ACCESS_BLOCKED_EXIT_CODE
 
+                if (
+                    initial_result.state
+                    is MarketplaceAccessState.MAINTENANCE
+                ):
+                    save_evidence(
+                        page,
+                        evidence_dir,
+                        [],
+                        "maintenance",
+                    )
+
+                    write_json_atomic(
+                        status_file,
+                        status_payload(
+                            state="maintenance",
+                            message=initial_result.message,
+                            evidence_dir=evidence_dir,
+                            url=page.url,
+                            error=initial_result.state.value,
+                        ),
+                    )
+
+                    print(
+                        "NOTICE: "
+                        + initial_result.message
+                    )
+
+                    return MAINTENANCE_EXIT_CODE
+
+                navigation_status: int | None = None
+                navigation_url: str | None = None
+
                 try:
-                    page.goto(
+                    response = page.goto(
                         arguments.target_url,
                         wait_until="domcontentloaded",
                         timeout=navigation_timeout_ms(deadline),
                     )
+
+                    navigation_status = (
+                        response.status
+                        if response is not None
+                        else None
+                    )
+                    navigation_url = page.url
                 except PlaywrightTimeoutError:
-                    pass
+                    navigation_status = None
+                    navigation_url = None
 
                 target_seen_at: float | None = None
                 last_navigation = 0.0
@@ -421,16 +722,19 @@ def main() -> int:
                 while time.monotonic() < deadline:
                     page = current_page(context)
 
-                    blocked_reason = access_block_reason(
-                        page
+                    page_result = marketplace_page_result(
+                        page,
+                        navigation_status_for_page(
+                            page=page,
+                            navigation_url=navigation_url,
+                            navigation_status=navigation_status,
+                        ),
                     )
 
-                    if blocked_reason is not None:
-                        blocked_message = (
-                            "Buyee access was blocked before "
-                            "authentication state could be determined."
-                        )
-
+                    if (
+                        page_result.state
+                        is MarketplaceAccessState.ACCESS_BLOCKED
+                    ):
                         save_evidence(
                             page,
                             evidence_dir,
@@ -442,21 +746,48 @@ def main() -> int:
                             status_file,
                             status_payload(
                                 state="access_blocked",
-                                message=blocked_message,
+                                message=page_result.message,
                                 evidence_dir=evidence_dir,
                                 url=page.url,
-                                error=blocked_reason,
+                                error=page_result.state.value,
                             ),
                         )
 
                         print(
                             "ERROR: "
-                            + blocked_message
-                            + " "
-                            + f"Reason: {blocked_reason}"
+                            + page_result.message
                         )
 
                         return ACCESS_BLOCKED_EXIT_CODE
+
+                    if (
+                        page_result.state
+                        is MarketplaceAccessState.MAINTENANCE
+                    ):
+                        save_evidence(
+                            page,
+                            evidence_dir,
+                            [],
+                            "maintenance",
+                        )
+
+                        write_json_atomic(
+                            status_file,
+                            status_payload(
+                                state="maintenance",
+                                message=page_result.message,
+                                evidence_dir=evidence_dir,
+                                url=page.url,
+                                error=page_result.state.value,
+                            ),
+                        )
+
+                        print(
+                            "NOTICE: "
+                            + page_result.message
+                        )
+
+                        return MAINTENANCE_EXIT_CODE
 
                     if page.is_closed():
                         raise RuntimeError(
@@ -504,15 +835,23 @@ def main() -> int:
                             last_navigation = now
 
                             try:
-                                page.goto(
+                                response = page.goto(
                                     arguments.target_url,
                                     wait_until=(
                                         "domcontentloaded"
                                     ),
                                     timeout=navigation_timeout_ms(deadline),
                                 )
+
+                                navigation_status = (
+                                    response.status
+                                    if response is not None
+                                    else None
+                                )
+                                navigation_url = page.url
                             except PlaywrightTimeoutError:
-                                pass
+                                navigation_status = None
+                                navigation_url = None
 
                         page.wait_for_timeout(2_000)
                         continue
