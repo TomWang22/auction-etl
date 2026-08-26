@@ -2447,6 +2447,10 @@ def main() -> int:
                     sys.executable,
                     "scripts/enrich_gripsweat_details.py",
                     "--apply",
+                    "--probe",
+                    str(
+                        probe_path
+                    ),
                     "--delay",
                     "2",
                     "--wait-seconds",
