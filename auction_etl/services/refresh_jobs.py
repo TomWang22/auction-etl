@@ -2140,6 +2140,34 @@ def refresh_job_to_ui_status(
             phase = marketplace
             break
 
+    terminal_states = {
+        "done",
+        "failed",
+        "unavailable",
+    }
+
+    terminal_count = sum(
+        marketplace_state
+        in terminal_states
+        for marketplace_state
+        in marketplace_states.values()
+    )
+
+    progress = int(
+        (
+            terminal_count
+            / len(MARKETPLACES)
+        )
+        * 100
+    )
+
+    if (
+        state == "running"
+        and terminal_count
+        == len(MARKETPLACES)
+    ):
+        phase = "Finalizing"
+
     return {
         "schema":
             "auction-refresh-job/postgres-v1",
@@ -2196,8 +2224,14 @@ def refresh_job_to_ui_status(
                 )
                 or 0
             ),
+        "progress":
+            progress,
         "marketplace_states":
             marketplace_states,
+        "source_states":
+            dict(
+                marketplace_states
+            ),
         "summary": {
             "marketplaces":
                 summary_marketplaces,

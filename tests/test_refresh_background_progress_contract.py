@@ -59,18 +59,15 @@ def function_block(
     )
 
 
-def test_buyee_owner_runs_headed_offscreen() -> None:
-    """Persistent production owner stays headed but offscreen."""
-
+def test_buyee_owner_supports_cloud_headless_mode() -> None:
+    """Persistent owner must honor the Railway headless setting."""
     value = source(
         OWNER
     )
 
     assert "launch_persistent_context(" in value
-    assert "headless=False" in value
-    assert "BUYEE_OWNER_HEADLESS=false" in value
-    assert '"headless": False' in value
-    assert '"--window-position=-32000,-32000"' in value
+    assert "AUCTION_BUYEE_HEADLESS" in value
+    assert "headless=headless" in value
 
 
 def test_owner_health_still_proves_browser_liveness() -> None:

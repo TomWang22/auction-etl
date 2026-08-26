@@ -247,6 +247,57 @@ def load_retained_rate(
     )
 
 
+def load_persisted_rate(
+    connection: Connection,
+) -> ExchangeRate | None:
+    """Load the newest positive JPY/USD rate already stored in PostgreSQL."""
+    row = connection.execute(
+        text(
+            """
+            SELECT
+                fx_rate_to_usd,
+                fx_rate_date,
+                COUNT(*) AS usage_count
+            FROM warehouse.auction
+            WHERE fx_rate_to_usd IS NOT NULL
+              AND fx_rate_to_usd > 0
+            GROUP BY
+                fx_rate_to_usd,
+                fx_rate_date
+            ORDER BY
+                fx_rate_date DESC NULLS LAST,
+                COUNT(*) DESC,
+                fx_rate_to_usd DESC
+            LIMIT 1
+            """
+        )
+    ).mappings().one_or_none()
+
+    if row is None:
+        return None
+
+    rate = parse_decimal(
+        row["fx_rate_to_usd"]
+    )
+
+    if rate is None:
+        return None
+
+    observed_date = parse_date(
+        row["fx_rate_date"]
+    )
+
+    return ExchangeRate(
+        rate=rate,
+        rate_date=(
+            observed_date
+            if observed_date is not None
+            else date.today()
+        ),
+        source="warehouse.auction",
+    )
+
+
 def resolve_exchange_rate(
     *,
     explicit_rate: Decimal | None,
@@ -683,25 +734,6 @@ def main(
         arguments
     )
 
-    exchange_rate = resolve_exchange_rate(
-        explicit_rate=options.rate,
-        explicit_date=options.rate_date,
-        source_csv=options.source_csv,
-    )
-
-    print()
-    print("JPY to USD exchange rate")
-    print("========================")
-    print(
-        f"Rate  : {exchange_rate.rate}"
-    )
-    print(
-        f"Date  : {exchange_rate.rate_date}"
-    )
-    print(
-        f"Source: {exchange_rate.source}"
-    )
-
     engine = build_engine(
         options.database_url
     )
@@ -717,6 +749,44 @@ def main(
                     options.expected_database_user
                 ),
             )
+
+            if options.rate is not None:
+                exchange_rate = resolve_exchange_rate(
+                    explicit_rate=options.rate,
+                    explicit_date=options.rate_date,
+                    source_csv=options.source_csv,
+                )
+            else:
+                exchange_rate = load_persisted_rate(
+                    connection
+                )
+
+                if exchange_rate is None:
+                    exchange_rate = resolve_exchange_rate(
+                        explicit_rate=None,
+                        explicit_date=options.rate_date,
+                        source_csv=options.source_csv,
+                    )
+                elif options.rate_date is not None:
+                    exchange_rate = ExchangeRate(
+                        rate=exchange_rate.rate,
+                        rate_date=options.rate_date,
+                        source=exchange_rate.source,
+                    )
+
+            print()
+            print("JPY to USD exchange rate")
+            print("========================")
+            print(
+                f"Rate  : {exchange_rate.rate}"
+            )
+            print(
+                f"Date  : {exchange_rate.rate_date}"
+            )
+            print(
+                f"Source: {exchange_rate.source}"
+            )
+
             ensure_columns(connection)
 
             rate_rows, value_rows = apply_rate(
