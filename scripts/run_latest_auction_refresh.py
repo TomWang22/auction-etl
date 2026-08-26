@@ -1676,20 +1676,14 @@ def main() -> int:
             _, buyee_crawl_output = run_command(
                 [
                     sys.executable,
-                    "scripts/run_buyee_owner_job.py",
-                    "--socket-path",
-                    str(
-                        buyee_owner_socket
+                    "scripts/crawl_buyee_http.py",
+                    "--state-file",
+                    environment.get(
+                        "AUCTION_BUYEE_STORAGE_STATE",
+                        "/data/private/buyee-storage-state.json",
                     ),
-                    "--timeout-seconds",
-                    "900",
-                    "crawl_closed_watchlist",
-                    "--",
-                    "crawl",
-                    "url",
+                    "--url",
                     BUYEE_URL,
-                    "--profile",
-                    arguments.buyee_profile,
                 ],
                 root=root,
                 environment=environment,

@@ -37,7 +37,8 @@ def test_runner_uses_internal_owner_for_all_buyee_browser_jobs() -> None:
     assert "scripts/ensure_buyee_owner.py" in source
     assert "scripts/run_buyee_owner_job.py" in source
     assert '"verify_closed_watchlist"' in source
-    assert '"crawl_closed_watchlist"' in source
+    assert "scripts/crawl_buyee_http.py" in source
+    assert '"crawl_closed_watchlist"' not in source
     assert '"crawl_live_details"' in source
     assert "scripts/ensure_buyee_cdp_browser.py" not in source
     assert 'environment["AUCTION_BUYEE_CDP_URL"] = (' not in source
