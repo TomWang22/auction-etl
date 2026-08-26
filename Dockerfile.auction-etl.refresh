@@ -12,12 +12,33 @@ RUN apt-get update \
     && apt-get install \
         --yes \
         --no-install-recommends \
-        build-essential \
         ca-certificates \
         curl \
+        gnupg \
+    && install -d -m 0755 /usr/share/keyrings \
+    && curl \
+        --fail \
+        --show-error \
+        --silent \
+        --location \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor \
+            --yes \
+            --output /usr/share/keyrings/postgresql-pgdg.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/postgresql-pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/postgresql-pgdg.list \
+    && apt-get update \
+    && apt-get install \
+        --yes \
+        --no-install-recommends \
+        build-essential \
         git \
         libpq-dev \
-        postgresql-client \
+        postgresql-client-18 \
+    && pg_dump --version \
+        | grep -E '^pg_dump \(PostgreSQL\) 18\.' \
+    && psql --version \
+        | grep -E '^psql \(PostgreSQL\) 18\.' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /app
