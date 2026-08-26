@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -566,6 +567,31 @@ def render_technical_details(
 
 
 
+
+def deployment_revision() -> str:
+    """Return the deployed Git revision when available."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--short=12",
+                "HEAD",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (
+        OSError,
+        subprocess.SubprocessError,
+    ):
+        return "unknown"
+
+    return result.stdout.strip() or "unknown"
+
+
 def render_status(
     status: dict[str, Any],
 ) -> None:
@@ -607,6 +633,14 @@ def render_status(
 
     st.subheader(
         "Latest refresh"
+    )
+
+    st.caption(
+        "App revision: "
+        f"{deployment_revision()} · "
+        f"job={status.get('job_id', 'unknown')} · "
+        f"progress={progress} · "
+        f"execution={status.get('execution_progress', 'unknown')}"
     )
 
     display_phase = phase
