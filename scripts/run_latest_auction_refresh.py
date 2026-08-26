@@ -272,6 +272,45 @@ def emit_source_state(
         status,
     )
 
+    diagnostic = {
+        "message":
+            str(
+                status.get(
+                    "message",
+                    "",
+                )
+                or ""
+            ),
+        "source_state":
+            status.get(
+                f"{source_key}_source_state"
+            ),
+        "runtime_semantics":
+            status.get(
+                f"{source_key}_runtime_semantics"
+            ),
+    }
+
+    if source_key == "buyee":
+        diagnostic[
+            "verifier_exit_code"
+        ] = status.get(
+            "buyee_verifier_exit_code"
+        )
+
+    logger.info(
+        "AUCTION_SOURCE_DIAGNOSTIC source=%s payload=%s",
+        source,
+        json.dumps(
+            diagnostic,
+            sort_keys=True,
+            separators=(
+                ",",
+                ":",
+            ),
+        ),
+    )
+
 
 
 def run_command(

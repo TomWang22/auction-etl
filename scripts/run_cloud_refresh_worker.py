@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import signal
@@ -47,6 +48,12 @@ SOURCE_STATE_PATTERN = re.compile(
     r"^AUCTION_SOURCE_STATE "
     r"source=(?P<source>\S+) "
     r"state=(?P<state>\S+)"
+)
+
+SOURCE_DIAGNOSTIC_PATTERN = re.compile(
+    r"^AUCTION_SOURCE_DIAGNOSTIC "
+    r"source=(?P<source>\S+) "
+    r"payload=(?P<payload>\{.*\})$"
 )
 
 COUNTER_PATTERN = re.compile(
@@ -433,6 +440,47 @@ def parse_source_state(
     )
 
 
+def parse_source_diagnostic(
+    line: str,
+) -> tuple[str, dict[str, object]] | None:
+    """Parse one structured canonical marketplace diagnostic."""
+    match = SOURCE_DIAGNOSTIC_PATTERN.search(
+        line.strip()
+    )
+
+    if match is None:
+        return None
+
+    marketplace = normalize_source(
+        match.group(
+            "source"
+        )
+    )
+
+    if marketplace is None:
+        return None
+
+    try:
+        payload = json.loads(
+            match.group(
+                "payload"
+            )
+        )
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        return None
+
+    return (
+        marketplace,
+        payload,
+    )
+
+
 def parse_progress_counters(
     line: str,
 ) -> dict[str, int]:
@@ -707,6 +755,67 @@ class DurableProgress:
                     "Marketplace "
                     f"{state}."
                 ),
+                **self._counters[
+                    marketplace
+                ],
+            )
+
+            return
+
+        source_diagnostic = (
+            parse_source_diagnostic(
+                line
+            )
+        )
+
+        if source_diagnostic is not None:
+            marketplace, diagnostic = (
+                source_diagnostic
+            )
+
+            current_state = self._states[
+                marketplace
+            ]
+
+            message = str(
+                diagnostic.get(
+                    "message",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            error: str | None = None
+
+            if current_state in {
+                "failed",
+                "skipped",
+            }:
+                error = json.dumps(
+                    diagnostic,
+                    sort_keys=True,
+                    separators=(
+                        ",",
+                        ":",
+                    ),
+                )
+
+            update_marketplace_state(
+                self._engine,
+                job_id=self._job_id,
+                worker_id=(
+                    self._worker_id
+                ),
+                marketplace=marketplace,
+                state=current_state,
+                message=(
+                    message
+                    or (
+                        "Marketplace "
+                        f"{current_state}."
+                    )
+                ),
+                error=error,
                 **self._counters[
                     marketplace
                 ],
