@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import socket
+
 import argparse
 import contextlib
 import importlib
@@ -753,6 +755,96 @@ class OwnerRequestHandler(
         self.wfile.flush()
 
 
+
+def clear_stale_chromium_profile_locks(
+    profile_dir: Path,
+) -> None:
+    """Remove stale Chromium singleton files left by old cloud containers."""
+    enabled = (
+        os.environ.get(
+            "AUCTION_BUYEE_CLEAR_STALE_PROFILE_LOCKS",
+            "",
+        )
+        .strip()
+        .casefold()
+        in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    )
+
+    if not enabled:
+        return
+
+    lock_path = profile_dir / "SingletonLock"
+
+    if not lock_path.is_symlink():
+        return
+
+    try:
+        target = os.readlink(
+            lock_path
+        )
+    except OSError:
+        return
+
+    hostname, separator, pid_text = target.rpartition(
+        "-"
+    )
+
+    current_hostname = socket.gethostname()
+
+    if (
+        separator
+        and hostname == current_hostname
+        and pid_text.isdigit()
+    ):
+        pid = int(
+            pid_text
+        )
+
+        try:
+            os.kill(
+                pid,
+                0,
+            )
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            raise RuntimeError(
+                "Chromium profile lock belongs to an inaccessible "
+                f"process {pid} in this container."
+            ) from exc
+        else:
+            raise RuntimeError(
+                "Chromium profile is already in use by live process "
+                f"{pid} in this container."
+            )
+
+    for name in (
+        "SingletonLock",
+        "SingletonCookie",
+        "SingletonSocket",
+    ):
+        candidate = profile_dir / name
+
+        try:
+            candidate.unlink(
+                missing_ok=True
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not remove stale Chromium profile lock: {candidate}"
+            ) from exc
+
+    print(
+        "BUYEE_OWNER_STALE_PROFILE_LOCKS_CLEARED=true",
+        flush=True,
+    )
+
+
 def main() -> int:
     """Launch one persistent headed/offscreen Buyee owner."""
 
@@ -766,6 +858,10 @@ def main() -> int:
         arguments.socket_path
         .expanduser()
         .resolve()
+    )
+
+    clear_stale_chromium_profile_locks(
+        profile_dir
     )
     headless = (
         os.environ.get(
