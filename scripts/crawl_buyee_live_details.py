@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass
@@ -27,7 +28,8 @@ from auction_etl.database.session import engine
 from auction_etl.browser.buyee_cdp import open_buyee_context
 
 
-DATABASE_NAME = "auction_warehouse"
+DEFAULT_EXPECTED_DATABASE_NAME = "auction_warehouse"
+DEFAULT_EXPECTED_DATABASE_USER = "auction"
 JAPAN_TIMEZONE = ZoneInfo("Asia/Tokyo")
 DEFAULT_LOG_DIR = Path("logs/buyee/live-detail")
 TAX_RATE = Decimal("0.10")
@@ -152,6 +154,31 @@ def parse_arguments() -> argparse.Namespace:
 
     return arguments
 
+
+
+def expected_database_identity() -> tuple[str, str]:
+    """Return the database identity authorized for write operations."""
+    database_name = os.environ.get(
+        "AUCTION_EXPECTED_DATABASE_NAME",
+        DEFAULT_EXPECTED_DATABASE_NAME,
+    ).strip()
+
+    database_user = os.environ.get(
+        "AUCTION_EXPECTED_DATABASE_USER",
+        DEFAULT_EXPECTED_DATABASE_USER,
+    ).strip()
+
+    if not database_name:
+        raise RuntimeError(
+            "AUCTION_EXPECTED_DATABASE_NAME cannot be empty."
+        )
+
+    if not database_user:
+        raise RuntimeError(
+            "AUCTION_EXPECTED_DATABASE_USER cannot be empty."
+        )
+
+    return database_name, database_user
 
 
 def normalize_space(value: str | None) -> str | None:
@@ -599,15 +626,29 @@ def ensure_schema() -> None:
         """,
     )
 
+    expected_database_name, expected_database_user = (
+        expected_database_identity()
+    )
+
     with engine.begin() as connection:
         database_name = connection.execute(
             text("SELECT current_database()")
         ).scalar_one()
 
-        if database_name != DATABASE_NAME:
+        database_user = connection.execute(
+            text("SELECT current_user")
+        ).scalar_one()
+
+        if database_name != expected_database_name:
             raise RuntimeError(
                 "Refusing to modify unexpected database: "
-                f"{database_name}"
+                f"{database_name}; expected {expected_database_name}."
+            )
+
+        if database_user != expected_database_user:
+            raise RuntimeError(
+                "Refusing to modify database as unexpected user: "
+                f"{database_user}; expected {expected_database_user}."
             )
 
         for statement in statements:
