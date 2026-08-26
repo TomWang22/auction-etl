@@ -674,6 +674,22 @@ def enabled_ebay_sources(
     return list(dict.fromkeys(names))
 
 
+def ebay_access_blocked(
+    return_code: int,
+    output: str,
+) -> bool:
+    """Return whether the eBay crawler was blocked by HTTP 403."""
+    if return_code == 0:
+        return False
+
+    normalized = output.casefold()
+
+    return (
+        "blocked http status 403"
+        in normalized
+    )
+
+
 def staging_count(
     connection: psycopg.Connection,
     marketplace: str,
@@ -1822,6 +1838,8 @@ def main() -> int:
             status=status,
         )
 
+        ebay_available = True
+
         for source_name in enabled_ebay_sources(
             root / "config" / "ebay_sources.json"
         ):
@@ -1836,7 +1854,7 @@ def main() -> int:
                 )
             )
 
-            run_command(
+            crawl_status, crawl_output = run_command(
                 [
                     sys.executable,
                     "scripts/crawl_ebay_sources.py",
@@ -1860,7 +1878,63 @@ def main() -> int:
                 phase=f"Crawl eBay source {source_name}",
                 status_file=status_file,
                 status=status,
+                allow_failure=True,
             )
+
+            if crawl_status != 0:
+                if ebay_access_blocked(
+                    crawl_status,
+                    crawl_output,
+                ):
+                    ebay_available = False
+
+                    status["ebay_source_state"] = (
+                        "unavailable_access_blocked"
+                    )
+                    status["ebay_runtime_semantics"] = (
+                        "EBAY_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
+                    )
+                    status["degraded"] = True
+                    status["message"] = (
+                        "eBay programmatic access is blocked; "
+                        "continuing Gripsweat refresh."
+                    )
+                    status["updated_at"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
+
+                    write_json_atomic(
+                        status_file,
+                        status,
+                    )
+
+                    logger.warning("")
+                    emit_source_state(
+                        logger,
+                        "eBay",
+                        "unavailable",
+                        status_file=status_file,
+                        status=status,
+                    )
+                    logger.warning(
+                        "eBay source unavailable: "
+                        "HTTP 403 access block."
+                    )
+                    logger.warning(
+                        "Skipping eBay parse, normalization, "
+                        "warehouse synchronization, and remaining "
+                        "eBay sources."
+                    )
+                    logger.warning(
+                        "Continuing Gripsweat refresh."
+                    )
+
+                    break
+
+                raise CommandFailure(
+                    f"Crawl eBay source {source_name} "
+                    f"exited with status {crawl_status}."
+                )
 
             _merge_incremental_progress(
                 status,
@@ -1940,13 +2014,19 @@ def main() -> int:
                 status=status,
             )
 
-        emit_source_state(
-            logger,
-            "eBay",
-            "done",
-            status_file=status_file,
-            status=status,
-        )
+        if ebay_available:
+            status["ebay_source_state"] = "available"
+            status["ebay_runtime_semantics"] = (
+                "EBAY_SOURCE_AVAILABLE"
+            )
+
+            emit_source_state(
+                logger,
+                "eBay",
+                "done",
+                status_file=status_file,
+                status=status,
+            )
 
         emit_source_state(
             logger,
