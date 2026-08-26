@@ -84,6 +84,8 @@ SOURCE_ICONS = {
         "✅",
     "failed":
         "❌",
+    "unknown":
+        "❔",
 }
 
 
@@ -212,10 +214,63 @@ def source_state_label(
 
         return "Processing"
 
+    if source_state == "unknown":
+        return "Status unavailable"
+
     return source_state.replace(
         "_",
         " ",
     ).title()
+
+
+def durable_source_states(
+    status: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Return normalized durable marketplace states."""
+
+    if not status:
+        return {}
+
+    raw_states = status.get(
+        "source_states"
+    )
+
+    if not isinstance(
+        raw_states,
+        dict,
+    ):
+        raw_states = status.get(
+            "marketplace_states"
+        )
+
+    if not isinstance(
+        raw_states,
+        dict,
+    ):
+        return {}
+
+    result: dict[str, str] = {}
+
+    for source in PLANNED_SOURCES:
+        raw_state = raw_states.get(
+            source
+        )
+
+        if raw_state is None:
+            continue
+
+        state = str(
+            raw_state
+        ).casefold()
+
+        if state == "skipped":
+            state = "unavailable"
+
+        result[
+            source
+        ] = state
+
+    return result
 
 
 def render_source_progress(
@@ -234,13 +289,8 @@ def render_source_progress(
         else ""
     )
 
-    source_states = (
-        status.get(
-            "source_states",
-            {},
-        )
-        if status
-        else {}
+    source_states = durable_source_states(
+        status
     )
 
     columns = st.columns(
@@ -254,10 +304,19 @@ def render_source_progress(
         PLANNED_SOURCES,
         strict=True,
     ):
-        state = str(
-            source_states.get(
-                source,
-                "waiting",
+        raw_state = source_states.get(
+            source
+        )
+
+        state = (
+            str(
+                raw_state
+            ).casefold()
+            if raw_state is not None
+            else (
+                "waiting"
+                if status is None
+                else "unknown"
             )
         )
 
@@ -284,9 +343,8 @@ def failed_sources(
 ) -> list[str]:
     """Return marketplace names currently marked failed."""
 
-    source_states = status.get(
-        "source_states",
-        {},
+    source_states = durable_source_states(
+        status
     )
 
     return [
@@ -303,9 +361,8 @@ def unavailable_sources(
 ) -> list[str]:
     """Return marketplaces unavailable during this refresh."""
 
-    source_states = status.get(
-        "source_states",
-        {},
+    source_states = durable_source_states(
+        status
     )
 
     return [
@@ -322,9 +379,8 @@ def all_sources_done(
 ) -> bool:
     """Return whether every marketplace completed successfully."""
 
-    source_states = status.get(
-        "source_states",
-        {},
+    source_states = durable_source_states(
+        status
     )
 
     return all(
@@ -553,13 +609,24 @@ def render_status(
         "Latest refresh"
     )
 
-    if state != "completed":
-        st.progress(
-            progress / 100.0,
-            text=(
-                f"{progress}% — {phase}"
-            ),
-        )
+    display_phase = phase
+
+    if state == "completed":
+        progress = 100
+
+        if (
+            not display_phase
+            or display_phase.casefold()
+            == "completed"
+        ):
+            display_phase = "Completed"
+
+    st.progress(
+        progress / 100.0,
+        text=(
+            f"{progress}% — {display_phase}"
+        ),
+    )
 
     render_source_progress(
         status

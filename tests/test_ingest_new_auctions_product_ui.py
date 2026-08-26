@@ -63,22 +63,17 @@ def test_page_compiles_and_uses_user_facing_refresh_copy() -> None:
     )
 
 
-def test_completed_refresh_does_not_need_a_redundant_progress_bar() -> None:
-    """Keep completed state focused on outcome rather than 100% mechanics."""
-
+def test_completed_refresh_keeps_final_progress_visible() -> None:
+    """Completed refreshes keep a visible final progress result."""
     source = PAGE.read_text(
         encoding="utf-8",
     )
 
-    assert (
-        'if state != "completed":'
-        in source
-    )
-
-    assert (
-        '"Latest refresh"'
-        in source
-    )
+    assert 'if state != "completed":' not in source
+    assert 'if state == "completed":' in source
+    assert "progress = 100" in source
+    assert 'display_phase = "Completed"' in source
+    assert "st.progress(" in source
 
 
 def test_technical_output_is_explicitly_advanced_and_secondary() -> None:
@@ -153,4 +148,53 @@ def test_internal_runner_copy_is_not_user_facing() -> None:
     assert (
         "Live ingestion log"
         not in source
+    )
+
+def test_ingest_page_supports_both_durable_state_contracts() -> None:
+    """Marketplace cards accept both durable refresh mappings."""
+    value = PAGE.read_text(
+        encoding="utf-8"
+    )
+
+    assert "def durable_source_states(" in value
+    assert '"source_states"' in value
+    assert '"marketplace_states"' in value
+    assert 'if state == "skipped":' in value
+    assert 'state = "unavailable"' in value
+
+
+def test_completed_refresh_keeps_progress_bar_visible() -> None:
+    """Completed refreshes retain a visible final progress result."""
+    value = PAGE.read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if state != "completed":' not in value
+    assert 'progress = 100' in value
+    assert 'display_phase = "Completed"' in value
+    assert "st.progress(" in value
+
+
+def test_missing_durable_source_state_is_not_fake_waiting() -> None:
+    """Missing persisted state is distinguishable from genuine waiting."""
+    value = PAGE.read_text(
+        encoding="utf-8"
+    )
+
+    assert '"unknown"' in value
+    assert 'return "Status unavailable"' in value
+    assert '"waiting"' in value
+
+
+def test_status_helpers_share_durable_source_state_normalization() -> None:
+    """Warnings and success logic use the same durable state mapping."""
+    value = PAGE.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        value.count(
+            "source_states = durable_source_states("
+        )
+        >= 4
     )
