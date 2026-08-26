@@ -123,6 +123,7 @@ def test_load_persisted_rate_uses_warehouse() -> None:
     )
     assert rate.source == "warehouse.auction"
     assert "warehouse.auction" in connection.sql
+    assert "marketplace = 'buyee'" in connection.sql
     assert "fx_rate_to_usd > 0" in connection.sql
 
 

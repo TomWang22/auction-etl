@@ -259,7 +259,8 @@ def load_persisted_rate(
                 fx_rate_date,
                 COUNT(*) AS usage_count
             FROM warehouse.auction
-            WHERE fx_rate_to_usd IS NOT NULL
+            WHERE marketplace = 'buyee'
+              AND fx_rate_to_usd IS NOT NULL
               AND fx_rate_to_usd > 0
             GROUP BY
                 fx_rate_to_usd,
