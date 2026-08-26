@@ -767,6 +767,20 @@ def main() -> int:
         .expanduser()
         .resolve()
     )
+    headless = (
+        os.environ.get(
+            "AUCTION_BUYEE_HEADLESS",
+            "",
+        )
+        .strip()
+        .casefold()
+        in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    )
 
     if not profile_dir.is_dir():
         raise RuntimeError(
@@ -813,7 +827,7 @@ def main() -> int:
                 executable_path=str(
                     executable
                 ),
-                headless=False,
+                headless=headless,
                 locale="en-US",
                 timezone_id="Asia/Tokyo",
                 viewport={
@@ -875,7 +889,7 @@ def main() -> int:
                     flush=True,
                 )
                 print(
-                    "BUYEE_OWNER_HEADLESS=false",
+                    f"BUYEE_OWNER_HEADLESS={str(headless).lower()}",
                     flush=True,
                 )
                 print(

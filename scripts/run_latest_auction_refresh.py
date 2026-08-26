@@ -1338,6 +1338,43 @@ def main() -> int:
         environment["AUCTION_BUYEE_PROFILE"] = (
             arguments.buyee_profile
         )
+
+        default_buyee_profile_dir = (
+            root
+            / "profiles"
+            / arguments.buyee_profile
+        ).resolve()
+
+        buyee_profile_dir = Path(
+            environment.get(
+                "AUCTION_BUYEE_PROFILE_DIR",
+                str(
+                    default_buyee_profile_dir
+                ),
+            )
+        ).expanduser()
+
+        if not buyee_profile_dir.is_absolute():
+            buyee_profile_dir = (
+                root
+                / buyee_profile_dir
+            )
+
+        buyee_profile_dir = (
+            buyee_profile_dir.resolve()
+        )
+
+        buyee_profile_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        environment[
+            "AUCTION_BUYEE_PROFILE_DIR"
+        ] = str(
+            buyee_profile_dir
+        )
+
         environment["AUCTION_BUYEE_OWNER_SOCKET"] = str(
             buyee_owner_socket
         )
@@ -1352,9 +1389,7 @@ def main() -> int:
                 "scripts/ensure_buyee_owner.py",
                 "--profile-dir",
                 str(
-                    root
-                    / "profiles"
-                    / arguments.buyee_profile
+                    buyee_profile_dir
                 ),
                 "--socket-path",
                 str(
@@ -1394,9 +1429,7 @@ def main() -> int:
                 "--",
                 "--profile-dir",
                 str(
-                    root
-                    / "profiles"
-                    / arguments.buyee_profile
+                    buyee_profile_dir
                 ),
                 "--headless",
                 "--timeout-minutes",
@@ -1730,9 +1763,7 @@ def main() -> int:
                     "--",
                     "--profile-dir",
                     str(
-                        root
-                        / "profiles"
-                        / arguments.buyee_profile
+                        buyee_profile_dir
                     ),
                     "--apply",
                     "--delay",
