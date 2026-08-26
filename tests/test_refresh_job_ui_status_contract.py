@@ -93,7 +93,8 @@ def test_ui_status_exposes_source_states_alias() -> None:
         == expected
     )
     assert status["phase"] == "ebay"
-    assert status["progress"] == 33
+    assert status["progress"] == 0
+    assert status["execution_progress"] == 33
 
 
 def test_ui_status_shows_finalizing_after_marketplaces_finish() -> None:
@@ -116,7 +117,8 @@ def test_ui_status_shows_finalizing_after_marketplaces_finish() -> None:
         "gripsweat":
             "done",
     }
-    assert status["progress"] == 100
+    assert status["progress"] == 33
+    assert status["execution_progress"] == 100
     assert status["phase"] == "Finalizing"
 
 
@@ -141,4 +143,36 @@ def test_failed_job_preserves_terminal_marketplace_states() -> None:
         "gripsweat":
             "done",
     }
-    assert status["progress"] == 100
+    assert status["progress"] == 33
+    assert status["execution_progress"] == 100
+
+
+def test_completed_partial_refresh_reports_one_third_success() -> None:
+    """Unavailable sources must not count as successful refresh progress."""
+    status = refresh_job_to_ui_status(
+        job(
+            state="completed",
+            marketplace_states=(
+                "skipped",
+                "skipped",
+                "done",
+            ),
+        )
+    )
+
+    assert status["marketplace_states"] == {
+        "buyee": "unavailable",
+        "ebay": "unavailable",
+        "gripsweat": "done",
+    }
+    assert status["source_states"] == {
+        "buyee": "unavailable",
+        "ebay": "unavailable",
+        "gripsweat": "done",
+    }
+    assert status["progress"] == 33
+    assert status["execution_progress"] == 100
+    assert (
+        status["phase"]
+        == "Finished with unavailable marketplaces"
+    )

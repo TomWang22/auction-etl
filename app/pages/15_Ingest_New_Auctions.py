@@ -611,15 +611,15 @@ def render_status(
 
     display_phase = phase
 
-    if state == "completed":
-        progress = 100
-
-        if (
+    if (
+        state == "completed"
+        and (
             not display_phase
             or display_phase.casefold()
             == "completed"
-        ):
-            display_phase = "Completed"
+        )
+    ):
+        display_phase = "Completed"
 
     st.progress(
         progress / 100.0,

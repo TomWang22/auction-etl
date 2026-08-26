@@ -2153,7 +2153,21 @@ def refresh_job_to_ui_status(
         in marketplace_states.values()
     )
 
+    successful_count = sum(
+        marketplace_state == "done"
+        for marketplace_state
+        in marketplace_states.values()
+    )
+
     progress = int(
+        (
+            successful_count
+            / len(MARKETPLACES)
+        )
+        * 100
+    )
+
+    execution_progress = int(
         (
             terminal_count
             / len(MARKETPLACES)
@@ -2167,6 +2181,24 @@ def refresh_job_to_ui_status(
         == len(MARKETPLACES)
     ):
         phase = "Finalizing"
+
+    if state == "completed":
+        unavailable_count = sum(
+            marketplace_state == "unavailable"
+            for marketplace_state
+            in marketplace_states.values()
+        )
+
+        failed_count = sum(
+            marketplace_state == "failed"
+            for marketplace_state
+            in marketplace_states.values()
+        )
+
+        if unavailable_count or failed_count:
+            phase = "Finished with unavailable marketplaces"
+        else:
+            phase = "Completed"
 
     return {
         "schema":
@@ -2226,6 +2258,8 @@ def refresh_job_to_ui_status(
             ),
         "progress":
             progress,
+        "execution_progress":
+            execution_progress,
         "marketplace_states":
             marketplace_states,
         "source_states":

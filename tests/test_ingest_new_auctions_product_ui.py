@@ -71,7 +71,7 @@ def test_completed_refresh_keeps_final_progress_visible() -> None:
 
     assert 'if state != "completed":' not in source
     assert 'if state == "completed":' in source
-    assert "progress = 100" in source
+    assert "progress = 100" not in source
     assert 'display_phase = "Completed"' in source
     assert "st.progress(" in source
 
@@ -170,7 +170,7 @@ def test_completed_refresh_keeps_progress_bar_visible() -> None:
     )
 
     assert 'if state != "completed":' not in value
-    assert 'progress = 100' in value
+    assert 'progress = 100' not in value
     assert 'display_phase = "Completed"' in value
     assert "st.progress(" in value
 
