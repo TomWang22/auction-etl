@@ -780,7 +780,7 @@ def unparsed_external_ebay_raw_page_count(
             FROM raw.page
             WHERE source = 'ebay'
               AND parsed_at IS NULL
-              AND url LIKE 'collector://ebay/%'
+              AND url LIKE 'collector://ebay/%%'
             """,
         )
     )
