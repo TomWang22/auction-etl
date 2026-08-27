@@ -845,6 +845,73 @@ def clear_stale_chromium_profile_locks(
     )
 
 
+
+def seed_authenticated_storage_state(
+    context: BrowserContext,
+    profile_dir: Path,
+) -> None:
+    """Seed the persistent owner from saved authenticated Buyee state."""
+
+    configured = os.environ.get(
+        "BUYEE_STORAGE_STATE_FILE",
+        "",
+    ).strip()
+
+    storage_state_path = (
+        Path(configured).expanduser()
+        if configured
+        else (
+            profile_dir
+            / ".auction-etl"
+            / "private"
+            / "buyee-storage-state.json"
+        )
+    )
+
+    if not storage_state_path.is_file():
+        print(
+            "BUYEE_OWNER_STORAGE_STATE=ABSENT",
+            flush=True,
+        )
+        return
+
+    payload = json.loads(
+        storage_state_path.read_text(
+            encoding="utf-8",
+        )
+    )
+
+    cookies = payload.get("cookies", [])
+
+    if not isinstance(cookies, list) or not cookies:
+        raise RuntimeError(
+            "Buyee storage state contains no cookies."
+        )
+
+    context.add_cookies(cookies)
+
+    installed_cookies = context.cookies()
+
+    print(
+        f"BUYEE_OWNER_STORAGE_STATE={storage_state_path}",
+        flush=True,
+    )
+    print(
+        "BUYEE_OWNER_STORAGE_STATE_COOKIE_COUNT="
+        f"{len(cookies)}",
+        flush=True,
+    )
+    print(
+        "BUYEE_OWNER_CONTEXT_COOKIE_COUNT="
+        f"{len(installed_cookies)}",
+        flush=True,
+    )
+    print(
+        "BUYEE_OWNER_STORAGE_STATE_SEEDED=true",
+        flush=True,
+    )
+
+
 def main() -> int:
     """Launch one persistent headed/offscreen Buyee owner."""
 
@@ -938,6 +1005,11 @@ def main() -> int:
                     "--window-size=1200,900",
                 ],
             )
+        )
+
+        seed_authenticated_storage_state(
+            context,
+            profile_dir,
         )
 
         context.on(

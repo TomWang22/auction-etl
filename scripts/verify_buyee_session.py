@@ -328,6 +328,35 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def persist_storage_state(
+    context: BrowserContext,
+    storage_state_path: Path,
+) -> None:
+    """Persist authenticated browser state atomically."""
+    storage_state_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temporary_path = storage_state_path.with_suffix(
+        storage_state_path.suffix + ".tmp"
+    )
+
+    context.storage_state(
+        path=str(temporary_path),
+    )
+
+    os.chmod(
+        temporary_path,
+        0o600,
+    )
+
+    temporary_path.replace(
+        storage_state_path,
+    )
+
+
+
 def write_json_atomic(
     path: Path,
     payload: dict[str, Any],
@@ -885,6 +914,11 @@ def main() -> int:
                     )
 
                     if links:
+                        persist_storage_state(
+                            context,
+                            storage_state_path,
+                        )
+
                         save_evidence(
                             page,
                             evidence_dir,
