@@ -768,6 +768,102 @@ def staging_count(
     )
 
 
+def unparsed_external_ebay_raw_page_count(
+    connection: psycopg.Connection,
+) -> int:
+    """Count pending raw pages created by the structured eBay importer."""
+    return int(
+        scalar(
+            connection,
+            """
+            SELECT COUNT(*)
+            FROM raw.page
+            WHERE source = 'ebay'
+              AND parsed_at IS NULL
+              AND url LIKE 'collector://ebay/%'
+            """,
+        )
+    )
+
+
+def process_ebay_raw_pages(
+    *,
+    root: Path,
+    environment: dict[str, str],
+    logger: logging.Logger,
+    status_file: Path,
+    status: dict[str, Any],
+    psql_url: str,
+    phase_label: str,
+) -> None:
+    """Parse, normalize, validate, and safely synchronize pending eBay pages."""
+    run_command(
+        [
+            sys.executable,
+            "-m",
+            "auction_etl.cli.main",
+            "parse",
+            "source",
+            "ebay",
+        ],
+        root=root,
+        environment=environment,
+        logger=logger,
+        phase=f"Parse eBay source {phase_label}",
+        status_file=status_file,
+        status=status,
+    )
+
+    run_command(
+        [
+            sys.executable,
+            "-m",
+            "auction_etl.cli.main",
+            "normalize",
+            "staging",
+        ],
+        root=root,
+        environment=environment,
+        logger=logger,
+        phase=f"Normalize eBay source {phase_label}",
+        status_file=status_file,
+        status=status,
+    )
+
+    with psycopg.connect(
+        psql_url,
+        row_factory=dict_row,
+    ) as connection:
+        ebay_staged = staging_count(
+            connection,
+            "ebay",
+        )
+
+    if ebay_staged < 1:
+        raise RuntimeError(
+            "No eBay identities exist in staging."
+        )
+
+    run_command(
+        [
+            sys.executable,
+            "-m",
+            "auction_etl.cli.main",
+            "sync",
+            "warehouse",
+            "--marketplace",
+            "ebay",
+            "--no-prune",
+        ],
+        root=root,
+        environment=environment,
+        logger=logger,
+        phase="Safely synchronize eBay without pruning",
+        status_file=status_file,
+        status=status,
+    )
+
+
 
 EBAY_KNOWN_STOP_THRESHOLD = 20
 GRIPSWEAT_KNOWN_STOP_THRESHOLD = 20
@@ -1954,190 +2050,158 @@ def main() -> int:
 
         ebay_available = True
 
-        for source_name in enabled_ebay_sources(
-            root / "config" / "ebay_sources.json"
-        ):
-            ebay_incremental_stats = (
-                run_dir
-                / (
-                    "ebay-incremental-"
-                    + _safe_incremental_name(
-                        source_name
-                    )
-                    + ".json"
+        with psycopg.connect(
+            psql_url,
+            row_factory=dict_row,
+        ) as connection:
+            pending_ebay_raw_pages = (
+                unparsed_external_ebay_raw_page_count(
+                    connection
                 )
             )
 
-            crawl_status, crawl_output = run_command(
-                [
-                    sys.executable,
-                    "scripts/crawl_ebay_sources.py",
-                    "--config",
-                    "config/ebay_sources.json",
-                    "--source",
-                    source_name,
-                    "--incremental-newest-first",
-                    "--known-stop-threshold",
-                    str(
-                        EBAY_KNOWN_STOP_THRESHOLD
-                    ),
-                    "--incremental-stats-file",
-                    str(
-                        ebay_incremental_stats
-                    ),
-                ],
+        if pending_ebay_raw_pages > 0:
+            logger.info(
+                "Using %d pending external eBay raw page(s); "
+                "browser crawl skipped.",
+                pending_ebay_raw_pages,
+            )
+
+            process_ebay_raw_pages(
                 root=root,
                 environment=environment,
                 logger=logger,
-                phase=f"Crawl eBay source {source_name}",
                 status_file=status_file,
                 status=status,
-                allow_failure=True,
+                psql_url=psql_url,
+                phase_label="external raw-page handoff",
             )
+        else:
+            for source_name in enabled_ebay_sources(
+                root / "config" / "ebay_sources.json"
+            ):
+                ebay_incremental_stats = (
+                    run_dir
+                    / (
+                        "ebay-incremental-"
+                        + _safe_incremental_name(
+                            source_name
+                        )
+                        + ".json"
+                    )
+                )
 
-            if crawl_status != 0:
-                if ebay_access_blocked(
-                    crawl_status,
-                    crawl_output,
-                ):
-                    ebay_available = False
+                crawl_status, crawl_output = run_command(
+                    [
+                        sys.executable,
+                        "scripts/crawl_ebay_sources.py",
+                        "--config",
+                        "config/ebay_sources.json",
+                        "--source",
+                        source_name,
+                        "--incremental-newest-first",
+                        "--known-stop-threshold",
+                        str(
+                            EBAY_KNOWN_STOP_THRESHOLD
+                        ),
+                        "--incremental-stats-file",
+                        str(
+                            ebay_incremental_stats
+                        ),
+                    ],
+                    root=root,
+                    environment=environment,
+                    logger=logger,
+                    phase=f"Crawl eBay source {source_name}",
+                    status_file=status_file,
+                    status=status,
+                    allow_failure=True,
+                )
 
-                    status["ebay_source_state"] = (
-                        "unavailable_access_blocked"
-                    )
-                    status["ebay_runtime_semantics"] = (
-                        "EBAY_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
-                    )
-                    status["degraded"] = True
-                    status["message"] = (
-                        "eBay programmatic access is blocked; "
-                        "continuing Gripsweat refresh."
-                    )
-                    status["updated_at"] = datetime.now(
-                        timezone.utc
-                    ).isoformat()
+                if crawl_status != 0:
+                    if ebay_access_blocked(
+                        crawl_status,
+                        crawl_output,
+                    ):
+                        ebay_available = False
 
-                    write_json_atomic(
-                        status_file,
-                        status,
-                    )
+                        status["ebay_source_state"] = (
+                            "unavailable_access_blocked"
+                        )
+                        status["ebay_runtime_semantics"] = (
+                            "EBAY_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
+                        )
+                        status["degraded"] = True
+                        status["message"] = (
+                            "eBay programmatic access is blocked; "
+                            "continuing Gripsweat refresh."
+                        )
+                        status["updated_at"] = datetime.now(
+                            timezone.utc
+                        ).isoformat()
 
-                    logger.warning("")
-                    emit_source_state(
-                        logger,
-                        "eBay",
-                        "unavailable",
-                        status_file=status_file,
-                        status=status,
-                    )
-                    logger.warning(
-                        "eBay source unavailable: "
-                        "HTTP 403 access block."
-                    )
-                    logger.warning(
-                        "Skipping eBay parse, normalization, "
-                        "warehouse synchronization, and remaining "
-                        "eBay sources."
-                    )
-                    logger.warning(
-                        "Continuing Gripsweat refresh."
-                    )
-
-                    if arguments.require_all_sources:
-                        raise RuntimeError(
-                            "Required source eBay is unavailable: "
-                            + str(
-                                status.get(
-                                    "ebay_source_state",
-                                    "unknown",
-                                )
-                            )
+                        write_json_atomic(
+                            status_file,
+                            status,
                         )
 
-                    break
+                        logger.warning("")
+                        emit_source_state(
+                            logger,
+                            "eBay",
+                            "unavailable",
+                            status_file=status_file,
+                            status=status,
+                        )
+                        logger.warning(
+                            "eBay source unavailable: "
+                            "HTTP 403 access block."
+                        )
+                        logger.warning(
+                            "Skipping eBay parse, normalization, "
+                            "warehouse synchronization, and remaining "
+                            "eBay sources."
+                        )
+                        logger.warning(
+                            "Continuing Gripsweat refresh."
+                        )
 
-                raise CommandFailure(
-                    f"Crawl eBay source {source_name} "
-                    f"exited with status {crawl_status}."
-                )
+                        if arguments.require_all_sources:
+                            raise RuntimeError(
+                                "Required source eBay is unavailable: "
+                                + str(
+                                    status.get(
+                                        "ebay_source_state",
+                                        "unknown",
+                                    )
+                                )
+                            )
 
-            _merge_incremental_progress(
-                status,
-                status_file,
-                "ebay",
-                _read_incremental_object(
-                    ebay_incremental_stats
-                ),
-            )
+                        break
 
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "auction_etl.cli.main",
-                    "parse",
-                    "latest",
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase=f"Parse eBay source {source_name}",
-                status_file=status_file,
-                status=status,
-            )
+                    raise CommandFailure(
+                        f"Crawl eBay source {source_name} "
+                        f"exited with status {crawl_status}."
+                    )
 
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "auction_etl.cli.main",
-                    "normalize",
-                    "staging",
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase=(
-                    f"Normalize eBay source {source_name}"
-                ),
-                status_file=status_file,
-                status=status,
-            )
-
-            with psycopg.connect(
-                psql_url,
-                row_factory=dict_row,
-            ) as connection:
-                ebay_staged = staging_count(
-                    connection,
+                _merge_incremental_progress(
+                    status,
+                    status_file,
                     "ebay",
+                    _read_incremental_object(
+                        ebay_incremental_stats
+                    ),
                 )
 
-            if ebay_staged < 1:
-                raise RuntimeError(
-                    "No eBay identities exist in staging."
+                process_ebay_raw_pages(
+                    root=root,
+                    environment=environment,
+                    logger=logger,
+                    status_file=status_file,
+                    status=status,
+                    psql_url=psql_url,
+                    phase_label=source_name,
                 )
-
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "auction_etl.cli.main",
-                    "sync",
-                    "warehouse",
-                    "--marketplace",
-                    "ebay",
-                    "--no-prune",
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase=(
-                    "Safely synchronize eBay without pruning"
-                ),
-                status_file=status_file,
-                status=status,
-            )
 
         if ebay_available:
             status["ebay_source_state"] = "available"
