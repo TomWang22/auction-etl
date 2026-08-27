@@ -68,7 +68,7 @@ def default_storage_state_path() -> Path:
         return Path(configured).expanduser()
 
     railway_path = Path(
-        "/data/private/buyee-storage-state.json"
+        '/data/buyee-profile/.auction-etl/private/buyee-storage-state.json'
     )
 
     if railway_path.is_file():

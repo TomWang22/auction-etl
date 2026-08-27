@@ -18,7 +18,7 @@ from scripts.buyee_http_session import (
 
 
 DEFAULT_STATE_FILE = Path(
-    "/data/private/buyee-storage-state.json"
+    '/data/buyee-profile/.auction-etl/private/buyee-storage-state.json'
 )
 
 DEFAULT_WATCHLIST_URL = (

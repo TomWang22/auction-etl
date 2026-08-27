@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_latest_auction_refresh.py"
 
 HTTPS_VERIFIER = '"scripts/verify_buyee_session.py"'
-STORAGE_STATE = '"/data/private/buyee-storage-state.json"'
+STORAGE_STATE = '"/data/buyee-profile/.auction-etl/private/buyee-storage-state.json"'
 OWNER_VERIFIER = '"scripts/run_buyee_owner_job.py"'
 VERIFY_COMMAND = '"verify_closed_watchlist"'
 AUTH_STATUS = "auth_status, _ = run_command("
@@ -49,9 +49,19 @@ def authentication_preflight_block() -> str:
 def test_buyee_preflight_uses_https_verifier() -> None:
     """Determine Buyee availability through the HTTPS-first verifier."""
     block = authentication_preflight_block()
+    source = runner_source()
 
     assert HTTPS_VERIFIER in block
-    assert STORAGE_STATE in block
+    assert '"--storage-state"' in block
+    assert "str(buyee_storage_state)" in block
+
+    assert "BUYEE_STORAGE_STATE_FILE" in source
+    assert (
+        "/data/buyee-profile/"
+        ".auction-etl/private/"
+        "buyee-storage-state.json"
+        in source
+    )
 
 
 def test_buyee_preflight_does_not_use_owner_verification_job() -> None:

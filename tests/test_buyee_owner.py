@@ -38,9 +38,14 @@ def test_runner_uses_internal_owner_for_buyee_browser_jobs() -> None:
     assert "scripts/ensure_buyee_owner.py" in source
     assert "scripts/run_buyee_owner_job.py" in source
     assert "scripts/verify_buyee_session.py" in source
+
     assert '"--storage-state"' in source
+    assert "str(buyee_storage_state)" in source
+    assert "BUYEE_STORAGE_STATE_FILE" in source
     assert (
-        '"/data/private/buyee-storage-state.json"'
+        "/data/buyee-profile/"
+        ".auction-etl/private/"
+        "buyee-storage-state.json"
         in source
     )
 

@@ -1451,6 +1451,17 @@ def main() -> int:
             buyee_profile_dir
         )
 
+        buyee_storage_state = Path(
+            environment.get(
+                "BUYEE_STORAGE_STATE_FILE",
+                '/data/buyee-profile/.auction-etl/private/buyee-storage-state.json',
+            )
+        ).expanduser()
+
+        environment["BUYEE_STORAGE_STATE_FILE"] = str(
+            buyee_storage_state
+        )
+
         environment["AUCTION_BUYEE_OWNER_SOCKET"] = str(
             buyee_owner_socket
         )
@@ -1496,7 +1507,7 @@ def main() -> int:
                 sys.executable,
                 "scripts/verify_buyee_session.py",
                 "--storage-state",
-                "/data/private/buyee-storage-state.json",
+                str(buyee_storage_state),
                 "--profile-dir",
                 str(
                     buyee_profile_dir
@@ -1693,7 +1704,7 @@ def main() -> int:
                     "--state-file",
                     environment.get(
                         "AUCTION_BUYEE_STORAGE_STATE",
-                        "/data/private/buyee-storage-state.json",
+                        str(buyee_storage_state),
                     ),
                     "--url",
                     BUYEE_URL,
