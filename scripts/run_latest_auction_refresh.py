@@ -1494,15 +1494,9 @@ def main() -> int:
         auth_status, _ = run_command(
             [
                 sys.executable,
-                "scripts/run_buyee_owner_job.py",
-                "--socket-path",
-                str(
-                    buyee_owner_socket
-                ),
-                "--timeout-seconds",
-                "180",
-                "verify_closed_watchlist",
-                "--",
+                "scripts/verify_buyee_session.py",
+                "--storage-state",
+                "/data/private/buyee-storage-state.json",
                 "--profile-dir",
                 str(
                     buyee_profile_dir
@@ -1516,7 +1510,7 @@ def main() -> int:
             root=root,
             environment=environment,
             logger=logger,
-            phase="Verify reusable Buyee authentication",
+            phase="Verify reusable Buyee HTTPS authentication",
             status_file=status_file,
             status=status,
             allow_failure=True,

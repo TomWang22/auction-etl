@@ -298,8 +298,7 @@ def test_on_demand_refresh_defaults_to_buyee() -> None:
 
 
 def test_runner_starts_background_service_before_verifier() -> None:
-    """Buyee owner must exist before owner-mediated verification."""
-
+    """Start the reusable owner before HTTPS authentication verification."""
     value = source(
         RUNNER
     )
@@ -318,13 +317,13 @@ def test_runner_starts_background_service_before_verifier() -> None:
         "scripts/ensure_buyee_owner.py",
         legacy_cdp_removal_index,
     )
-    owner_job_index = value.index(
-        "scripts/run_buyee_owner_job.py",
+    verifier_index = value.index(
+        "scripts/verify_buyee_session.py",
         owner_index,
     )
-    verifier_index = value.index(
-        "verify_closed_watchlist",
-        owner_job_index,
+    storage_state_index = value.index(
+        "--storage-state",
+        verifier_index,
     )
 
     assert (
@@ -332,24 +331,19 @@ def test_runner_starts_background_service_before_verifier() -> None:
         < socket_index
         < legacy_cdp_removal_index
         < owner_index
-        < owner_job_index
         < verifier_index
+        < storage_state_index
     )
 
     assert (
         "scripts/ensure_buyee_cdp_browser.py"
         not in value
     )
-    assert (
-        "scripts/verify_buyee_session.py"
-        not in value
-    )
 
 
 
 def test_runner_keeps_headless_fallback_safety() -> None:
-    """Owner-mediated verifier remains noninteractive."""
-
+    """Keep HTTPS verification noninteractive if browser fallback is needed."""
     value = source(
         RUNNER
     )
@@ -357,21 +351,17 @@ def test_runner_keeps_headless_fallback_safety() -> None:
     owner_index = value.index(
         "scripts/ensure_buyee_owner.py"
     )
-    owner_job_index = value.index(
-        "scripts/run_buyee_owner_job.py",
+    verifier_index = value.index(
+        "scripts/verify_buyee_session.py",
         owner_index,
     )
-    socket_argument_index = value.index(
-        "--socket-path",
-        owner_job_index,
-    )
-    verifier_index = value.index(
-        "verify_closed_watchlist",
-        socket_argument_index,
+    storage_state_index = value.index(
+        "--storage-state",
+        verifier_index,
     )
     profile_argument_index = value.index(
         "--profile-dir",
-        verifier_index,
+        storage_state_index,
     )
     headless_index = value.index(
         "--headless",
@@ -384,17 +374,11 @@ def test_runner_keeps_headless_fallback_safety() -> None:
 
     assert (
         owner_index
-        < owner_job_index
-        < socket_argument_index
         < verifier_index
+        < storage_state_index
         < profile_argument_index
         < headless_index
         < timeout_index
-    )
-
-    assert (
-        "scripts/verify_buyee_session.py"
-        not in value
     )
 
 

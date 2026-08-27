@@ -25,7 +25,8 @@ def test_forwarded_environment_drops_cdp_transport() -> None:
     }
 
 
-def test_runner_uses_internal_owner_for_all_buyee_browser_jobs() -> None:
+def test_runner_uses_internal_owner_for_buyee_browser_jobs() -> None:
+    """Use HTTPS for auth preflight and the internal owner for browser jobs."""
     source = (
         ROOT
         / "scripts"
@@ -36,12 +37,23 @@ def test_runner_uses_internal_owner_for_all_buyee_browser_jobs() -> None:
 
     assert "scripts/ensure_buyee_owner.py" in source
     assert "scripts/run_buyee_owner_job.py" in source
-    assert '"verify_closed_watchlist"' in source
+    assert "scripts/verify_buyee_session.py" in source
+    assert '"--storage-state"' in source
+    assert (
+        '"/data/private/buyee-storage-state.json"'
+        in source
+    )
+
     assert "scripts/crawl_buyee_http.py" in source
     assert '"crawl_closed_watchlist"' not in source
     assert '"crawl_live_details"' in source
+
+    assert '"verify_closed_watchlist"' not in source
     assert "scripts/ensure_buyee_cdp_browser.py" not in source
-    assert 'environment["AUCTION_BUYEE_CDP_URL"] = (' not in source
+    assert (
+        'environment["AUCTION_BUYEE_CDP_URL"] = ('
+        not in source
+    )
 
 
 def test_owner_server_has_no_cdp_transport() -> None:
