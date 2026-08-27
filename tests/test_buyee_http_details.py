@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from scripts.crawl_buyee_http_details import (
+    contains_aws_waf_challenge,
     extract_detail_from_html,
 )
 
@@ -95,3 +96,41 @@ def test_extract_detail_from_server_rendered_html() -> None:
         detail.detail_status
         == "complete"
     )
+
+def test_contains_aws_waf_challenge_detects_buyee_challenge() -> None:
+    """Recognize the AWS WAF JavaScript page returned by Buyee."""
+    html = """
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <title></title>
+        <script type="text/javascript">
+          window.awsWafCookieDomainList = [
+            'www.buyee.jp',
+            'buyee.jp'
+          ];
+          window.gokuProps = {
+            "key": "example",
+            "iv": "example",
+            "context": "example"
+          };
+        </script>
+        <script
+          src="https://example.token.awswaf.com/example/challenge.js"
+        ></script>
+      </head>
+      <body>
+        <div id="challenge-container"></div>
+        <script>
+          AwsWafIntegration.getToken().then(() => {
+            window.location.reload(true);
+          });
+        </script>
+        <noscript>
+          In order to continue, we need to verify that you're not a robot.
+        </noscript>
+      </body>
+    </html>
+    """
+
+    assert contains_aws_waf_challenge(html) is True

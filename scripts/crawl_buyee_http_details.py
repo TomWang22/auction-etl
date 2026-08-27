@@ -54,6 +54,29 @@ class BuyeeHttpDetailError(RuntimeError):
     """Raised when authenticated Buyee detail HTTPS access fails."""
 
 
+class BuyeeHttpDetailWafChallengeError(BuyeeHttpDetailError):
+    """Raised when Buyee returns its AWS WAF JavaScript challenge."""
+
+
+AWS_WAF_CHALLENGE_MARKERS = (
+    "awswafintegration",
+    "awswafcookiedomainlist",
+    "token.awswaf.com",
+    "challenge-container",
+    "verify that you're not a robot",
+)
+
+
+def contains_aws_waf_challenge(body: str) -> bool:
+    """Return whether HTML represents the Buyee AWS WAF challenge."""
+    normalized = normalize_text(body)
+
+    return any(
+        marker in normalized
+        for marker in AWS_WAF_CHALLENGE_MARKERS
+    )
+
+
 class BuyeeHtmlDocument(HTMLParser):
     """Extract visible text, headings, and links from Buyee HTML."""
 
@@ -352,6 +375,12 @@ def fetch_detail_html(
     normalized_body = normalize_text(
         body
     )
+
+    if contains_aws_waf_challenge(body):
+        raise BuyeeHttpDetailWafChallengeError(
+            "AWS_WAF_CHALLENGE: Buyee returned its JavaScript "
+            f"verification page for {final_url}"
+        )
 
     if (
         status_code
