@@ -72,12 +72,54 @@ def test_buyee_preflight_does_not_use_owner_verification_job() -> None:
     assert VERIFY_COMMAND not in block
 
 
-def test_buyee_owner_remains_available_for_later_browser_operations() -> None:
-    """Keep the persistent owner for detail enrichment when it is needed."""
+def test_buyee_production_details_use_authenticated_https() -> None:
+    """Keep Chromium out of the production Buyee detail path."""
     source = runner_source()
 
-    assert '"scripts/ensure_buyee_owner.py"' in source
-    assert OWNER_VERIFIER in source
+    assert (
+        "authenticated HTTPS mode is active"
+        in source
+    )
+    assert (
+        '"scripts/crawl_buyee_http_details.py"'
+        in source
+    )
+    assert (
+        '"Apply new-only Buyee HTTPS "'
+        in source
+    )
+    assert (
+        '"detail enrichment"'
+        in source
+    )
+
+    production_detail_start = source.index(
+        "if buyee_new_listing_ids:"
+    )
+    production_detail_end = source.index(
+        "if buyee_available:",
+        production_detail_start,
+    )
+    production_detail = source[
+        production_detail_start:production_detail_end
+    ]
+
+    assert (
+        "scripts/run_buyee_owner_job.py"
+        not in production_detail
+    )
+    assert (
+        "crawl_live_details"
+        not in production_detail
+    )
+    assert (
+        "--socket-path"
+        not in production_detail
+    )
+    assert (
+        "--profile-dir"
+        not in production_detail
+    )
 
 
 def test_https_preflight_preserves_existing_exit_code_handling() -> None:

@@ -1384,6 +1384,7 @@ def main() -> int:
         root / "scripts" / "run_buyee_owner_job.py",
         root / "scripts" / "inspect_recent_ingestion.py",
         root / "scripts" / "crawl_buyee_live_details.py",
+        root / "scripts" / "crawl_buyee_http_details.py",
         root / "scripts" / "crawl_ebay_sources.py",
         root / "scripts" / "setup_gripsweat_schema.py",
         root / "scripts" / "probe_gripsweat.py",
@@ -1566,25 +1567,9 @@ def main() -> int:
             None,
         )
 
-        run_command(
-            [
-                sys.executable,
-                "scripts/ensure_buyee_owner.py",
-                "--profile-dir",
-                str(
-                    buyee_profile_dir
-                ),
-                "--socket-path",
-                str(
-                    buyee_owner_socket
-                ),
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Ensure hidden Buyee browser owner",
-            status_file=status_file,
-            status=status,
+        logger.info(
+            "Buyee production browser owner skipped: "
+            "authenticated HTTPS mode is active."
         )
 
         status["buyee_profile"] = (
@@ -1978,18 +1963,10 @@ def main() -> int:
             if buyee_new_listing_ids:
                 buyee_detail_command = [
                     sys.executable,
-                    "scripts/run_buyee_owner_job.py",
-                    "--socket-path",
+                    "scripts/crawl_buyee_http_details.py",
+                    "--state-file",
                     str(
-                        buyee_owner_socket
-                    ),
-                    "--timeout-seconds",
-                    "3600",
-                    "crawl_live_details",
-                    "--",
-                    "--profile-dir",
-                    str(
-                        buyee_profile_dir
+                        buyee_storage_state
                     ),
                     "--apply",
                     "--delay",
@@ -2019,7 +1996,7 @@ def main() -> int:
                     environment=environment,
                     logger=logger,
                     phase=(
-                        "Apply new-only Buyee "
+                        "Apply new-only Buyee HTTPS "
                         "detail enrichment"
                     ),
                     status_file=status_file,
