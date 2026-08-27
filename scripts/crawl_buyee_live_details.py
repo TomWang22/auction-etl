@@ -1200,78 +1200,129 @@ def wait_for_authenticated_profile(
     context: BrowserContext,
     *,
     headed: bool,
-    timeout_minutes: int,
+    timeout_seconds: float,
+    navigation_timeout_seconds: float,
 ) -> Page:
-    """Wait for the persistent profile to reach the closed watchlist."""
+    """Require the persistent profile to reach the closed watchlist.
+
+    Headed callers may use a long timeout to allow interactive login.
+    Unattended callers should pass their normal bounded page timeout.
+    """
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive.")
+
+    if navigation_timeout_seconds <= 0:
+        raise ValueError(
+            "navigation_timeout_seconds must be positive."
+        )
+
+    deadline = time.monotonic() + timeout_seconds
+    last_message = 0.0
+
+    def remaining_seconds() -> float:
+        return max(
+            0.0,
+            deadline - time.monotonic(),
+        )
+
+    def remaining_timeout_ms() -> int:
+        remaining = remaining_seconds()
+
+        if remaining <= 0:
+            return 1
+
+        bounded = min(
+            remaining,
+            navigation_timeout_seconds,
+        )
+
+        return max(
+            1,
+            int(bounded * 1_000),
+        )
+
+    def goto_watchlist(page: Page) -> None:
+        if remaining_seconds() <= 0:
+            return
+
+        try:
+            page.goto(
+                WATCHLIST_URL,
+                wait_until="domcontentloaded",
+                timeout=remaining_timeout_ms(),
+            )
+        except PlaywrightTimeoutError:
+            pass
+
     page = (
         context.pages[-1]
         if context.pages
         else context.new_page()
     )
 
-    try:
-        page.goto(
-            WATCHLIST_URL,
-            wait_until="domcontentloaded",
-            timeout=90_000,
-        )
-    except PlaywrightTimeoutError:
-        pass
+    goto_watchlist(page)
 
-    deadline = (
-        time.monotonic()
-        + timeout_minutes * 60
-    )
-    last_message = 0.0
-
-    while time.monotonic() < deadline:
+    while remaining_seconds() > 0:
         page = (
             context.pages[-1]
             if context.pages
             else context.new_page()
         )
 
-        if authentication_required(
-            page.url
-        ):
+        if authentication_required(page.url):
             if not headed:
                 raise RuntimeError(
                     "Buyee authentication is required. "
                     "Run again with --headed."
                 )
 
-            if (
-                time.monotonic()
-                - last_message
-                >= 10
-            ):
-                remaining = int(
-                    deadline
-                    - time.monotonic()
+            now = time.monotonic()
+
+            if now - last_message >= 10:
+                remaining = max(
+                    0,
+                    int(deadline - now),
                 )
+
                 print(
                     "Waiting for Buyee login or two-factor "
                     f"verification ({remaining}s remaining)..."
                 )
-                last_message = time.monotonic()
 
-            page.wait_for_timeout(1_000)
+                last_message = now
+
+            page.wait_for_timeout(
+                min(
+                    1_000,
+                    max(
+                        1,
+                        int(
+                            remaining_seconds()
+                            * 1_000
+                        ),
+                    ),
+                )
+            )
             continue
 
-        if (
-            "/myorders/watchlist/closed"
-            not in page.url
-        ):
-            try:
-                page.goto(
-                    WATCHLIST_URL,
-                    wait_until="domcontentloaded",
-                    timeout=90_000,
-                )
-            except PlaywrightTimeoutError:
-                pass
+        if "/myorders/watchlist/closed" not in page.url:
+            goto_watchlist(page)
 
-            page.wait_for_timeout(1_000)
+            if remaining_seconds() <= 0:
+                break
+
+            page.wait_for_timeout(
+                min(
+                    1_000,
+                    max(
+                        1,
+                        int(
+                            remaining_seconds()
+                            * 1_000
+                        ),
+                    ),
+                )
+            )
             continue
 
         link_count = page.locator(
@@ -1283,14 +1334,25 @@ def wait_for_authenticated_profile(
                 "✓ Authenticated Buyee profile verified: "
                 f"{link_count} visible auction links."
             )
+
             return page
 
-        page.wait_for_timeout(1_000)
+        page.wait_for_timeout(
+            min(
+                1_000,
+                max(
+                    1,
+                    int(
+                        remaining_seconds()
+                        * 1_000
+                    ),
+                ),
+            )
+        )
 
     raise RuntimeError(
         "Timed out waiting for authenticated Buyee access."
     )
-
 
 def main() -> int:
     """Run the authenticated live Buyee detail crawler."""
@@ -1370,10 +1432,12 @@ def main() -> int:
             page = wait_for_authenticated_profile(
                 context,
                 headed=arguments.headed,
-                timeout_minutes=(
-                    arguments
-                    .authentication_timeout_minutes
+                timeout_seconds=(
+                    arguments.authentication_timeout_minutes * 60
+                    if arguments.headed
+                    else arguments.timeout
                 ),
+                navigation_timeout_seconds=arguments.timeout,
             )
             page.set_default_timeout(
                 arguments.timeout * 1_000
