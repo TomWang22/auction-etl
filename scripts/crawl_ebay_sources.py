@@ -759,6 +759,12 @@ def crawl_source(
                     title = page.title()
                     current_url = page.url
 
+                    if "signin.ebay." in current_url.casefold():
+                        raise RuntimeError(
+                            "eBay unexpectedly redirected the anonymous "
+                            "completed-search page to sign-in."
+                        )
+
                     try:
                         body = page.locator(
                             "body"
@@ -820,12 +826,6 @@ def crawl_source(
                     ):
                         raise RuntimeError(
                             page_result.message
-                        )
-
-                    if "signin.ebay." in current_url.casefold():
-                        raise RuntimeError(
-                            "eBay unexpectedly redirected the anonymous "
-                            "completed-search page to sign-in."
                         )
 
                     count = listing_count(html)
