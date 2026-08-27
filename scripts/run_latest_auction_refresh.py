@@ -82,6 +82,14 @@ def parse_arguments() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-all-sources",
+        action="store_true",
+        help=(
+            "Fail if Buyee or eBay is unavailable instead of "
+            "continuing in degraded mode."
+        ),
+    )
+    parser.add_argument(
         "--expected-database-name",
         default=os.environ.get(
             "AUCTION_EXPECTED_DATABASE_NAME",
@@ -1601,6 +1609,17 @@ def main() -> int:
             logger.warning(
                 "Continuing eBay and Gripsweat refreshes."
             )
+
+            if arguments.require_all_sources:
+                raise RuntimeError(
+                    "Required source Buyee is unavailable: "
+                    + str(
+                        status.get(
+                            "buyee_source_state",
+                            "unknown",
+                        )
+                    )
+                )
         elif (
             auth_status
             == BUYEE_MAINTENANCE_EXIT_CODE
@@ -2018,6 +2037,17 @@ def main() -> int:
                     logger.warning(
                         "Continuing Gripsweat refresh."
                     )
+
+                    if arguments.require_all_sources:
+                        raise RuntimeError(
+                            "Required source eBay is unavailable: "
+                            + str(
+                                status.get(
+                                    "ebay_source_state",
+                                    "unknown",
+                                )
+                            )
+                        )
 
                     break
 
