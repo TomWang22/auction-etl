@@ -57,7 +57,6 @@ class BrowserManager:
             "locale": LOCALE,
             "timezone_id": TIMEZONE,
             "color_scheme": COLOR_SCHEME,
-            "args": ["--disable-dev-shm-usage"],
         }
 
         if USER_AGENT is not None:

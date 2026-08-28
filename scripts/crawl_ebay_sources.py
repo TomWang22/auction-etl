@@ -364,26 +364,30 @@ def wait_for_results(
     except PlaywrightTimeoutError:
         pass
 
+    item_links = page.locator(
+        "a[href*='/itm/']"
+    )
+
     try:
-        page.locator(
-            "a[href*='/itm/']"
-        ).first.wait_for(
+        item_links.first.wait_for(
             state="attached",
             timeout=timeout_ms,
         )
     except PlaywrightTimeoutError:
         pass
 
+    if item_links.count() > 0:
+        page.wait_for_timeout(2_000)
+        return
+
     for _ in range(8):
-        page.mouse.wheel(
-            0,
-            1_200,
+        page.evaluate(
+            "window.scrollBy(0, 1200)"
         )
         page.wait_for_timeout(750)
 
-    page.mouse.wheel(
-        0,
-        -10_000,
+    page.evaluate(
+        "window.scrollTo(0, 0)"
     )
     page.wait_for_timeout(2_000)
 
