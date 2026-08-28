@@ -84,48 +84,107 @@ def test_owner_health_still_proves_browser_liveness() -> None:
 
 
 def test_latest_refresh_does_not_force_all_buyee_details() -> None:
-    """Latest refresh enriches only newly discovered Buyee listings."""
+    "Refresh Chromium only for explicitly WAF-blocked Buyee details."
 
     value = source(
         RUNNER
     )
 
-    crawl_start = value.index(
-        '"crawl_live_details"'
+    production_detail_start = value.index(
+        "if buyee_new_listing_ids:"
     )
 
-    buyee_end = value.index(
+    production_detail_end = value.index(
         "if buyee_available:",
-        crawl_start,
+        production_detail_start,
     )
 
-    detail_block = value[
-        crawl_start:buyee_end
+    production_detail = value[
+        production_detail_start:
+        production_detail_end
+    ]
+
+    https_index = production_detail.index(
+        '"scripts/crawl_buyee_http_details.py"'
+    )
+
+    waf_index = production_detail.index(
+        '"AWS_WAF_CHALLENGE"',
+        https_index,
+    )
+
+    owner_index = production_detail.index(
+        '"scripts/run_buyee_owner_job.py"',
+        waf_index,
+    )
+
+    crawl_index = production_detail.index(
+        '"crawl_live_details"',
+        owner_index,
+    )
+
+    refresh_index = production_detail.index(
+        '"--refresh"',
+        crawl_index,
+    )
+
+    https_primary_block = production_detail[
+        https_index:
+        waf_index
+    ]
+
+    waf_fallback_block = production_detail[
+        waf_index:
     ]
 
     assert (
         "buyee_new_listing_ids"
         in value
     )
+
     assert (
         "buyee_listing_ids_after"
         in value
     )
+
     assert (
         "buyee_listing_ids_before"
         in value
     )
+
     assert (
         '"--listing-id"'
-        in detail_block
+        in waf_fallback_block
     )
+
     assert (
         '"--refresh"'
-        not in detail_block
+        not in https_primary_block
     )
+
     assert (
-        "detail-page crawl skipped"
-        in value
+        '"--refresh"'
+        in waf_fallback_block
+    )
+
+    assert (
+        production_detail.count(
+            '"--refresh"'
+        )
+        == 1
+    )
+
+    assert (
+        '"--apply"'
+        in waf_fallback_block
+    )
+
+    assert (
+        https_index
+        < waf_index
+        < owner_index
+        < crawl_index
+        < refresh_index
     )
 
 

@@ -850,7 +850,7 @@ def seed_authenticated_storage_state(
     context: BrowserContext,
     profile_dir: Path,
 ) -> None:
-    """Seed the persistent owner from saved authenticated Buyee state."""
+    """Hydrate the persistent owner from the complete saved Playwright state."""
 
     configured = os.environ.get(
         "BUYEE_STORAGE_STATE_FILE",
@@ -881,36 +881,255 @@ def seed_authenticated_storage_state(
         )
     )
 
-    cookies = payload.get("cookies", [])
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        raise RuntimeError(
+            "Buyee storage state root must be an object."
+        )
 
-    if not isinstance(cookies, list) or not cookies:
+    cookies = payload.get(
+        "cookies",
+        [],
+    )
+
+    origins = payload.get(
+        "origins",
+        [],
+    )
+
+    if (
+        not isinstance(
+            cookies,
+            list,
+        )
+        or not cookies
+    ):
         raise RuntimeError(
             "Buyee storage state contains no cookies."
         )
 
-    context.add_cookies(cookies)
+    if not isinstance(
+        origins,
+        list,
+    ):
+        raise RuntimeError(
+            "Buyee storage state origins must be an array."
+        )
 
-    installed_cookies = context.cookies()
+    normalized_origins: list[
+        tuple[
+            str,
+            list[dict[str, str]],
+        ]
+    ] = []
+
+    for raw_origin in origins:
+        if not isinstance(
+            raw_origin,
+            dict,
+        ):
+            raise RuntimeError(
+                "Buyee storage-state origin must be an object."
+            )
+
+        origin = str(
+            raw_origin.get(
+                "origin",
+                "",
+            )
+        ).strip()
+
+        local_storage = raw_origin.get(
+            "localStorage",
+            [],
+        )
+
+        if not isinstance(
+            local_storage,
+            list,
+        ):
+            raise RuntimeError(
+                "Buyee storage-state localStorage must be an array."
+            )
+
+        if not local_storage:
+            continue
+
+        if not (
+            origin.startswith(
+                "https://"
+            )
+            or origin.startswith(
+                "http://"
+            )
+        ):
+            raise RuntimeError(
+                "Buyee storage-state origin is invalid: "
+                f"{origin!r}"
+            )
+
+        values_by_name: dict[
+            str,
+            str,
+        ] = {}
+
+        for raw_entry in local_storage:
+            if not isinstance(
+                raw_entry,
+                dict,
+            ):
+                raise RuntimeError(
+                    "Buyee localStorage entry must be an object."
+                )
+
+            name = raw_entry.get(
+                "name"
+            )
+
+            value = raw_entry.get(
+                "value"
+            )
+
+            if not isinstance(
+                name,
+                str,
+            ) or not isinstance(
+                value,
+                str,
+            ):
+                raise RuntimeError(
+                    "Buyee localStorage names and values must be strings."
+                )
+
+            values_by_name[
+                name
+            ] = value
+
+        entries = [
+            {
+                "name": name,
+                "value": value,
+            }
+            for name, value
+            in values_by_name.items()
+        ]
+
+        if entries:
+            normalized_origins.append(
+                (
+                    origin,
+                    entries,
+                )
+            )
+
+    context.add_cookies(
+        cookies
+    )
+
+    installed_cookies = (
+        context.cookies()
+    )
+
+    hydrated_local_storage_entries = 0
+
+    for origin, entries in normalized_origins:
+        seed_script = (
+            "(() => {\n"
+            f"  const expectedOrigin = {json.dumps(origin)};\n"
+            "  if (window.location.origin !== expectedOrigin) {\n"
+            "    return;\n"
+            "  }\n"
+            f"  const entries = {json.dumps(entries, ensure_ascii=False)};\n"
+            "  for (const entry of entries) {\n"
+            "    window.localStorage.setItem(entry.name, entry.value);\n"
+            "  }\n"
+            "})();\n"
+        )
+
+        page = (
+            context.new_page()
+        )
+
+        try:
+            page.add_init_script(
+                script=seed_script,
+            )
+
+            page.goto(
+                origin,
+                wait_until="commit",
+                timeout=30_000,
+            )
+
+            installed = page.evaluate(
+                """
+                entries => entries.filter(
+                    entry => (
+                        window.localStorage.getItem(entry.name)
+                        === entry.value
+                    )
+                ).length
+                """,
+                entries,
+            )
+
+            if int(
+                installed
+            ) != len(
+                entries
+            ):
+                raise RuntimeError(
+                    "Buyee localStorage hydration verification failed "
+                    f"for {origin}: installed {installed}/{len(entries)}."
+                )
+
+            hydrated_local_storage_entries += int(
+                installed
+            )
+        finally:
+            page.close()
 
     print(
         f"BUYEE_OWNER_STORAGE_STATE={storage_state_path}",
         flush=True,
     )
+
     print(
         "BUYEE_OWNER_STORAGE_STATE_COOKIE_COUNT="
         f"{len(cookies)}",
         flush=True,
     )
+
     print(
         "BUYEE_OWNER_CONTEXT_COOKIE_COUNT="
         f"{len(installed_cookies)}",
         flush=True,
     )
+
+    print(
+        "BUYEE_OWNER_STORAGE_STATE_ORIGIN_COUNT="
+        f"{len(normalized_origins)}",
+        flush=True,
+    )
+
+    print(
+        "BUYEE_OWNER_STORAGE_STATE_LOCAL_STORAGE_ENTRY_COUNT="
+        f"{hydrated_local_storage_entries}",
+        flush=True,
+    )
+
+    print(
+        "BUYEE_OWNER_CONTEXT_LOCAL_STORAGE_ENTRY_COUNT="
+        f"{hydrated_local_storage_entries}",
+        flush=True,
+    )
+
     print(
         "BUYEE_OWNER_STORAGE_STATE_SEEDED=true",
         flush=True,
     )
-
 
 def main() -> int:
     """Launch one persistent headed/offscreen Buyee owner."""

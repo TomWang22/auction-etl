@@ -2028,7 +2028,7 @@ def main() -> int:
                         ]
                     )
 
-                run_command(
+                buyee_detail_status, _ = run_command(
                     buyee_detail_command,
                     root=root,
                     environment=environment,
@@ -2039,7 +2039,180 @@ def main() -> int:
                     ),
                     status_file=status_file,
                     status=status,
+                    allow_failure=True,
                 )
+
+                buyee_detail_summary = (
+                    run_dir
+                    / "buyee-details"
+                    / "crawl_summary.json"
+                )
+
+                if not buyee_detail_summary.is_file():
+                    raise RuntimeError(
+                        "Buyee HTTPS detail crawler did not "
+                        "produce crawl_summary.json."
+                    )
+
+                buyee_detail_results = json.loads(
+                    buyee_detail_summary.read_text(
+                        encoding="utf-8",
+                    )
+                )
+
+                if not isinstance(
+                    buyee_detail_results,
+                    list,
+                ):
+                    raise RuntimeError(
+                        "Buyee HTTPS detail summary must be an array."
+                    )
+
+                buyee_waf_listing_ids: list[str] = []
+                buyee_non_waf_failures: list[str] = []
+
+                for result in buyee_detail_results:
+                    if not isinstance(
+                        result,
+                        dict,
+                    ):
+                        raise RuntimeError(
+                            "Buyee HTTPS detail summary row "
+                            "must be an object."
+                        )
+
+                    if (
+                        str(
+                            result.get(
+                                "detail_status",
+                                "",
+                            )
+                        )
+                        != "error"
+                    ):
+                        continue
+
+                    listing_id = str(
+                        result.get(
+                            "listing_id",
+                            "",
+                        )
+                    ).strip()
+
+                    error_message = str(
+                        result.get(
+                            "error_message",
+                            "",
+                        )
+                    )
+
+                    if (
+                        listing_id
+                        and "AWS_WAF_CHALLENGE"
+                        in error_message
+                    ):
+                        buyee_waf_listing_ids.append(
+                            listing_id
+                        )
+                    else:
+                        buyee_non_waf_failures.append(
+                            (
+                                listing_id
+                                or "<unknown>"
+                            )
+                            + ": "
+                            + (
+                                error_message
+                                or "<missing error>"
+                            )
+                        )
+
+                if buyee_non_waf_failures:
+                    raise RuntimeError(
+                        "Buyee HTTPS detail enrichment had "
+                        "non-WAF failures: "
+                        + " | ".join(
+                            buyee_non_waf_failures
+                        )
+                    )
+
+                if buyee_waf_listing_ids:
+                    logger.warning(
+                        "Buyee HTTPS detail WAF fallback: "
+                        "%d listing(s) require the authenticated "
+                        "persistent browser owner.",
+                        len(
+                            buyee_waf_listing_ids
+                        ),
+                    )
+
+                    buyee_browser_fallback_command = [
+                        sys.executable,
+                        "scripts/run_buyee_owner_job.py",
+                        "crawl_live_details",
+                        "--socket-path",
+                        str(
+                            buyee_owner_socket
+                        ),
+                        "--timeout-seconds",
+                        "600",
+                        "--",
+                        "--apply",
+                        "--refresh",
+                        "--profile-dir",
+                        str(
+                            buyee_profile_dir
+                        ),
+                        "--delay",
+                        "1",
+                        "--timeout",
+                        "45",
+                        "--log-dir",
+                        str(
+                            run_dir
+                            / "buyee-details-browser-fallback"
+                        ),
+                    ]
+
+                    for listing_id in (
+                        buyee_waf_listing_ids
+                    ):
+                        buyee_browser_fallback_command.extend(
+                            [
+                                "--listing-id",
+                                listing_id,
+                            ]
+                        )
+
+                    run_command(
+                        buyee_browser_fallback_command,
+                        root=root,
+                        environment=environment,
+                        logger=logger,
+                        phase=(
+                            "Apply WAF-only Buyee browser "
+                            "detail fallback"
+                        ),
+                        status_file=status_file,
+                        status=status,
+                    )
+
+                    status[
+                        "buyee_browser_fallback_count"
+                    ] = len(
+                        buyee_waf_listing_ids
+                    )
+
+                    write_json_atomic(
+                        status_file,
+                        status,
+                    )
+
+                elif buyee_detail_status != 0:
+                    raise RuntimeError(
+                        "Buyee HTTPS detail crawler failed "
+                        "without a classified WAF fallback candidate."
+                    )
             else:
                 logger.info(
                     "No new Buyee listing identities; "

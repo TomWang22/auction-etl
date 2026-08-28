@@ -120,14 +120,104 @@ def test_latest_refresh_details_only_new_buyee_ids() -> None:
 
 
 def test_latest_refresh_does_not_force_historical_refresh() -> None:
-    """Normal production refresh never enables crawler --refresh."""
+    """Normal refresh limits forced detail refresh to WAF fallback IDs."""
 
     main = function_source(
         RUNNER,
         "main",
     )
 
-    assert '"--refresh"' not in main
+    production_start = main.index(
+        "if buyee_new_listing_ids:"
+    )
+
+    production_end = main.index(
+        "if buyee_available:",
+        production_start,
+    )
+
+    production_detail = main[
+        production_start:
+        production_end
+    ]
+
+    https_index = production_detail.index(
+        '"scripts/crawl_buyee_http_details.py"'
+    )
+
+    waf_index = production_detail.index(
+        '"AWS_WAF_CHALLENGE"',
+        https_index,
+    )
+
+    owner_index = production_detail.index(
+        '"scripts/run_buyee_owner_job.py"',
+        waf_index,
+    )
+
+    crawl_index = production_detail.index(
+        '"crawl_live_details"',
+        owner_index,
+    )
+
+    refresh_index = production_detail.index(
+        '"--refresh"',
+        crawl_index,
+    )
+
+    https_primary_block = production_detail[
+        https_index:
+        waf_index
+    ]
+
+    waf_fallback_block = production_detail[
+        waf_index:
+    ]
+
+    assert (
+        "buyee_new_listing_ids"
+        in production_detail
+    )
+
+    assert (
+        "buyee_waf_listing_ids"
+        in production_detail
+    )
+
+    assert (
+        '"--refresh"'
+        not in https_primary_block
+    )
+
+    assert (
+        '"--refresh"'
+        in waf_fallback_block
+    )
+
+    assert (
+        production_detail.count(
+            '"--refresh"'
+        )
+        == 1
+    )
+
+    assert (
+        '"--listing-id"'
+        in waf_fallback_block
+    )
+
+    assert (
+        '"--apply"'
+        in waf_fallback_block
+    )
+
+    assert (
+        https_index
+        < waf_index
+        < owner_index
+        < crawl_index
+        < refresh_index
+    )
 
 
 def test_detail_crawler_supports_explicit_identity_filter() -> None:
