@@ -754,6 +754,13 @@ def crawl_source(
                         else None
                     )
 
+                    if status in {401, 403, 429}:
+                        stats.blocked_sources += 1
+                        raise RuntimeError(
+                            "eBay rejected the deployed worker's request "
+                            f"with HTTP {status}."
+                        )
+
                     wait_for_results(
                         page,
                         source.wait_seconds,

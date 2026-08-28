@@ -736,6 +736,12 @@ def ebay_access_blocked(
 
     normalized = output.casefold()
 
+    if (
+        "ebay rejected the deployed worker's request with http "
+        in normalized
+    ):
+        return True
+
     blocked_signals = (
         "blocked http status 403",
         (
