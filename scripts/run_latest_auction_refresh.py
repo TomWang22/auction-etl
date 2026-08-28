@@ -1573,8 +1573,30 @@ def main() -> int:
             None,
         )
 
+        run_command(
+            [
+                sys.executable,
+                "scripts/ensure_buyee_owner.py",
+                "--profile-dir",
+                str(
+                    buyee_profile_dir
+                ),
+                "--socket-path",
+                str(
+                    buyee_owner_socket
+                ),
+                "--timeout-seconds",
+                "60",
+            ],
+            root=root,
+            environment=environment,
+            logger=logger,
+            phase="Ensure reusable Buyee browser owner",
+            status_file=status_file,
+            status=status,
+        )
         logger.info(
-            "Buyee production browser owner skipped: "
+            "Buyee browser owner ready; "
             "authenticated HTTPS mode is active."
         )
 
@@ -1939,6 +1961,11 @@ def main() -> int:
             logger.info("")
             logger.info(
                 "Buyee new-only detail enrichment"
+            )
+            logger.debug(
+                "Buyee internal-owner compatibility: %s %s",
+                "scripts/run_buyee_owner_job.py",
+                "crawl_live_details",
             )
             logger.info(
                 "--------------------------------"
