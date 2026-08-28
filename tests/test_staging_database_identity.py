@@ -62,6 +62,28 @@ def test_default_identity_preserves_local_production_guard() -> None:
         )
     )
 
+    stale_derived_state = valid_state(
+        database_name="auction_warehouse",
+        database_user="auction",
+    )
+
+    stale_derived_state["collector_rows"] = 0
+    stale_derived_state["effective_rows"] = 0
+    stale_derived_state["review_rows"] = 0
+
+    with pytest.raises(
+        RuntimeError,
+        match="Collector rows do not match warehouse rows",
+    ):
+        runner.verify_state(
+            stale_derived_state
+        )
+
+    runner.verify_state(
+        stale_derived_state,
+        require_derived_parity=False,
+    )
+
 
 def test_default_identity_rejects_neon_database() -> None:
     """Neon cannot bypass the local identity guard implicitly."""

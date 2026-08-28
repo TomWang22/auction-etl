@@ -499,8 +499,9 @@ def verify_state(
     *,
     expected_database_name: str = DEFAULT_EXPECTED_DATABASE_NAME,
     expected_database_user: str = DEFAULT_EXPECTED_DATABASE_USER,
+    require_derived_parity: bool = True,
 ) -> None:
-    """Validate core database invariants."""
+    """Validate core invariants and optionally require derived-table parity."""
     expected_name = expected_database_name.strip()
     expected_user = expected_database_user.strip()
 
@@ -537,6 +538,9 @@ def verify_state(
         raise RuntimeError(
             "Duplicate marketplace/listing identities exist."
         )
+
+    if not require_derived_parity:
+        return
 
     if state["collector_rows"] != state["total_rows"]:
         raise RuntimeError(
@@ -1437,6 +1441,7 @@ def main() -> int:
                 expected_database_user=(
                     arguments.expected_database_user
                 ),
+                require_derived_parity=False,
             )
 
             buyee_listing_ids_before = {
