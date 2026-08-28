@@ -38,7 +38,7 @@ def test_runner_counts_only_external_unparsed_ebay_raw_pages() -> None:
     assert "WHERE source = 'ebay'" in source
     assert "AND parsed_at IS NULL" in source
     assert (
-        "AND url LIKE 'collector://ebay/%'"
+        "AND url LIKE 'collector://ebay/%%'"
         in source
     )
     assert (
@@ -55,7 +55,7 @@ def test_generic_unparsed_ebay_page_does_not_define_external_handoff() -> None:
 
     assert "def unparsed_raw_page_count(" not in source
     assert (
-        "url LIKE 'collector://ebay/%'"
+        "url LIKE 'collector://ebay/%%'"
         in source
     )
 
