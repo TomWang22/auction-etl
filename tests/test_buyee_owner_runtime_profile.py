@@ -202,3 +202,39 @@ def test_owner_still_seeds_from_durable_auth_profile() -> None:
         "BUYEE_OWNER_RUNTIME_PROFILE="
         in source
     )
+
+def test_owner_uses_proven_authenticated_user_agent() -> None:
+    """Use the browser fingerprint proven to authenticate Buyee."""
+
+    tree = owner_tree()
+
+    launch_calls = attribute_calls_named(
+        tree,
+        "launch_persistent_context",
+    )
+
+    assert len(launch_calls) == 1
+
+    launch = launch_calls[0]
+
+    user_agent_keywords = [
+        keyword
+        for keyword in launch.keywords
+        if keyword.arg == "user_agent"
+    ]
+
+    assert len(user_agent_keywords) == 1
+
+    value = user_agent_keywords[0].value
+
+    assert isinstance(
+        value,
+        ast.Constant,
+    )
+
+    assert isinstance(
+        value.value,
+        str,
+    )
+
+    assert value.value == 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'

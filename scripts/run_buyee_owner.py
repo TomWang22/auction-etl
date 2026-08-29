@@ -1222,6 +1222,12 @@ def main() -> int:
                     executable
                 ),
                 headless=headless,
+                user_agent=(
+                    "Mozilla/5.0 "
+                    "(Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0 Safari/537.36"
+                ),
                 locale="en-US",
                 timezone_id="Asia/Tokyo",
                 viewport={
