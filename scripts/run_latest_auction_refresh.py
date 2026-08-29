@@ -2282,6 +2282,13 @@ def main() -> int:
                 crawl_status, crawl_output = run_command(
                     [
                         sys.executable,
+                        "scripts/run_with_process_watchdog.py",
+                        "--timeout-seconds",
+                        "600",
+                        "--kill-grace-seconds",
+                        "10",
+                        "--",
+                        sys.executable,
                         "scripts/crawl_ebay_sources.py",
                         "--config",
                         "config/ebay_sources.json",
