@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+
 import socket
 
 import argparse
@@ -1201,11 +1203,21 @@ def main() -> int:
             playwright.chromium.executable_path
         ).resolve()
 
+        runtime_profile_dir = Path(
+            tempfile.mkdtemp(
+                prefix="auction-etl-buyee-owner-",
+            )
+        )
+
+        print(
+            "BUYEE_OWNER_RUNTIME_PROFILE="
+            f"{runtime_profile_dir}",
+            flush=True,
+        )
+
         context = (
             playwright.chromium.launch_persistent_context(
-                user_data_dir=str(
-                    profile_dir
-                ),
+                user_data_dir=str(runtime_profile_dir),
                 executable_path=str(
                     executable
                 ),
