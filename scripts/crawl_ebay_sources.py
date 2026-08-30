@@ -632,7 +632,7 @@ def _public_incremental_ebay_counters(
         ),
         "already_known": known_count,
         "new": new_count,
-        "detail_scraped": new_count,
+        "detail_scraped": 0,
         "detail_skipped": known_count,
         "discovery_pages": int(
             counters[

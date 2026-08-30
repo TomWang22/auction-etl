@@ -524,6 +524,15 @@ def render_source_progress(
 
             if (
                 state == "running"
+                and discovered > 0
+                and new_records == 0
+            ):
+                st.caption(
+                    f"Reconciling {discovered:,} "
+                    "discovered records…"
+                )
+            elif (
+                state == "running"
                 and new_records == 0
             ):
                 st.caption(
@@ -833,10 +842,36 @@ def render_status(
             f"of {new_records:,} new records"
         )
     elif state in RUNNING_STATES:
-        progress_fraction = 0.0
-        progress_text = (
-            "Checking marketplaces for new records…"
+        summary = marketplace_summary(
+            status
         )
+
+        discovered_records = sum(
+            max(
+                0,
+                int(
+                    details.get(
+                        "discovered",
+                        0,
+                    )
+                    or 0
+                ),
+            )
+            for details
+            in summary.values()
+        )
+
+        progress_fraction = 0.0
+
+        if discovered_records > 0:
+            progress_text = (
+                f"Reconciling {discovered_records:,} "
+                "discovered records…"
+            )
+        else:
+            progress_text = (
+                "Checking marketplaces for new records…"
+            )
     else:
         progress_fraction = 1.0
 

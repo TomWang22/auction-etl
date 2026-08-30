@@ -165,9 +165,13 @@ def build_ebay_search_url(
     return (
         "https://www.ebay.com/sch/i.html"
         f"?_nkw={encoded}"
+        "&_sacat=176985"
+        "&_from=R40"
+        "&rt=nc"
         "&LH_Complete=1"
         "&LH_Sold=1"
         "&_sop=13"
+        "&_ipg=240"
     )
 
 

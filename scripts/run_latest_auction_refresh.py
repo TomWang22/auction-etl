@@ -1385,7 +1385,17 @@ def _incremental_result_count(
 def main() -> int:
     """Run a complete safe all-source refresh."""
     from auction_etl.services.artist_tracking import prepare_runtime_marketplace_configs
-    prepare_runtime_marketplace_configs()
+    runtime_configs = (
+        prepare_runtime_marketplace_configs()
+    )
+
+    ebay_config_path = Path(
+        runtime_configs["ebay"]
+    ).resolve()
+
+    gripsweat_config_path = Path(
+        runtime_configs["gripsweat"]
+    ).resolve()
     arguments = parse_arguments()
     root = Path(__file__).resolve().parents[1]
 
@@ -1520,8 +1530,8 @@ def main() -> int:
         root / "scripts" / "enrich_gripsweat_details.py",
         root / "scripts" / "collector_features.py",
         root / "scripts" / "reclassify_collector.py",
-        root / "config" / "ebay_sources.json",
-        root / "config" / "gripsweat_sources.json",
+        ebay_config_path,
+        gripsweat_config_path,
     )
 
     try:
@@ -1567,6 +1577,26 @@ def main() -> int:
                     WHERE marketplace = %s
                     """,
                     ("buyee",),
+                ).fetchall()
+            }
+
+
+            ebay_listing_ids_before = {
+                str(
+                    row[
+                        "listing_id"
+                    ]
+                )
+                for row
+                in connection.execute(
+                    """
+                    SELECT listing_id
+                    FROM warehouse.auction
+                    WHERE marketplace = %s
+                    """,
+                    (
+                        "ebay",
+                    ),
                 ).fetchall()
             }
 
@@ -2001,6 +2031,32 @@ def main() -> int:
                     "buyee",
                 )
 
+
+                buyee_discovered_count = int(
+                    scalar(
+                        connection,
+                        """
+                        SELECT COALESCE(
+                            MAX(
+                                listing_count
+                            ),
+                            0
+                        )
+                        FROM raw.page
+                        WHERE source = 'buyee'
+                          AND downloaded_at
+                              >= %s::timestamptz
+                        """,
+                        (
+                            str(
+                                status[
+                                    "started_at"
+                                ]
+                            ),
+                        ),
+                    )
+                )
+
             if buyee_staged < 1:
                 raise RuntimeError(
                     "No Buyee identities exist in staging."
@@ -2046,6 +2102,39 @@ def main() -> int:
             buyee_new_listing_ids = sorted(
                 buyee_listing_ids_after
                 - buyee_listing_ids_before
+            )
+
+
+            buyee_new_count = len(
+                buyee_new_listing_ids
+            )
+
+            buyee_already_known = max(
+                0,
+                buyee_discovered_count
+                - buyee_new_count,
+            )
+
+            _set_incremental_progress(
+                status,
+                status_file,
+                "buyee",
+                {
+                    "discovered":
+                        buyee_discovered_count,
+                    "already_known":
+                        buyee_already_known,
+                    "new":
+                        buyee_new_count,
+                    "detail_scraped":
+                        0,
+                    "detail_skipped":
+                        buyee_already_known,
+                    "discovery_pages":
+                        1,
+                    "consecutive_known_at_stop":
+                        0,
+                },
             )
 
             status[
@@ -2393,7 +2482,7 @@ def main() -> int:
             )
         else:
             for source_name in enabled_ebay_sources(
-                root / "config" / "ebay_sources.json"
+                ebay_config_path
             ):
                 ebay_incremental_stats = (
                     run_dir
@@ -2418,7 +2507,7 @@ def main() -> int:
                         sys.executable,
                         "scripts/crawl_ebay_sources.py",
                         "--config",
-                        "config/ebay_sources.json",
+                        str(ebay_config_path),
                         "--source",
                         source_name,
                         "--incremental-newest-first",
@@ -2526,6 +2615,113 @@ def main() -> int:
                 )
 
         if ebay_available:
+            with psycopg.connect(
+                psql_url,
+                row_factory=dict_row,
+            ) as connection:
+                ebay_listing_ids_after = {
+                    str(
+                        row[
+                            "listing_id"
+                        ]
+                    )
+                    for row
+                    in connection.execute(
+                        """
+                        SELECT listing_id
+                        FROM warehouse.auction
+                        WHERE marketplace = %s
+                        """,
+                        (
+                            "ebay",
+                        ),
+                    ).fetchall()
+                }
+
+            ebay_new_listing_ids = (
+                ebay_listing_ids_after
+                - ebay_listing_ids_before
+            )
+
+            ebay_new_count = len(
+                ebay_new_listing_ids
+            )
+
+            progress_root = status.get(
+                "marketplace_progress",
+                {},
+            )
+
+            if not isinstance(
+                progress_root,
+                dict,
+            ):
+                progress_root = {}
+
+            existing_ebay_progress = (
+                progress_root.get(
+                    "ebay",
+                    {},
+                )
+            )
+
+            if not isinstance(
+                existing_ebay_progress,
+                dict,
+            ):
+                existing_ebay_progress = {}
+
+            ebay_discovered_count = max(
+                int(
+                    existing_ebay_progress.get(
+                        "discovered",
+                        0,
+                    )
+                    or 0
+                ),
+                ebay_new_count,
+            )
+
+            ebay_already_known = max(
+                0,
+                ebay_discovered_count
+                - ebay_new_count,
+            )
+
+            _set_incremental_progress(
+                status,
+                status_file,
+                "ebay",
+                {
+                    "discovered":
+                        ebay_discovered_count,
+                    "already_known":
+                        ebay_already_known,
+                    "new":
+                        ebay_new_count,
+                    "detail_scraped":
+                        ebay_new_count,
+                    "detail_skipped":
+                        ebay_already_known,
+                    "discovery_pages":
+                        int(
+                            existing_ebay_progress.get(
+                                "discovery_pages",
+                                0,
+                            )
+                            or 0
+                        ),
+                    "consecutive_known_at_stop":
+                        int(
+                            existing_ebay_progress.get(
+                                "consecutive_known_at_stop",
+                                0,
+                            )
+                            or 0
+                        ),
+                },
+            )
+
             publish_source_visibility(
                 database_url=psql_url,
                 logger=logger,
@@ -2637,7 +2833,7 @@ def main() -> int:
                 sys.executable,
                 "scripts/probe_gripsweat.py",
                 "--config",
-                "config/gripsweat_sources.json",
+                str(gripsweat_config_path),
                 "--max-pages",
                 "1",
                 "--wait-seconds",
@@ -2660,7 +2856,7 @@ def main() -> int:
                 sys.executable,
                 "scripts/import_gripsweat_probe.py",
                 "--config",
-                "config/gripsweat_sources.json",
+                str(gripsweat_config_path),
                 "--probe",
                 str(probe_path),
             ],
@@ -2718,14 +2914,10 @@ def main() -> int:
                 "discovered": len(
                     gripsweat_probe_unique
                 ),
-                "already_known": (
-                    gripsweat_probe_known
-                ),
-                "new": gripsweat_probe_new,
+                "already_known": 0,
+                "new": 0,
                 "detail_scraped": 0,
-                "detail_skipped": (
-                    gripsweat_probe_known
-                ),
+                "detail_skipped": 0,
                 "discovery_pages": (
                     _incremental_page_count(
                         probe_path
@@ -2771,7 +2963,7 @@ def main() -> int:
                     sys.executable,
                     "scripts/audit_gripsweat_pagination.py",
                     "--config",
-                    "config/gripsweat_sources.json",
+                    str(gripsweat_config_path),
                     "--pages",
                     "10",
                     "--delay",
@@ -3018,6 +3210,16 @@ def main() -> int:
             ),
         )
 
+        gripsweat_new_count = len(
+            gripsweat_new_item_keys
+        )
+
+        gripsweat_already_known = max(
+            0,
+            gripsweat_discovered_count
+            - gripsweat_new_count,
+        )
+
         _set_incremental_progress(
             status,
             status_file,
@@ -3029,9 +3231,7 @@ def main() -> int:
                 "already_known": (
                     gripsweat_already_known
                 ),
-                "new": len(
-                    gripsweat_new_item_keys
-                ),
+                "new": gripsweat_new_count,
                 "detail_scraped": (
                     detail_scraped
                 ),
