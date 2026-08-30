@@ -677,8 +677,12 @@ async def _create_job(
             requested_by=_audit_requested_by(context),
             source_commit=_source_commit(body),
             trigger="api",
-            ebay_input=validate_structured_ebay_input(
-                body.get("ebay_input")
+            ebay_input=(
+                validate_structured_ebay_input(
+                    body["ebay_input"]
+                )
+                if "ebay_input" in body
+                else None
             ),
         )
     except PermissionError as exc:

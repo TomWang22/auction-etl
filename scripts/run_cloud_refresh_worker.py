@@ -921,12 +921,13 @@ def import_structured_ebay_job_input(
     engine,
     job_id: str,
     environment: dict[str, str],
-) -> int:
-    """Apply the durable eBay artifact and return its exact raw.page ID."""
+) -> int | None:
+    """Apply the durable eBay artifact when one is attached to the job."""
 
     job_input = get_refresh_job_input(engine, job_id)
+
     if job_input is None:
-        raise WorkerError(f"Refresh job {job_id} has no structured eBay input.")
+        return None
 
     importer = ROOT / "scripts" / "import_ebay_structured.py"
     temporary_path: Path | None = None

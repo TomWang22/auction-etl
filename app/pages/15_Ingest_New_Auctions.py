@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -36,10 +35,6 @@ from auction_etl.auth.streamlit_auth import (  # noqa: E402
 )
 from auction_etl.services.control_plane_refresh import (  # noqa: E402
     enqueue_refresh_via_control_plane,
-)
-from auction_etl.services.refresh_job_inputs import (  # noqa: E402
-    MAX_EBAY_INPUT_BYTES,
-    validate_structured_ebay_input,
 )
 from auction_etl.services.refresh_jobs import (  # noqa: E402
     build_refresh_engine,
@@ -1055,30 +1050,8 @@ def tail_log(
 
 
 
-def decode_ebay_upload(
-    uploaded_file,
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Decode and validate the operator-supplied eBay artifact."""
-
-    if uploaded_file is None:
-        return None, "Select the structured eBay JSON artifact."
-
-    raw = uploaded_file.getvalue()
-    if len(raw) > MAX_EBAY_INPUT_BYTES:
-        return None, "Structured eBay input exceeds 384 KiB."
-
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-        validated = validate_structured_ebay_input(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        return None, str(exc)
-
-    return dict(validated.payload), None
-
-
 def start_refresh(
     account_context: AccountContext,
-    ebay_input: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Queue or reuse one durable refresh for this account."""
     if not CONTROL_PLANE_URL:
@@ -1102,7 +1075,6 @@ def start_refresh(
             base_url=CONTROL_PLANE_URL,
             signing_secret=REFRESH_SIGNING_SECRET,
             account_context=account_context,
-            ebay_input=ebay_input,
         )
     except Exception as exc:
         st.error(
@@ -1276,35 +1248,24 @@ show_primary_status = bool(
     )
 )
 
-uploaded_ebay_input = st.file_uploader(
-    "Structured eBay handoff",
-    type=["json"],
-    key="structured_ebay_handoff",
-)
-ebay_input, ebay_input_error = decode_ebay_upload(uploaded_ebay_input)
-if ebay_input is not None:
-    st.caption(
-        "eBay handoff ready: "
-        f"{ebay_input.get('source_name', 'unknown')} · "
-        f"{len(ebay_input.get('listings', [])):,} listings"
-    )
-elif not is_running and ebay_input_error:
-    st.info(ebay_input_error, icon="ℹ️")
-
 button_label = (
     "Marketplace refresh is running…"
     if is_running
     else "Refresh marketplace sales"
 )
+
 button_clicked = st.button(
     button_label,
     type="primary",
     use_container_width=True,
-    disabled=is_running or ebay_input is None,
+    disabled=is_running,
 )
 
-if button_clicked and ebay_input is not None:
-    started_status = start_refresh(account_context, ebay_input)
+if button_clicked:
+    started_status = start_refresh(
+        account_context
+    )
+
     if started_status is not None:
         st.rerun()
 
