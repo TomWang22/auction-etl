@@ -2199,6 +2199,8 @@ def refresh_job_to_ui_status(
                         )
                         or 0
                     ),
+                "message": str(raw_row.get("message") or ""),
+                "error": str(raw_row.get("error") or ""),
             }
 
     phase = state

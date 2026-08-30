@@ -67,6 +67,13 @@ SOURCE_DIAGNOSTIC_PATTERN = re.compile(
     r"payload=(?P<payload>\{.*\})$"
 )
 
+SOURCE_PROGRESS_PATTERN = re.compile(
+    r"AUCTION_SOURCE_PROGRESS\s+"
+    r"source=(?P<source>\S+)\s+"
+    r"payload=(?P<payload>\{.*\})"
+)
+
+
 COUNTER_PATTERN = re.compile(
     r"\b("
     r"discovered|"
@@ -494,6 +501,92 @@ def parse_source_diagnostic(
     )
 
 
+
+def parse_source_progress(
+    line: str,
+) -> tuple[str, dict[str, int]] | None:
+    """Parse one canonical marketplace progress payload."""
+    match = SOURCE_PROGRESS_PATTERN.search(
+        line.strip()
+    )
+
+    if match is None:
+        return None
+
+    marketplace = normalize_source(
+        match.group(
+            "source"
+        )
+    )
+
+    if marketplace is None:
+        return None
+
+    try:
+        payload = json.loads(
+            match.group(
+                "payload"
+            )
+        )
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        return None
+
+    field_map = {
+        "discovered":
+            "discovered",
+        "already_known":
+            "already_known",
+        "new":
+            "new_count",
+        "new_count":
+            "new_count",
+        "detail_scraped":
+            "detail_scraped",
+        "detail_skipped":
+            "detail_skipped",
+        "discovery_pages":
+            "discovery_pages",
+        "consecutive_known_at_stop":
+            "consecutive_known_at_stop",
+    }
+
+    counters: dict[str, int] = {}
+
+    for raw_name, durable_name in field_map.items():
+        if raw_name not in payload:
+            continue
+
+        try:
+            value = int(
+                payload[
+                    raw_name
+                ]
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
+
+        counters[
+            durable_name
+        ] = max(
+            0,
+            value,
+        )
+
+    return (
+        marketplace,
+        counters,
+    )
+
+
 def parse_progress_counters(
     line: str,
 ) -> dict[str, int]:
@@ -860,6 +953,53 @@ class DurableProgress:
                     )
                 ),
                 error=error,
+                **self._counters[
+                    marketplace
+                ],
+            )
+
+            return
+
+        source_progress = (
+            parse_source_progress(
+                line
+            )
+        )
+
+        if source_progress is not None:
+            marketplace, counters = (
+                source_progress
+            )
+
+            self.current_marketplace = (
+                marketplace
+            )
+
+            self._counters[
+                marketplace
+            ].update(
+                counters
+            )
+
+            current_state = self._states[
+                marketplace
+            ]
+
+            if current_state not in {
+                "running",
+                "done",
+                "skipped",
+            }:
+                current_state = "running"
+
+            update_marketplace_state(
+                self._engine,
+                job_id=self._job_id,
+                worker_id=(
+                    self._worker_id
+                ),
+                marketplace=marketplace,
+                state=current_state,
                 **self._counters[
                     marketplace
                 ],

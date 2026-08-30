@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime
@@ -274,11 +273,130 @@ def durable_source_states(
     return result
 
 
+
+def marketplace_summary(
+    status: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Return normalized durable marketplace details."""
+    if not status:
+        return {}
+
+    raw_summary = status.get(
+        "summary",
+        {},
+    )
+
+    if not isinstance(
+        raw_summary,
+        dict,
+    ):
+        return {}
+
+    raw_marketplaces = raw_summary.get(
+        "marketplaces",
+        {},
+    )
+
+    if not isinstance(
+        raw_marketplaces,
+        dict,
+    ):
+        return {}
+
+    return {
+        str(marketplace).casefold(): details
+        for marketplace, details
+        in raw_marketplaces.items()
+        if isinstance(
+            details,
+            dict,
+        )
+    }
+
+
+def source_record_counts(
+    details: dict[str, Any],
+    source_state: str,
+) -> tuple[int, int]:
+    """Return processed and newly found records."""
+    new_records = max(
+        0,
+        int(
+            details.get(
+                "newly_ingested",
+                0,
+            )
+            or 0
+        ),
+    )
+
+    detail_scraped = max(
+        0,
+        int(
+            details.get(
+                "detail_scraped",
+                0,
+            )
+            or 0
+        ),
+    )
+
+    if source_state == "done":
+        processed = new_records
+    else:
+        processed = min(
+            detail_scraped,
+            new_records,
+        )
+
+    return (
+        processed,
+        new_records,
+    )
+
+
+def ingestion_record_counts(
+    status: dict[str, Any] | None,
+) -> tuple[int, int]:
+    """Return total processed and total newly found records."""
+    source_states = durable_source_states(
+        status
+    )
+    summary = marketplace_summary(
+        status
+    )
+
+    processed_total = 0
+    new_total = 0
+
+    for source in PLANNED_SOURCES:
+        processed, new_records = (
+            source_record_counts(
+                summary.get(
+                    source,
+                    {},
+                ),
+                source_states.get(
+                    source,
+                    "waiting",
+                ),
+            )
+        )
+
+        processed_total += processed
+        new_total += new_records
+
+    return (
+        processed_total,
+        new_total,
+    )
+
+
+
 def render_source_progress(
     status: dict[str, Any] | None,
 ) -> None:
-    """Show one compact status card per marketplace."""
-
+    """Render record-oriented progress for every marketplace."""
     overall_state = (
         str(
             status.get(
@@ -293,16 +411,31 @@ def render_source_progress(
     source_states = durable_source_states(
         status
     )
-    summary = (
-        status.get("summary", {}).get("marketplaces", {})
-        if status
-        else {}
+    summary = marketplace_summary(
+        status
     )
-    if not isinstance(summary, dict):
-        summary = {}
-    total_visible = int(status.get("total_visible", 0) or 0) if status else 0
-    st.metric("Total visible", f"{total_visible:,}")
 
+    processed_total, new_total = (
+        ingestion_record_counts(
+            status
+        )
+    )
+
+    metric_columns = st.columns(
+        2
+    )
+
+    with metric_columns[0]:
+        st.metric(
+            "New records found",
+            f"{new_total:,}",
+        )
+
+    with metric_columns[1]:
+        st.metric(
+            "Processed",
+            f"{processed_total:,} / {new_total:,}",
+        )
 
     columns = st.columns(
         len(
@@ -336,18 +469,80 @@ def render_source_progress(
             "⚪",
         )
 
-        details = summary.get(source, {})
-        if not isinstance(details, dict):
-            details = {}
-        visible_count = int(details.get("visible_count", 0) or 0)
-        visible_added = int(details.get("visible_added", 0) or 0)
+        details = summary.get(
+            source,
+            {},
+        )
+
+        processed, new_records = (
+            source_record_counts(
+                details,
+                state,
+            )
+        )
+
+        discovered = max(
+            0,
+            int(
+                details.get(
+                    "discovered",
+                    0,
+                )
+                or 0
+            ),
+        )
+
+        already_known = max(
+            0,
+            int(
+                details.get(
+                    "already_known",
+                    0,
+                )
+                or 0
+            ),
+        )
+
+        reason = str(
+            details.get(
+                "error"
+            )
+            or details.get(
+                "message"
+            )
+            or ""
+        ).strip()
 
         with column:
             st.markdown(
                 f"### {icon} {source}"
             )
-            st.markdown(f"**{visible_count:,} visible**")
-            st.caption(f"+{visible_added:,} this refresh")
+
+            st.markdown(
+                f"**{new_records:,} new**"
+            )
+
+            if (
+                state == "running"
+                and new_records == 0
+            ):
+                st.caption(
+                    "Checking for new records…"
+                )
+            else:
+                st.caption(
+                    f"Processed {processed:,} "
+                    f"of {new_records:,}"
+                )
+
+            if (
+                discovered > 0
+                or already_known > 0
+            ):
+                st.caption(
+                    f"Discovered {discovered:,} · "
+                    f"already known {already_known:,}"
+                )
 
             st.caption(
                 source_state_label(
@@ -355,6 +550,18 @@ def render_source_progress(
                     overall_state,
                 )
             )
+
+            if (
+                state
+                in {
+                    "failed",
+                    "unavailable",
+                }
+                and reason
+            ):
+                st.caption(
+                    reason
+                )
 
 
 def failed_sources(
@@ -586,186 +793,68 @@ def render_technical_details(
 
 
 
-def deployment_revision() -> str:
-    """Return the deployed Git revision when available."""
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "rev-parse",
-                "--short=12",
-                "HEAD",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-    except (
-        OSError,
-        subprocess.SubprocessError,
-    ):
-        return "unknown"
-
-    return result.stdout.strip() or "unknown"
-
-
-def durable_progress(
-    status: dict[str, Any],
-) -> tuple[int, int]:
-    """Return success and execution percentages from durable source states."""
-    source_states = durable_source_states(
-        status
-    )
-
-    states = [
-        str(
-            source_states.get(
-                source,
-                "waiting",
-            )
-        ).casefold()
-        for source in PLANNED_SOURCES
-    ]
-
-    meaningful_states = {
-        "running",
-        "observed",
-        "unavailable",
-        "done",
-        "failed",
-    }
-
-    if not any(
-        state in meaningful_states
-        for state in states
-    ):
-        success = int(
-            status.get(
-                "progress",
-                0,
-            )
-            or 0
-        )
-        execution = int(
-            status.get(
-                "execution_progress",
-                0,
-            )
-            or 0
-        )
-
-        return (
-            max(
-                0,
-                min(
-                    success,
-                    100,
-                ),
-            ),
-            max(
-                0,
-                min(
-                    execution,
-                    100,
-                ),
-            ),
-        )
-
-    successful = sum(
-        state == "done"
-        for state in states
-    )
-
-    terminal = sum(
-        state
-        in {
-            "done",
-            "unavailable",
-            "failed",
-        }
-        for state in states
-    )
-
-    total = len(
-        PLANNED_SOURCES
-    )
-
-    return (
-        int(
-            successful
-            / total
-            * 100
-        ),
-        int(
-            terminal
-            / total
-            * 100
-        ),
-    )
-
-
 def render_status(
     status: dict[str, Any],
 ) -> None:
-    """Render a clear user-facing refresh summary."""
-
+    """Render product-facing marketplace refresh status."""
     state = str(
         status.get(
             "status",
             "unknown",
         )
-    )
-
-    progress, execution_progress = (
-        durable_progress(
-            status
-        )
-    )
-
-    phase = str(
-        status.get(
-            "phase",
-            "Waiting",
-        )
-    )
+    ).casefold()
 
     message = str(
         status.get(
             "message",
             "",
         )
+        or ""
+    )
+
+    processed_records, new_records = (
+        ingestion_record_counts(
+            status
+        )
     )
 
     st.subheader(
-        "Latest refresh"
+        "Marketplace refresh"
     )
 
-    st.caption(
-        "App revision: "
-        f"{deployment_revision()} · "
-        f"job={status.get('job_id', 'unknown')} · "
-        f"progress={progress} · "
-        f"execution={execution_progress}"
-    )
-
-    display_phase = phase
-
-    if (
-        state == "completed"
-        and (
-            not display_phase
-            or display_phase.casefold()
-            == "completed"
+    if new_records > 0:
+        progress_fraction = min(
+            1.0,
+            processed_records
+            / new_records,
         )
-    ):
-        display_phase = "Completed"
+        progress_text = (
+            f"Processed {processed_records:,} "
+            f"of {new_records:,} new records"
+        )
+    elif state in RUNNING_STATES:
+        progress_fraction = 0.0
+        progress_text = (
+            "Checking marketplaces for new records…"
+        )
+    else:
+        progress_fraction = 1.0
+
+        if unavailable_sources(
+            status
+        ):
+            progress_text = (
+                "Refresh finished with an "
+                "unavailable marketplace"
+            )
+        else:
+            progress_text = (
+                "Refresh finished"
+            )
 
     st.progress(
-        progress / 100.0,
-        text=(
-            f"{progress}% — {display_phase}"
-        ),
+        progress_fraction,
+        text=progress_text,
     )
 
     render_source_progress(
@@ -791,6 +880,7 @@ def render_status(
                 "Marketplace sales are up to date.",
                 icon="✅",
             )
+
         elif unavailable:
             source_text = ", ".join(
                 unavailable
@@ -802,6 +892,7 @@ def render_status(
                 "Only completed marketplaces are up to date.",
                 icon="⚠️",
             )
+
         else:
             st.warning(
                 "Refresh finished, but not every marketplace "
@@ -923,7 +1014,6 @@ def render_status(
     render_technical_details(
         status
     )
-
 
 
 @st.cache_resource

@@ -1051,14 +1051,51 @@ def _write_incremental_ids(
     )
 
 
+
+def emit_incremental_progress(
+    marketplace: str,
+    counters: dict[str, int],
+) -> dict[str, int]:
+    """Emit canonical marketplace counters for the durable worker."""
+    normalized = {
+        field: max(
+            0,
+            int(
+                counters.get(
+                    field,
+                    0,
+                )
+            ),
+        )
+        for field in INCREMENTAL_PROGRESS_FIELDS
+    }
+
+    logging.getLogger(
+        "latest-auction-refresh"
+    ).info(
+        "AUCTION_SOURCE_PROGRESS source=%s payload=%s",
+        marketplace,
+        json.dumps(
+            normalized,
+            sort_keys=True,
+            separators=(
+                ",",
+                ":",
+            ),
+        ),
+    )
+
+    return normalized
+
+
+
 def _set_incremental_progress(
     status: dict[str, object],
     status_file: Path,
     marketplace: str,
     counters: dict[str, int],
 ) -> None:
-    """Persist one marketplace's counters."""
-
+    """Persist and emit one marketplace's counters."""
     root = status.setdefault(
         "marketplace_progress",
         {},
@@ -1073,24 +1110,20 @@ def _set_incremental_progress(
             "marketplace_progress"
         ] = root
 
+    normalized = emit_incremental_progress(
+        marketplace,
+        counters,
+    )
+
     root[
         marketplace
-    ] = {
-        field: int(
-            counters.get(
-                field,
-                0,
-            )
-        )
-        for field in (
-            INCREMENTAL_PROGRESS_FIELDS
-        )
-    }
+    ] = normalized
 
     write_json_atomic(
         status_file,
         status,
     )
+
 
 
 def _merge_incremental_progress(
@@ -1099,8 +1132,7 @@ def _merge_incremental_progress(
     marketplace: str,
     incoming: dict[str, object],
 ) -> None:
-    """Aggregate one configured source into marketplace counters."""
-
+    """Aggregate, persist, and emit one marketplace's counters."""
     root = status.setdefault(
         "marketplace_progress",
         {},
@@ -1125,16 +1157,12 @@ def _merge_incremental_progress(
     ):
         current = {
             field: 0
-            for field in (
-                INCREMENTAL_PROGRESS_FIELDS
-            )
+            for field in INCREMENTAL_PROGRESS_FIELDS
         }
 
     merged: dict[str, int] = {}
 
-    for field in (
-        INCREMENTAL_PROGRESS_FIELDS
-    ):
+    for field in INCREMENTAL_PROGRESS_FIELDS:
         old = int(
             current.get(
                 field,
@@ -1166,6 +1194,11 @@ def _merge_incremental_progress(
     root[
         marketplace
     ] = merged
+
+    emit_incremental_progress(
+        marketplace,
+        merged,
+    )
 
     write_json_atomic(
         status_file,
