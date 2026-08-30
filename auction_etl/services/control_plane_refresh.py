@@ -186,6 +186,7 @@ def enqueue_refresh_via_control_plane(
     base_url: str,
     signing_secret: str,
     account_context: AccountContext,
+    ebay_input: Mapping[str, Any] | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, Any], bool]:
     """Create or reuse an account-owned refresh through Vercel."""
@@ -206,10 +207,17 @@ def enqueue_refresh_via_control_plane(
     )
 
     try:
+        request_body: dict[str, Any] = {}
+
+        if ebay_input is not None:
+            request_body["ebay_input"] = dict(
+                ebay_input
+            )
+
         response = httpx.post(
             url,
             headers=headers,
-            json={},
+            json=request_body,
             timeout=float(
                 timeout_seconds
             ),

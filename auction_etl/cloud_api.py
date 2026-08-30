@@ -14,6 +14,10 @@ from sqlalchemy import Engine, text
 
 from auction_etl.auth.context import AccountContext
 from auction_etl.auth.internal_request import verify_account_request_signature
+from auction_etl.services.refresh_job_inputs import (
+    MAX_REFRESH_REQUEST_BYTES,
+    validate_structured_ebay_input,
+)
 from auction_etl.services.refresh_jobs import (
     RefreshCoordinationUnavailable,
     RefreshJobNotFound,
@@ -383,9 +387,9 @@ async def _request_json(
             )
         )
 
-        if len(body) > 64 * 1024:
+        if len(body) > MAX_REFRESH_REQUEST_BYTES:
             raise ValueError(
-                "Request body exceeds 64 KiB."
+                "Request body exceeds 512 KiB."
             )
 
         more_body = bool(
@@ -673,6 +677,9 @@ async def _create_job(
             requested_by=_audit_requested_by(context),
             source_commit=_source_commit(body),
             trigger="api",
+            ebay_input=validate_structured_ebay_input(
+                body.get("ebay_input")
+            ),
         )
     except PermissionError as exc:
         await _respond(

@@ -99,6 +99,16 @@ def parse_args(
         ),
     )
 
+    parser.add_argument(
+        "--ebay-structured-raw-page-id",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--require-all-sources",
+        action="store_true",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -1415,6 +1425,16 @@ def main(
             "--buyee-profile",
             arguments.buyee_profile,
         ]
+
+        if arguments.ebay_structured_raw_page_id is not None:
+            command.extend(
+                [
+                    "--ebay-structured-raw-page-id",
+                    str(arguments.ebay_structured_raw_page_id),
+                ]
+            )
+        if arguments.require_all_sources:
+            command.append("--require-all-sources")
 
         return_code = stream_command(
             command,

@@ -90,6 +90,15 @@ def parse_arguments() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--ebay-structured-raw-page-id",
+        type=int,
+        default=None,
+        help=(
+            "Process this exact structured eBay raw.page ID and "
+            "prohibit browser fallback."
+        ),
+    )
+    parser.add_argument(
         "--expected-database-name",
         default=os.environ.get(
             "AUCTION_EXPECTED_DATABASE_NAME",
@@ -778,6 +787,65 @@ def staging_count(
     )
 
 
+
+def require_structured_ebay_raw_page(
+    connection: psycopg.Connection,
+    raw_page_id: int,
+) -> None:
+    """Require one exact importer-owned eBay raw.page regardless of parsed_at."""
+
+    row = connection.execute(
+        """
+        SELECT id, source, url
+        FROM raw.page
+        WHERE id = %s
+        """,
+        (raw_page_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"Structured eBay raw.page {raw_page_id} does not exist."
+        )
+    if str(row["source"]) != "ebay" or not str(row["url"]).startswith(
+        "collector://ebay/"
+    ):
+        raise RuntimeError(
+            "Structured eBay handoff must reference collector://ebay/... raw.page."
+        )
+
+
+def publish_source_visibility(
+    *,
+    database_url: str,
+    logger: logging.Logger,
+    source: str,
+) -> None:
+    """Publish one completed marketplace into account-visible Review state."""
+
+    from auction_etl.services.account_visibility import (
+        publish_current_refresh_visibility,
+    )
+
+    marketplace = {
+        "Buyee": "buyee",
+        "eBay": "ebay",
+        "Gripsweat": "gripsweat",
+    }[source]
+    result = publish_current_refresh_visibility(
+        database_url,
+        marketplace=marketplace,
+    )
+    if result is None:
+        return
+
+    logger.info(
+        "AUCTION_SOURCE_VISIBLE source=%s visible_count=%d visible_added=%d",
+        source,
+        result.visible_count,
+        result.visible_added,
+    )
+
+
 def unparsed_external_ebay_raw_page_count(
     connection: psycopg.Connection,
 ) -> int:
@@ -805,17 +873,30 @@ def process_ebay_raw_pages(
     status: dict[str, Any],
     psql_url: str,
     phase_label: str,
+    raw_page_id: int | None = None,
 ) -> None:
     """Parse, normalize, validate, and safely synchronize pending eBay pages."""
-    run_command(
-        [
+    if raw_page_id is None:
+        parse_command = [
             sys.executable,
             "-m",
             "auction_etl.cli.main",
             "parse",
             "source",
             "ebay",
-        ],
+        ]
+    else:
+        parse_command = [
+            sys.executable,
+            "-m",
+            "auction_etl.cli.main",
+            "parse",
+            "page",
+            str(raw_page_id),
+        ]
+
+    run_command(
+        parse_command,
         root=root,
         environment=environment,
         logger=logger,
@@ -2220,6 +2301,11 @@ def main() -> int:
                 )
 
         if buyee_available:
+            publish_source_visibility(
+                database_url=psql_url,
+                logger=logger,
+                source="Buyee",
+            )
             emit_source_state(
                 logger,
                 "Buyee",
@@ -2242,11 +2328,18 @@ def main() -> int:
             psql_url,
             row_factory=dict_row,
         ) as connection:
-            pending_ebay_raw_pages = (
-                unparsed_external_ebay_raw_page_count(
+            if arguments.ebay_structured_raw_page_id is not None:
+                require_structured_ebay_raw_page(
+                    connection,
+                    arguments.ebay_structured_raw_page_id,
+                )
+                pending_ebay_raw_pages = 1
+            else:
+                pending_ebay_raw_pages = (
+                    unparsed_external_ebay_raw_page_count(
                     connection
                 )
-            )
+                )
 
         if pending_ebay_raw_pages > 0:
             logger.info(
@@ -2263,6 +2356,7 @@ def main() -> int:
                 status=status,
                 psql_url=psql_url,
                 phase_label="external raw-page handoff",
+                raw_page_id=arguments.ebay_structured_raw_page_id,
             )
         else:
             for source_name in enabled_ebay_sources(
@@ -2399,6 +2493,11 @@ def main() -> int:
                 )
 
         if ebay_available:
+            publish_source_visibility(
+                database_url=psql_url,
+                logger=logger,
+                source="eBay",
+            )
             status["ebay_source_state"] = "available"
             status["ebay_runtime_semantics"] = (
                 "EBAY_SOURCE_AVAILABLE"
@@ -2951,6 +3050,11 @@ def main() -> int:
             gripsweat_consecutive_known,
         )
 
+        publish_source_visibility(
+            database_url=psql_url,
+            logger=logger,
+            source="Gripsweat",
+        )
         emit_source_state(
             logger,
             "Gripsweat",

@@ -342,7 +342,7 @@ def collector_value(
 
 
 @st.cache_data(
-    ttl=30,
+    ttl=2,
     show_spinner=False,
 )
 def load_records(account_id: str) -> pd.DataFrame:

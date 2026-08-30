@@ -11,6 +11,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -26,6 +27,9 @@ if str(ROOT) not in sys.path:
         str(ROOT),
     )
 
+from auction_etl.services.refresh_job_inputs import (  # noqa: E402
+    get_refresh_job_input,
+)
 from auction_etl.services.refresh_jobs import (  # noqa: E402
     RefreshLeaseLost,
     build_refresh_engine,
@@ -50,6 +54,13 @@ SOURCE_STATE_PATTERN = re.compile(
     r"state=(?P<state>\S+)"
 )
 
+SOURCE_VISIBLE_PATTERN = re.compile(
+    r"^AUCTION_SOURCE_VISIBLE "
+    r"source=(?P<source>\S+) "
+    r"visible_count=(?P<visible_count>\d+) "
+    r"visible_added=(?P<visible_added>\d+)$"
+)
+
 SOURCE_DIAGNOSTIC_PATTERN = re.compile(
     r"^AUCTION_SOURCE_DIAGNOSTIC "
     r"source=(?P<source>\S+) "
@@ -61,6 +72,8 @@ COUNTER_PATTERN = re.compile(
     r"discovered|"
     r"already_known|"
     r"new_count|"
+    r"visible_count|"
+    r"visible_added|"
     r"detail_scraped|"
     r"detail_skipped|"
     r"discovery_pages|"
@@ -762,6 +775,37 @@ class DurableProgress:
 
             return
 
+        visible_match = SOURCE_VISIBLE_PATTERN.search(
+            line.strip()
+        )
+
+        if visible_match is not None:
+            marketplace = normalize_source(
+                visible_match.group("source")
+            )
+            if marketplace is not None:
+                self._counters[
+                    marketplace
+                ].update(
+                    {
+                        "visible_count": int(
+                            visible_match.group("visible_count")
+                        ),
+                        "visible_added": int(
+                            visible_match.group("visible_added")
+                        ),
+                    }
+                )
+                update_marketplace_state(
+                    self._engine,
+                    job_id=self._job_id,
+                    worker_id=self._worker_id,
+                    marketplace=marketplace,
+                    state=self._states[marketplace],
+                    **self._counters[marketplace],
+                )
+            return
+
         source_diagnostic = (
             parse_source_diagnostic(
                 line
@@ -871,11 +915,74 @@ class DurableProgress:
         )
 
 
+
+def import_structured_ebay_job_input(
+    *,
+    engine,
+    job_id: str,
+    environment: dict[str, str],
+) -> int:
+    """Apply the durable eBay artifact and return its exact raw.page ID."""
+
+    job_input = get_refresh_job_input(engine, job_id)
+    if job_input is None:
+        raise WorkerError(f"Refresh job {job_id} has no structured eBay input.")
+
+    importer = ROOT / "scripts" / "import_ebay_structured.py"
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".json",
+            prefix=f"auction-ebay-{job_id}-",
+            delete=False,
+        ) as handle:
+            json.dump(job_input.payload, handle, ensure_ascii=False)
+            handle.write("\n")
+            temporary_path = Path(handle.name)
+
+        completed = subprocess.run(
+            [sys.executable, str(importer), str(temporary_path), "--apply"],
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+    output = (completed.stdout or "") + (completed.stderr or "")
+    for line in output.splitlines():
+        print(line, flush=True)
+
+    if completed.returncode != 0:
+        raise WorkerError(
+            f"Structured eBay importer failed with status {completed.returncode}."
+        )
+    if "STRUCTURED_EBAY_RAWPAGE_IMPORT=PASS" not in output:
+        raise WorkerError("Structured eBay importer did not emit PASS.")
+
+    match = re.search(
+        r"^✓ Raw Page\s*:\s*(?P<raw_page_id>\d+)\s*$",
+        output,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise WorkerError("Structured eBay importer did not report raw.page ID.")
+
+    return int(match.group("raw_page_id"))
+
+
 def runner_command(
     *,
     database_url: str,
     buyee_profile: str,
     output_directory: Path | None,
+    ebay_structured_raw_page_id: int | None = None,
 ) -> list[str]:
     """Build the canonical marketplace execution command."""
     command = [
@@ -889,6 +996,14 @@ def runner_command(
         buyee_profile,
         "--execute",
     ]
+    if ebay_structured_raw_page_id is not None:
+        command.extend(
+            [
+                "--ebay-structured-raw-page-id",
+                str(ebay_structured_raw_page_id),
+                "--require-all-sources",
+            ]
+        )
 
     if output_directory is not None:
         run_directory = (
@@ -955,14 +1070,6 @@ def execute_claimed_job(
         ),
     )
 
-    command = runner_command(
-        database_url=database_url,
-        buyee_profile=buyee_profile,
-        output_directory=(
-            output_directory
-        ),
-    )
-
     environment = os.environ.copy()
     environment[
         "DATABASE_URL"
@@ -970,12 +1077,26 @@ def execute_claimed_job(
     environment[
         "AUCTION_ACCOUNT_ID"
     ] = account_id
+    environment["AUCTION_REFRESH_JOB_ID"] = job_id
 
     if requested_by_user_id:
         environment[
             "AUCTION_REQUESTED_BY_USER_ID"
         ] = requested_by_user_id
 
+    ebay_raw_page_id = import_structured_ebay_job_input(
+        engine=engine,
+        job_id=job_id,
+        environment=environment,
+    )
+    command = runner_command(
+        database_url=database_url,
+        buyee_profile=buyee_profile,
+        output_directory=(
+            output_directory
+        ),
+        ebay_structured_raw_page_id=ebay_raw_page_id,
+    )
     child = subprocess.Popen(
         command,
         cwd=ROOT,

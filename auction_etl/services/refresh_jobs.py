@@ -11,6 +11,11 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from auction_etl.services.account_scope import account_transaction
+from auction_etl.services.refresh_job_inputs import (
+    StructuredEbayJobInput,
+    get_refresh_job_input_from_connection,
+    persist_refresh_job_input,
+)
 
 MARKETPLACES: tuple[tuple[str, int], ...] = (
     ("buyee", 1),
@@ -49,6 +54,8 @@ COUNTER_FIELDS = (
     "discovered",
     "already_known",
     "new_count",
+    "visible_count",
+    "visible_added",
     "detail_scraped",
     "detail_skipped",
     "discovery_pages",
@@ -243,6 +250,20 @@ def _require_schema(
                     AS refresh_marketplace,
                 to_regclass('ops.refresh_event') IS NOT NULL
                     AS refresh_event,
+                to_regclass('ops.refresh_job_input') IS NOT NULL
+                    AS refresh_job_input,
+                EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'ops'
+                      AND table_name = 'refresh_marketplace'
+                      AND column_name = 'visible_count'
+                ) AS refresh_marketplace_visible_count,
+                EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'ops'
+                      AND table_name = 'refresh_marketplace'
+                      AND column_name = 'visible_added'
+                ) AS refresh_marketplace_visible_added,
                 EXISTS (
                     SELECT 1
                     FROM information_schema.columns
@@ -265,6 +286,9 @@ def _require_schema(
         "refresh_job",
         "refresh_marketplace",
         "refresh_event",
+        "refresh_job_input",
+        "refresh_marketplace_visible_count",
+        "refresh_marketplace_visible_added",
         "refresh_job_account_id",
         "refresh_job_requested_by_user_id",
     )
@@ -371,6 +395,8 @@ def _marketplace_rows(
                 discovered,
                 already_known,
                 new_count,
+                visible_count,
+                visible_added,
                 detail_scraped,
                 detail_skipped,
                 discovery_pages,
@@ -696,6 +722,7 @@ def create_refresh_job(
     requested_by: str | None = None,
     source_commit: str | None = None,
     trigger: str = "api",
+    ebay_input: StructuredEbayJobInput | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Create/reuse one queued job within the authenticated account."""
     validated_account_id = _account_uuid(account_id)
@@ -777,6 +804,18 @@ def create_refresh_job(
         ).mappings().one_or_none()
 
         if active is not None:
+            existing_input = get_refresh_job_input_from_connection(
+                connection,
+                active["id"],
+            )
+            if ebay_input is not None and (
+                existing_input is None
+                or existing_input.sha256 != ebay_input.sha256
+            ):
+                raise ValueError(
+                    "An active refresh already exists with a different "
+                    "structured eBay input."
+                )
             return (
                 _job_from_row(connection, active),
                 False,
@@ -836,6 +875,13 @@ def create_refresh_job(
                 "source_commit": source_commit,
             },
         ).mappings().one()
+
+        if ebay_input is not None:
+            persist_refresh_job_input(
+                connection,
+                job_id=job_id,
+                ebay_input=ebay_input,
+            )
 
         connection.execute(
             text(
@@ -1256,6 +1302,8 @@ def update_marketplace_state(
     discovered: int | None = None,
     already_known: int | None = None,
     new_count: int | None = None,
+    visible_count: int | None = None,
+    visible_added: int | None = None,
     detail_scraped: int | None = None,
     detail_skipped: int | None = None,
     discovery_pages: int | None = None,
@@ -1296,6 +1344,8 @@ def update_marketplace_state(
                 new_count,
                 name="new_count",
             ),
+        "visible_count": _counter(visible_count, name="visible_count"),
+        "visible_added": _counter(visible_added, name="visible_added"),
         "detail_scraped":
             _counter(
                 detail_scraped,
@@ -1389,6 +1439,8 @@ def update_marketplace_state(
                         :new_count,
                         new_count
                     ),
+                    visible_count = COALESCE(:visible_count, visible_count),
+                    visible_added = COALESCE(:visible_added, visible_added),
                     detail_scraped = COALESCE(
                         :detail_scraped,
                         detail_scraped
@@ -1424,6 +1476,8 @@ def update_marketplace_state(
                     discovered,
                     already_known,
                     new_count,
+                    visible_count,
+                    visible_added,
                     detail_scraped,
                     detail_skipped,
                     discovery_pages,
@@ -2073,6 +2127,22 @@ def refresh_job_to_ui_status(
             summary_marketplaces[
                 marketplace
             ] = {
+                "visible_count":
+                    int(
+                        raw_row.get(
+                            "visible_count",
+                            0,
+                        )
+                        or 0
+                    ),
+                "visible_added":
+                    int(
+                        raw_row.get(
+                            "visible_added",
+                            0,
+                        )
+                        or 0
+                    ),
                 "newly_ingested":
                     int(
                         raw_row.get(
@@ -2265,6 +2335,18 @@ def refresh_job_to_ui_status(
         "source_states":
             dict(
                 marketplace_states
+            ),
+        "total_visible":
+            sum(
+                int(
+                    details.get(
+                        "visible_count",
+                        0,
+                    )
+                    or 0
+                )
+                for details
+                in summary_marketplaces.values()
             ),
         "summary": {
             "marketplaces":
