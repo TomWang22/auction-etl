@@ -1382,6 +1382,52 @@ def _incremental_result_count(
     )
 
 
+def _gripsweat_new_detail_item_ids(
+    rows: list[dict[str, Any]],
+    new_item_keys: set[str],
+) -> list[str]:
+    """Return detail IDs belonging only to genuinely new stable identities."""
+
+    result: set[str] = set()
+
+    for row in rows:
+        raw_key = row.get(
+            "gripsweat_item_key"
+        )
+        raw_item_id = row.get(
+            "gripsweat_item_id"
+        )
+
+        if (
+            raw_key is None
+            or raw_item_id is None
+        ):
+            continue
+
+        item_key = str(
+            raw_key
+        ).strip()
+
+        item_id = str(
+            raw_item_id
+        ).strip()
+
+        if (
+            not item_key
+            or item_key not in new_item_keys
+            or not item_id
+        ):
+            continue
+
+        result.add(
+            item_id
+        )
+
+    return sorted(
+        result
+    )
+
+
 def main() -> int:
     """Run a complete safe all-source refresh."""
     from auction_etl.services.artist_tracking import prepare_runtime_marketplace_configs
@@ -1703,14 +1749,53 @@ def main() -> int:
             buyee_profile_dir
         )
 
-        buyee_storage_state = Path(
+        configured_buyee_storage_state = (
             environment.get(
+                "AUCTION_BUYEE_STORAGE_STATE",
+                "",
+            ).strip()
+            or environment.get(
                 "BUYEE_STORAGE_STATE_FILE",
-                '/data/buyee-profile/.auction-etl/private/buyee-storage-state.json',
-            )
-        ).expanduser()
+                "",
+            ).strip()
+        )
 
-        environment["BUYEE_STORAGE_STATE_FILE"] = str(
+        if configured_buyee_storage_state:
+            buyee_storage_state = Path(
+                configured_buyee_storage_state
+            ).expanduser()
+        else:
+            buyee_storage_state = (
+                buyee_profile_dir
+                / ".auction-etl"
+                / "private"
+                / "buyee-storage-state.json"
+            )
+
+        if not buyee_storage_state.is_absolute():
+            buyee_storage_state = (
+                root
+                / buyee_storage_state
+            )
+
+        buyee_storage_state = (
+            buyee_storage_state.resolve()
+        )
+
+        buyee_storage_state.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        environment[
+            "AUCTION_BUYEE_STORAGE_STATE"
+        ] = str(
+            buyee_storage_state
+        )
+
+        environment[
+            "BUYEE_STORAGE_STATE_FILE"
+        ] = str(
             buyee_storage_state
         )
 
@@ -2914,10 +2999,16 @@ def main() -> int:
                 "discovered": len(
                     gripsweat_probe_unique
                 ),
-                "already_known": 0,
-                "new": 0,
+                "already_known": (
+                    gripsweat_probe_known
+                ),
+                "new": (
+                    gripsweat_probe_new
+                ),
                 "detail_scraped": 0,
-                "detail_skipped": 0,
+                "detail_skipped": (
+                    gripsweat_probe_known
+                ),
                 "discovery_pages": (
                     _incremental_page_count(
                         probe_path
@@ -3076,9 +3167,9 @@ def main() -> int:
             gripsweat_item_keys_after
             - gripsweat_item_keys_before
         )
-        gripsweat_new_item_ids = sorted(
-            gripsweat_item_ids_after
-            - gripsweat_item_ids_before
+        gripsweat_new_item_ids = _gripsweat_new_detail_item_ids(
+            gripsweat_after_rows,
+            gripsweat_new_item_keys,
         )
 
         gripsweat_audit_sequence = (

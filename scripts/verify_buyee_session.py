@@ -58,21 +58,53 @@ MAINTENANCE_EXIT_CODE = 5
 
 
 def default_storage_state_path() -> Path:
-    """Return the preferred private Buyee storage-state path."""
-    configured = os.environ.get(
-        "BUYEE_STORAGE_STATE_FILE",
+    """Return the storage state belonging to the active Buyee profile."""
+
+    configured = (
+        os.environ.get(
+            "AUCTION_BUYEE_STORAGE_STATE",
+            "",
+        ).strip()
+        or os.environ.get(
+            "BUYEE_STORAGE_STATE_FILE",
+            "",
+        ).strip()
+    )
+
+    if configured:
+        return Path(
+            configured
+        ).expanduser()
+
+    profile_directory = os.environ.get(
+        "AUCTION_BUYEE_PROFILE_DIR",
         "",
     ).strip()
 
-    if configured:
-        return Path(configured).expanduser()
+    if profile_directory:
+        return (
+            Path(
+                profile_directory
+            ).expanduser()
+            / ".auction-etl"
+            / "private"
+            / "buyee-storage-state.json"
+        )
 
-    railway_path = Path(
-        '/data/buyee-profile/.auction-etl/private/buyee-storage-state.json'
-    )
+    railway_volume = os.environ.get(
+        "RAILWAY_VOLUME_MOUNT_PATH",
+        "",
+    ).strip()
 
-    if railway_path.is_file():
-        return railway_path
+    if railway_volume:
+        return (
+            Path(
+                railway_volume
+            ).expanduser()
+            / ".auction-etl"
+            / "private"
+            / "buyee-storage-state.json"
+        )
 
     return (
         Path.home()

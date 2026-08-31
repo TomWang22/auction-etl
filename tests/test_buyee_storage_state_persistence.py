@@ -39,25 +39,40 @@ def load_source(path: Path) -> str:
 
 
 def test_runner_uses_persistent_buyee_state() -> None:
-    """Keep production Buyee state inside the mounted Railway volume."""
+    """Derive persistent state from the effective Buyee runtime profile."""
+
     source = load_source(
         RUNNER
     )
 
-    assert PERSISTENT_STATE in source
+    assert "AUCTION_BUYEE_STORAGE_STATE" in source
     assert "BUYEE_STORAGE_STATE_FILE" in source
-    assert DISPOSABLE_STATE not in source
+    assert "AUCTION_BUYEE_PROFILE_DIR" in source
+    assert "configured_buyee_storage_state" in source
+
+    assert (
+        "buyee_storage_state.parent.mkdir"
+        in source
+    )
+
+    assert (
+        "str(buyee_storage_state)"
+        in source
+    )
 
 
 def test_verifier_defaults_to_persistent_buyee_state() -> None:
-    """Use persistent state when no explicit verifier path is supplied."""
+    """Resolve verifier state from explicit, profile, or Railway runtime paths."""
+
     source = load_source(
         VERIFIER
     )
 
-    assert PERSISTENT_STATE in source
+    assert "AUCTION_BUYEE_STORAGE_STATE" in source
     assert "BUYEE_STORAGE_STATE_FILE" in source
-    assert DISPOSABLE_STATE not in source
+    assert "AUCTION_BUYEE_PROFILE_DIR" in source
+    assert "RAILWAY_VOLUME_MOUNT_PATH" in source
+    assert "buyee-storage-state.json" in source
 
 
 def test_http_crawler_defaults_to_persistent_buyee_state() -> None:

@@ -47,7 +47,8 @@ def authentication_preflight_block() -> str:
 
 
 def test_buyee_preflight_uses_https_verifier() -> None:
-    """Determine Buyee availability through the HTTPS-first verifier."""
+    """Pass the effective runtime storage state to the HTTPS verifier."""
+
     block = authentication_preflight_block()
     source = runner_source()
 
@@ -56,12 +57,10 @@ def test_buyee_preflight_uses_https_verifier() -> None:
     assert "str(buyee_storage_state)" in block
 
     assert "BUYEE_STORAGE_STATE_FILE" in source
-    assert (
-        "/data/buyee-profile/"
-        ".auction-etl/private/"
-        "buyee-storage-state.json"
-        in source
-    )
+    assert "AUCTION_BUYEE_STORAGE_STATE" in source
+    assert "AUCTION_BUYEE_PROFILE_DIR" in source
+    assert "configured_buyee_storage_state" in source
+    assert "buyee_storage_state.parent.mkdir" in source
 
 
 def test_buyee_preflight_does_not_use_owner_verification_job() -> None:

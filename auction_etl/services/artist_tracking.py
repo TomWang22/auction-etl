@@ -1646,9 +1646,23 @@ def _generated_ebay_source(
     ] = True
 
     if "profile" in source:
+        profile_name = (
+            os.environ.get(
+                "AUCTION_EBAY_PROFILE_NAME",
+                "",
+            ).strip()
+            or str(
+                template.get(
+                    "profile"
+                )
+                or ""
+            ).strip()
+            or "facerecords"
+        )
+
         source[
             "profile"
-        ] = slug
+        ] = profile_name
 
     if "seller" in source:
         source[
