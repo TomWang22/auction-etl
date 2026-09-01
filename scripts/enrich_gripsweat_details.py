@@ -211,6 +211,14 @@ def parse_args() -> argparse.Namespace:
         help="Write repaired and enriched values to PostgreSQL.",
     )
     parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help=(
+            "Return success when records were ingested but some "
+            "detail pages remain incomplete."
+        ),
+    )
+    parser.add_argument(
         "--refresh-complete",
         action="store_true",
         help="Revisit rows that already have title and sold date.",
@@ -1595,6 +1603,17 @@ def main() -> int:
     print("Output          :", args.output)
 
     print_database_summary()
+
+    if incomplete > 0 and args.allow_incomplete:
+        print()
+        print(
+            "Incomplete detail records remain durable and "
+            "can be enriched later."
+        )
+        print(
+            "GRIPSWEAT_INCOMPLETE_DETAIL_POLICY=CONTINUE"
+        )
+        return 0
 
     return 0 if incomplete == 0 else 1
 

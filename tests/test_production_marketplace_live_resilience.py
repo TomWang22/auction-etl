@@ -206,15 +206,13 @@ def test_required_source_failure_is_decided_after_source_attempts() -> None:
 
 
 def test_worker_preserves_successful_later_marketplace_on_global_failure() -> None:
-    """Job failure must not overwrite a later successful source row."""
+    """Job failure terminalizes only nonterminal source rows."""
     worker = source(WORKER)
 
     assert "self._failed_marketplaces" in worker
-    assert "runner_failure_marketplace" in worker
-    assert (
-        "progress.runner_failure_marketplace"
-        in worker
-    )
+    assert "def finalize_runner_failure" in worker
+    assert "progress.finalize_runner_failure(" in worker
+    assert 'if state != "waiting":' in worker
 
 
 def test_review_surface_rerenders_live_account_visibility() -> None:
@@ -231,3 +229,70 @@ def test_review_surface_rerenders_live_account_visibility() -> None:
     assert "account.auction_listing" in review
     assert "@st.cache_data(" in review
     assert "ttl=2" in review
+
+def test_ebay_failure_persists_child_output_without_cross_source_leak() -> None:
+    """eBay diagnostics must retain the child error and stay source-scoped."""
+    runner = source(RUNNER)
+    emit_block = function_block(
+        RUNNER,
+        "emit_source_state",
+    )
+
+    assert "marketplace_diagnostics" in emit_block
+    assert 'status.get(\n                    "message"' not in emit_block
+    assert "bounded_command_output" in runner
+    assert "command_output_tail" in runner
+    assert "eBay child output tail" in runner
+    assert '"captcha"' in runner
+    assert '"robot check"' in runner
+    assert '"access denied"' in runner
+
+
+def test_gripsweat_incomplete_details_are_nonfatal_in_production() -> None:
+    """Durable identity ingestion must survive partial detail enrichment."""
+    runner = source(RUNNER)
+    details = source(GRIPSWEAT_DETAILS)
+
+    assert '"--allow-incomplete"' in runner
+    assert '"--allow-incomplete"' in details
+    assert "GRIPSWEAT_INCOMPLETE_DETAIL_POLICY=CONTINUE" in details
+    assert "_incremental_detail_result_counts" in runner
+    assert "GRIPSWEAT_DETAIL_ENRICHMENT_PARTIAL" in runner
+
+
+def test_worker_terminalizes_marketplaces_before_parent_failure() -> None:
+    """A terminal parent job must not leave a marketplace running forever."""
+    worker = source(WORKER)
+    block = function_block(
+        WORKER,
+        "execute_claimed_job",
+    )
+
+    assert "def finalize_runner_failure" in worker
+    assert "progress.finalize_runner_failure(" in block
+    assert 'state="failed"' in worker
+    assert 'state="skipped"' in worker
+    assert "marketplace=None" in block
+
+
+def test_refresh_ui_separates_marketplace_and_record_progress() -> None:
+    """The UI must show stage completion separately from record throughput."""
+    page = source(
+        ROOT
+        / "app"
+        / "pages"
+        / "15_Ingest_New_Auctions.py"
+    )
+    block = function_block(
+        ROOT
+        / "app"
+        / "pages"
+        / "15_Ingest_New_Auctions.py",
+        "render_status",
+    )
+
+    assert "def marketplace_stage_counts" in page
+    assert "Marketplace stages:" in block
+    assert "of {total_stages} settled" in block
+    assert "Record processing:" in block
+    assert "marketplace failures:" in block

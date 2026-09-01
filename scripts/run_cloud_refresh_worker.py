@@ -830,11 +830,76 @@ class DurableProgress:
     def runner_failure_marketplace(
         self,
     ) -> str | None:
-        """Return a source to fail only when none failed explicitly."""
+        """Return the current source when no source failed explicitly."""
         if self._failed_marketplaces:
             return None
 
         return self.current_marketplace
+
+    def finalize_runner_failure(
+        self,
+        error: str,
+    ) -> None:
+        """Terminalize marketplace rows before the parent job is failed."""
+        error_tail = error[-8000:]
+        current = self.current_marketplace
+
+        if (
+            current is not None
+            and self._states.get(
+                current
+            )
+            in {
+                "waiting",
+                "running",
+            }
+        ):
+            self._states[
+                current
+            ] = "failed"
+            self._failed_marketplaces.add(
+                current
+            )
+
+            update_marketplace_state(
+                self._engine,
+                job_id=self._job_id,
+                worker_id=self._worker_id,
+                marketplace=current,
+                state="failed",
+                message=(
+                    "Marketplace execution failed."
+                ),
+                error=error_tail,
+                **self._counters[
+                    current
+                ],
+            )
+
+        for marketplace, state in tuple(
+            self._states.items()
+        ):
+            if state != "waiting":
+                continue
+
+            self._states[
+                marketplace
+            ] = "skipped"
+
+            update_marketplace_state(
+                self._engine,
+                job_id=self._job_id,
+                worker_id=self._worker_id,
+                marketplace=marketplace,
+                state="skipped",
+                message=(
+                    "Marketplace was not reached because "
+                    "the refresh runner stopped."
+                ),
+                **self._counters[
+                    marketplace
+                ],
+            )
 
     def consume(
         self,
@@ -1375,8 +1440,8 @@ def execute_claimed_job(
                 f"with status {return_code}."
             )
 
-        failure_marketplace = (
-            progress.runner_failure_marketplace
+        progress.finalize_runner_failure(
+            failure_text
         )
 
         mark_refresh_job_failed(
@@ -1385,9 +1450,7 @@ def execute_claimed_job(
             worker_id=(
                 worker_id_value
             ),
-            marketplace=(
-                failure_marketplace
-            ),
+            marketplace=None,
             error=failure_text[-8000:],
             message=(
                 "Canonical marketplace runner failed "

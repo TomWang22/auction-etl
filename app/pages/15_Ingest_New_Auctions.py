@@ -393,6 +393,49 @@ def ingestion_record_counts(
 
 
 
+def marketplace_stage_counts(
+    status: dict[str, Any] | None,
+) -> tuple[int, int, int, int, int]:
+    """Return settled, succeeded, failed, unavailable, and total stages."""
+    states = durable_source_states(
+        status
+    )
+
+    succeeded = sum(
+        states.get(
+            source
+        ) == "done"
+        for source in PLANNED_SOURCES
+    )
+    failed = sum(
+        states.get(
+            source
+        ) == "failed"
+        for source in PLANNED_SOURCES
+    )
+    unavailable = sum(
+        states.get(
+            source
+        ) == "unavailable"
+        for source in PLANNED_SOURCES
+    )
+    settled = (
+        succeeded
+        + failed
+        + unavailable
+    )
+
+    return (
+        settled,
+        succeeded,
+        failed,
+        unavailable,
+        len(
+            PLANNED_SOURCES
+        ),
+    )
+
+
 def render_source_progress(
     status: dict[str, Any] | None,
 ) -> None:
@@ -844,6 +887,47 @@ def render_status(
         f"Latest refresh · {display_phase}"
     )
 
+    (
+        settled_stages,
+        succeeded_stages,
+        failed_stages,
+        unavailable_stages,
+        total_stages,
+    ) = marketplace_stage_counts(
+        status
+    )
+
+    stage_fraction = (
+        settled_stages
+        / total_stages
+        if total_stages
+        else 0.0
+    )
+    stage_parts = [
+        (
+            f"Marketplace stages: {settled_stages} "
+            f"of {total_stages} settled"
+        ),
+        f"{succeeded_stages} complete",
+    ]
+
+    if failed_stages:
+        stage_parts.append(
+            f"{failed_stages} failed"
+        )
+
+    if unavailable_stages:
+        stage_parts.append(
+            f"{unavailable_stages} unavailable"
+        )
+
+    st.progress(
+        stage_fraction,
+        text=" · ".join(
+            stage_parts
+        ),
+    )
+
     if new_records > 0:
         progress_fraction = min(
             1.0,
@@ -851,7 +935,7 @@ def render_status(
             / new_records,
         )
         progress_text = (
-            f"Processed {processed_records:,} "
+            f"Record processing: {processed_records:,} "
             f"of {new_records:,} new records"
         )
     elif state in RUNNING_STATES:
@@ -878,12 +962,12 @@ def render_status(
 
         if discovered_records > 0:
             progress_text = (
-                f"Reconciling {discovered_records:,} "
-                "discovered records…"
+                f"Record processing: reconciling "
+                f"{discovered_records:,} discovered records…"
             )
         else:
             progress_text = (
-                "Checking marketplaces for new records…"
+                "Record processing: checking for new records…"
             )
     else:
         progress_fraction = 1.0
@@ -892,12 +976,12 @@ def render_status(
             status
         ):
             progress_text = (
-                "Refresh finished with an "
+                "Record processing finished with an "
                 "unavailable marketplace"
             )
         else:
             progress_text = (
-                "Refresh finished"
+                "Record processing finished"
             )
 
     st.progress(
@@ -966,8 +1050,8 @@ def render_status(
             )
 
             st.error(
-                "The refresh stopped while updating "
-                f"{source_text}. You can retry when ready.",
+                "The refresh finished with marketplace failures: "
+                f"{source_text}. Review the details before retrying.",
                 icon="❌",
             )
 

@@ -188,6 +188,62 @@ def configure_logging(log_path: Path) -> logging.Logger:
     return logger
 
 
+def set_marketplace_diagnostic(
+    status: dict[str, Any],
+    marketplace: str,
+    **values: Any,
+) -> None:
+    """Persist diagnostics under one marketplace without cross-source leakage."""
+    diagnostics = status.setdefault(
+        "marketplace_diagnostics",
+        {},
+    )
+
+    if not isinstance(
+        diagnostics,
+        dict,
+    ):
+        diagnostics = {}
+        status["marketplace_diagnostics"] = diagnostics
+
+    existing = diagnostics.get(
+        marketplace,
+        {},
+    )
+
+    if not isinstance(
+        existing,
+        dict,
+    ):
+        existing = {}
+
+    existing.update(
+        values
+    )
+
+    diagnostics[
+        marketplace
+    ] = existing
+
+
+def bounded_command_output(
+    output: str,
+    *,
+    line_limit: int = 40,
+    character_limit: int = 6000,
+) -> str:
+    """Return a bounded child-process output tail for durable diagnostics."""
+    lines = [
+        line.rstrip()
+        for line in output.splitlines()
+        if line.strip()
+    ]
+
+    return "\n".join(
+        lines[-line_limit:]
+    )[-character_limit:]
+
+
 def emit_source_state(
     logger: logging.Logger,
     source: str,
@@ -294,24 +350,51 @@ def emit_source_state(
         status,
     )
 
-    diagnostic = {
-        "message":
-            str(
-                status.get(
-                    "message",
-                    "",
-                )
-                or ""
-            ),
-        "source_state":
-            status.get(
-                f"{source_key}_source_state"
-            ),
-        "runtime_semantics":
-            status.get(
-                f"{source_key}_runtime_semantics"
-            ),
-    }
+    marketplace_diagnostics = status.get(
+        "marketplace_diagnostics",
+        {},
+    )
+
+    if not isinstance(
+        marketplace_diagnostics,
+        dict,
+    ):
+        marketplace_diagnostics = {}
+
+    source_diagnostic = marketplace_diagnostics.get(
+        source_key,
+        {},
+    )
+
+    if not isinstance(
+        source_diagnostic,
+        dict,
+    ):
+        source_diagnostic = {}
+
+    diagnostic = dict(
+        source_diagnostic
+    )
+
+    diagnostic[
+        "message"
+    ] = str(
+        source_diagnostic.get(
+            "message",
+            "",
+        )
+        or ""
+    )
+    diagnostic[
+        "source_state"
+    ] = status.get(
+        f"{source_key}_source_state"
+    )
+    diagnostic[
+        "runtime_semantics"
+    ] = status.get(
+        f"{source_key}_runtime_semantics"
+    )
 
     if source_key == "buyee":
         diagnostic[
@@ -757,6 +840,11 @@ def ebay_access_blocked(
 
     blocked_signals = (
         "blocked http status 403",
+        "security measure",
+        "captcha",
+        "robot check",
+        "access denied",
+        "complete the security check",
         (
             "ebay unexpectedly redirected the anonymous "
             "completed-search page to sign-in"
@@ -1385,6 +1473,52 @@ def _incremental_result_count(
             list,
         )
         else 0
+    )
+
+
+def _incremental_detail_result_counts(
+    path: Path,
+) -> tuple[int, int]:
+    """Return complete and incomplete Gripsweat detail-result counts."""
+    if not path.is_file():
+        return (
+            0,
+            0,
+        )
+
+    value = _read_incremental_json(
+        path
+    )
+
+    if not isinstance(
+        value,
+        list,
+    ):
+        return (
+            0,
+            0,
+        )
+
+    complete = sum(
+        1
+        for item in value
+        if (
+            isinstance(
+                item,
+                dict,
+            )
+            and bool(
+                item.get(
+                    "complete",
+                    False,
+                )
+            )
+        )
+    )
+
+    return (
+        complete,
+        len(value) - complete,
     )
 
 
@@ -2678,6 +2812,10 @@ def main() -> int:
                     ):
                         ebay_available = False
 
+                        blocked_message = (
+                            "eBay programmatic access is blocked; "
+                            "continuing Gripsweat refresh."
+                        )
                         status["ebay_source_state"] = (
                             "unavailable_access_blocked"
                         )
@@ -2685,9 +2823,17 @@ def main() -> int:
                             "EBAY_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
                         )
                         status["degraded"] = True
-                        status["message"] = (
-                            "eBay programmatic access is blocked; "
-                            "continuing Gripsweat refresh."
+                        status["message"] = blocked_message
+                        set_marketplace_diagnostic(
+                            status,
+                            "ebay",
+                            message=blocked_message,
+                            return_code=crawl_status,
+                            command_output_tail=(
+                                bounded_command_output(
+                                    crawl_output
+                                )
+                            ),
                         )
                         status["updated_at"] = datetime.now(
                             timezone.utc
@@ -2726,12 +2872,26 @@ def main() -> int:
                         f"Crawl eBay source {source_name} "
                         f"exited with status {crawl_status}."
                     )
+                    failure_output_tail = (
+                        bounded_command_output(
+                            crawl_output
+                        )
+                    )
                     status["ebay_source_state"] = "failed"
                     status["ebay_runtime_semantics"] = (
                         "EBAY_SOURCE_FAILED"
                     )
                     status["degraded"] = True
                     status["message"] = failure_message
+                    set_marketplace_diagnostic(
+                        status,
+                        "ebay",
+                        message=failure_message,
+                        return_code=crawl_status,
+                        command_output_tail=(
+                            failure_output_tail
+                        ),
+                    )
                     status["updated_at"] = datetime.now(
                         timezone.utc
                     ).isoformat()
@@ -2752,6 +2912,13 @@ def main() -> int:
                         "%s Continuing Gripsweat refresh.",
                         failure_message,
                     )
+
+                    if failure_output_tail:
+                        logger.error(
+                            "eBay child output tail:\n%s",
+                            failure_output_tail,
+                        )
+
                     break
 
                 _merge_incremental_progress(
@@ -3320,6 +3487,7 @@ def main() -> int:
         )
 
         detail_scraped = 0
+        detail_incomplete = 0
 
         if gripsweat_new_item_ids:
             _write_incremental_ids(
@@ -3332,6 +3500,7 @@ def main() -> int:
                     sys.executable,
                     "scripts/enrich_gripsweat_details.py",
                     "--apply",
+                    "--allow-incomplete",
                     "--probe",
                     str(
                         probe_path
@@ -3366,10 +3535,11 @@ def main() -> int:
                 status=status,
             )
 
-            detail_scraped = (
-                _incremental_result_count(
-                    gripsweat_detail_output
-                )
+            (
+                detail_scraped,
+                detail_incomplete,
+            ) = _incremental_detail_result_counts(
+                gripsweat_detail_output
             )
         else:
             logger.info("")
@@ -3459,6 +3629,27 @@ def main() -> int:
             "Consecutive known stop : %s",
             gripsweat_consecutive_known,
         )
+        logger.info(
+            "Incomplete details     : %s",
+            detail_incomplete,
+        )
+
+        if detail_incomplete > 0:
+            status[
+                "gripsweat_runtime_semantics"
+            ] = "GRIPSWEAT_DETAIL_ENRICHMENT_PARTIAL"
+            set_marketplace_diagnostic(
+                status,
+                "gripsweat",
+                message=(
+                    "Gripsweat ingestion completed with "
+                    f"{detail_incomplete} record(s) awaiting "
+                    "complete detail enrichment."
+                ),
+                incomplete_details=(
+                    detail_incomplete
+                ),
+            )
 
         publish_source_visibility(
             database_url=psql_url,
