@@ -2908,7 +2908,7 @@ def main() -> int:
                         )
                         logger.warning(
                             "eBay source unavailable: "
-                            "HTTP 403 access block."
+                            "programmatic access block."
                         )
                         logger.warning(
                             "Skipping eBay parse, normalization, "

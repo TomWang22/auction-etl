@@ -761,6 +761,14 @@ def crawl_source(
                             f"with HTTP {status}."
                         )
 
+                    current_url = page.url
+
+                    if "signin.ebay." in current_url.casefold():
+                        raise RuntimeError(
+                            "eBay unexpectedly redirected the anonymous "
+                            "completed-search page to sign-in."
+                        )
+
                     wait_for_results(
                         page,
                         source.wait_seconds,
@@ -769,12 +777,6 @@ def crawl_source(
                     html = page.content()
                     title = page.title()
                     current_url = page.url
-
-                    if "signin.ebay." in current_url.casefold():
-                        raise RuntimeError(
-                            "eBay unexpectedly redirected the anonymous "
-                            "completed-search page to sign-in."
-                        )
 
                     try:
                         body = page.locator(

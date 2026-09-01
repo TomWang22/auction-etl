@@ -11,6 +11,7 @@ CRAWLER = ROOT / "scripts" / "crawl_ebay_sources.py"
 
 CURRENT_URL = "current_url = page.url"
 REDIRECT = 'if "signin.ebay." in current_url.casefold():'
+RESULT_WAIT = "wait_for_results("
 CLASSIFIER = "page_result = classify_ebay_page("
 
 
@@ -28,8 +29,8 @@ def crawler_source() -> str:
     return source
 
 
-def test_signin_redirect_precedes_classifier_for_loaded_response() -> None:
-    """Reject eBay sign-in redirects before generic page classification."""
+def test_signin_redirect_precedes_result_wait_and_classifier() -> None:
+    """Reject eBay sign-in redirects before any result waiting."""
     source = crawler_source()
 
     redirect_offset = source.index(
@@ -42,13 +43,19 @@ def test_signin_redirect_precedes_classifier_for_loaded_response() -> None:
         redirect_offset + 1,
     )
 
+    wait_offset = source.find(
+        RESULT_WAIT,
+        redirect_offset,
+    )
+
     classifier_offset = source.find(
         CLASSIFIER,
-        block_start,
+        wait_offset,
     )
 
     assert block_start < redirect_offset
-    assert redirect_offset < classifier_offset
+    assert redirect_offset < wait_offset
+    assert wait_offset < classifier_offset
 
 
 def test_exactly_one_signin_redirect_guard_exists() -> None:
