@@ -2,6 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import DateTime
 from sqlalchemy import String
+from sqlalchemy import Text
 from sqlalchemy import func
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
@@ -15,7 +16,7 @@ class CrawlJob(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    source: Mapped[str] = mapped_column(String(32))
+    source: Mapped[str] = mapped_column(Text)
 
     status: Mapped[str] = mapped_column(String(32), default="running")
 

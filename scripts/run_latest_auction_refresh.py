@@ -3629,7 +3629,10 @@ def main() -> int:
                 gripsweat_new_item_ids,
             )
 
-            run_command(
+            (
+                gripsweat_detail_status,
+                gripsweat_detail_command_output,
+            ) = run_command(
                 [
                     sys.executable,
                     "scripts/enrich_gripsweat_details.py",
@@ -3667,6 +3670,7 @@ def main() -> int:
                 phase="Apply Gripsweat detail enrichment",
                 status_file=status_file,
                 status=status,
+                allow_failure=True,
             )
 
             (
@@ -3675,6 +3679,63 @@ def main() -> int:
             ) = _incremental_detail_result_counts(
                 gripsweat_detail_output
             )
+
+            if gripsweat_detail_status != 0:
+                detail_incomplete = max(
+                    detail_incomplete,
+                    max(
+                        0,
+                        len(
+                            gripsweat_new_item_ids
+                        )
+                        - detail_scraped,
+                    ),
+                )
+
+                partial_message = (
+                    "Gripsweat identities were imported and published, "
+                    "but secondary detail enrichment did not finish. "
+                    "The marketplace import remains valid and detail "
+                    "enrichment can be retried independently."
+                )
+
+                status[
+                    "gripsweat_runtime_semantics"
+                ] = "GRIPSWEAT_DETAIL_ENRICHMENT_PARTIAL"
+                status[
+                    "gripsweat_detail_incomplete"
+                ] = detail_incomplete
+                status["degraded"] = True
+
+                set_marketplace_diagnostic(
+                    status,
+                    "gripsweat",
+                    message=partial_message,
+                    return_code=(
+                        gripsweat_detail_status
+                    ),
+                    incomplete_details=(
+                        detail_incomplete
+                    ),
+                    command_output_tail=(
+                        bounded_command_output(
+                            gripsweat_detail_command_output
+                        )
+                    ),
+                )
+
+                status["updated_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
+
+                write_json_atomic(
+                    status_file,
+                    status,
+                )
+
+                logger.warning(
+                    partial_message
+                )
         else:
             logger.info("")
             logger.info(
