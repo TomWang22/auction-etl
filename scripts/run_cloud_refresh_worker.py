@@ -1005,10 +1005,18 @@ class DurableProgress:
 
             error: str | None = None
 
-            if current_state in {
-                "failed",
-                "skipped",
-            }:
+            if (
+                current_state
+                in {
+                    "failed",
+                    "skipped",
+                }
+                or bool(
+                    diagnostic.get(
+                        "command_output_tail"
+                    )
+                )
+            ):
                 error = json.dumps(
                     diagnostic,
                     sort_keys=True,

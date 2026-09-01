@@ -276,23 +276,176 @@ def test_worker_terminalizes_marketplaces_before_parent_failure() -> None:
 
 
 def test_refresh_ui_separates_marketplace_and_record_progress() -> None:
-    """The UI must show stage completion separately from record throughput."""
-    page = source(
+    """Marketplace success and record throughput are separate metrics."""
+
+    page_path = (
         ROOT
         / "app"
         / "pages"
         / "15_Ingest_New_Auctions.py"
     )
+
+    page = source(
+        page_path
+    )
+
     block = function_block(
-        ROOT
-        / "app"
-        / "pages"
-        / "15_Ingest_New_Auctions.py",
+        page_path,
         "render_status",
     )
 
-    assert "def marketplace_stage_counts" in page
-    assert "Marketplace stages:" in block
-    assert "of {total_stages} settled" in block
-    assert "Record processing:" in block
-    assert "marketplace failures:" in block
+    assert (
+        "def marketplace_stage_counts"
+        in page
+    )
+
+    assert (
+        "Marketplaces updated:"
+        in block
+    )
+
+    assert (
+        "completed_stages"
+        in block
+    )
+
+    assert (
+        "settled"
+        not in block
+    )
+
+    assert (
+        "Record processing:"
+        in block
+    )
+
+    assert (
+        '"not_run"'
+        in page
+    )
+
+def test_buyee_waf_detail_failure_does_not_stop_later_sources() -> None:
+    """Secondary Buyee detail failure must not short-circuit eBay."""
+
+    runner = source(
+        RUNNER
+    )
+
+    fallback = runner.index(
+        "buyee_browser_fallback_status"
+    )
+
+    ebay_start = runner.index(
+        '"eBay",\n            "running"',
+        fallback,
+    )
+
+    block = runner[
+        fallback:
+        ebay_start
+    ]
+
+    assert (
+        "allow_failure=True"
+        in block
+    )
+
+    assert (
+        "BUYEE_DETAIL_ENRICHMENT_PARTIAL"
+        in block
+    )
+
+    assert (
+        "command_output_tail"
+        in block
+    )
+
+    assert (
+        "Continuing eBay and Gripsweat."
+        in block
+    )
+
+
+def test_not_run_is_distinct_from_unavailable() -> None:
+    """A source never attempted after parent failure must say Not run."""
+
+    refresh_jobs_path = (
+        ROOT
+        / "auction_etl"
+        / "services"
+        / "refresh_jobs.py"
+    )
+
+    page_path = (
+        ROOT
+        / "app"
+        / "pages"
+        / "15_Ingest_New_Auctions.py"
+    )
+
+    refresh_block = function_block(
+        refresh_jobs_path,
+        "refresh_job_to_ui_status",
+    )
+
+    page = source(
+        page_path
+    )
+
+    assert (
+        "not reached because the "
+        in refresh_block
+    )
+
+    assert (
+        "refresh runner stopped"
+        in refresh_block
+    )
+
+    assert (
+        "cancelled before execution"
+        in refresh_block
+    )
+
+    assert (
+        '"not_run"'
+        in refresh_block
+    )
+
+    assert (
+        '"unavailable"'
+        in refresh_block
+    )
+
+    assert (
+        'return "Not run"'
+        in page
+    )
+
+    assert (
+        'return "Unavailable"'
+        in page
+    )
+
+
+def test_partial_diagnostics_survive_successful_identity_ingestion() -> None:
+    """Child diagnostic output remains available after identity success."""
+
+    worker = source(
+        WORKER
+    )
+
+    assert (
+        '"command_output_tail"'
+        in worker
+    )
+
+    assert (
+        "Durable production diagnostics"
+        in source(
+            ROOT
+            / "app"
+            / "pages"
+            / "15_Ingest_New_Auctions.py"
+        )
+    )

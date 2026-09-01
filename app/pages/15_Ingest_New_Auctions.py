@@ -72,20 +72,14 @@ RUNNING_STATES = {
 }
 
 SOURCE_ICONS = {
-    "waiting":
-        "⚪",
-    "running":
-        "🔵",
-    "observed":
-        "🟡",
-    "unavailable":
-        "⚠️",
-    "done":
-        "✅",
-    "failed":
-        "❌",
-    "unknown":
-        "❔",
+    "waiting": "⚪",
+    "running": "🔵",
+    "observed": "🟡",
+    "unavailable": "⚠️",
+    "done": "✅",
+    "failed": "❌",
+    "not_run": "⚪",
+    "unknown": "❔",
 }
 
 
@@ -208,6 +202,9 @@ def source_state_label(
     if source_state == "unavailable":
         return "Unavailable"
 
+    if source_state == "not_run":
+        return "Not run"
+
     if source_state == "observed":
         if overall_state == "failed":
             return "Reached before failure"
@@ -264,7 +261,7 @@ def durable_source_states(
         ).casefold()
 
         if state == "skipped":
-            state = "unavailable"
+            state = "not_run"
 
         result[
             source
@@ -396,40 +393,45 @@ def ingestion_record_counts(
 def marketplace_stage_counts(
     status: dict[str, Any] | None,
 ) -> tuple[int, int, int, int, int]:
-    """Return settled, succeeded, failed, unavailable, and total stages."""
+    """Return completed, failed, unavailable, not-run, and total counts."""
+
     states = durable_source_states(
         status
     )
 
-    succeeded = sum(
+    completed = sum(
         states.get(
             source
         ) == "done"
         for source in PLANNED_SOURCES
     )
+
     failed = sum(
         states.get(
             source
         ) == "failed"
         for source in PLANNED_SOURCES
     )
+
     unavailable = sum(
         states.get(
             source
         ) == "unavailable"
         for source in PLANNED_SOURCES
     )
-    settled = (
-        succeeded
-        + failed
-        + unavailable
+
+    not_run = sum(
+        states.get(
+            source
+        ) == "not_run"
+        for source in PLANNED_SOURCES
     )
 
     return (
-        settled,
-        succeeded,
+        completed,
         failed,
         unavailable,
+        not_run,
         len(
             PLANNED_SOURCES
         ),
@@ -548,10 +550,10 @@ def render_source_progress(
 
         reason = str(
             details.get(
-                "error"
+                "message"
             )
             or details.get(
-                "message"
+                "error"
             )
             or ""
         ).strip()
@@ -797,6 +799,74 @@ def render_technical_details(
                 )
 
         with log_output_tab:
+            durable_diagnostics: list[str] = []
+
+            job_error = str(
+                status.get(
+                    "error"
+                )
+                or ""
+            ).strip()
+
+            if job_error:
+                durable_diagnostics.append(
+                    "JOB\n"
+                    + job_error
+                )
+
+            technical_summary = marketplace_summary(
+                status
+            )
+
+            for source in PLANNED_SOURCES:
+                details = technical_summary.get(
+                    source,
+                    {},
+                )
+
+                source_error = str(
+                    details.get(
+                        "error"
+                    )
+                    or ""
+                ).strip()
+
+                if not source_error:
+                    continue
+
+                source_message = str(
+                    details.get(
+                        "message"
+                    )
+                    or ""
+                ).strip()
+
+                durable_diagnostics.append(
+                    (
+                        source.upper()
+                        + "\n"
+                        + (
+                            source_message
+                            + "\n"
+                            if source_message
+                            else ""
+                        )
+                        + source_error
+                    ).strip()
+                )
+
+            if durable_diagnostics:
+                st.caption(
+                    "Durable production diagnostics"
+                )
+
+                st.code(
+                    "\n\n".join(
+                        durable_diagnostics
+                    ),
+                    language="text",
+                )
+
             log_text = tail_log(
                 log_path_value,
                 line_count=80,
@@ -888,27 +958,27 @@ def render_status(
     )
 
     (
-        settled_stages,
-        succeeded_stages,
+        completed_stages,
         failed_stages,
         unavailable_stages,
+        not_run_stages,
         total_stages,
     ) = marketplace_stage_counts(
         status
     )
 
     stage_fraction = (
-        settled_stages
+        completed_stages
         / total_stages
         if total_stages
         else 0.0
     )
+
     stage_parts = [
         (
-            f"Marketplace stages: {settled_stages} "
-            f"of {total_stages} settled"
-        ),
-        f"{succeeded_stages} complete",
+            f"Marketplaces updated: "
+            f"{completed_stages} of {total_stages}"
+        )
     ]
 
     if failed_stages:
@@ -919,6 +989,11 @@ def render_status(
     if unavailable_stages:
         stage_parts.append(
             f"{unavailable_stages} unavailable"
+        )
+
+    if not_run_stages:
+        stage_parts.append(
+            f"{not_run_stages} not run"
         )
 
     st.progress(

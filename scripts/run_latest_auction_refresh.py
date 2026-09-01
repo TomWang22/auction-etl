@@ -2663,7 +2663,10 @@ def main() -> int:
                             ]
                         )
 
-                    run_command(
+                    (
+                        buyee_browser_fallback_status,
+                        buyee_browser_fallback_output,
+                    ) = run_command(
                         buyee_browser_fallback_command,
                         root=root,
                         environment=environment,
@@ -2674,7 +2677,58 @@ def main() -> int:
                         ),
                         status_file=status_file,
                         status=status,
+                        allow_failure=True,
                     )
+
+                    if (
+                        buyee_browser_fallback_status
+                        != 0
+                    ):
+                        partial_message = (
+                            "Buyee sales were added successfully, "
+                            "but some protected listing details "
+                            "could not be enriched. "
+                            "Continuing eBay and Gripsweat."
+                        )
+
+                        status[
+                            "buyee_runtime_semantics"
+                        ] = (
+                            "BUYEE_DETAIL_ENRICHMENT_PARTIAL"
+                        )
+
+                        status[
+                            "buyee_detail_incomplete"
+                        ] = len(
+                            buyee_waf_listing_ids
+                        )
+
+                        status["degraded"] = True
+
+                        set_marketplace_diagnostic(
+                            status,
+                            "buyee",
+                            message=partial_message,
+                            return_code=(
+                                buyee_browser_fallback_status
+                            ),
+                            incomplete_details=len(
+                                buyee_waf_listing_ids
+                            ),
+                            command_output_tail=(
+                                bounded_command_output(
+                                    buyee_browser_fallback_output
+                                )
+                            ),
+                        )
+
+                        logger.warning(
+                            partial_message
+                        )
+                    else:
+                        status[
+                            "buyee_runtime_semantics"
+                        ] = BUYEE_SOURCE_AVAILABLE
 
                     status[
                         "buyee_browser_fallback_count"

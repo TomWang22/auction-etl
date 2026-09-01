@@ -2116,9 +2116,42 @@ def refresh_job_to_ui_status(
             ).casefold()
 
             if marketplace_state == "skipped":
-                marketplace_state = (
-                    "unavailable"
+                raw_message = str(
+                    raw_row.get(
+                        "message"
+                    )
+                    or ""
                 )
+
+                raw_error = str(
+                    raw_row.get(
+                        "error"
+                    )
+                    or ""
+                )
+
+                skip_context = (
+                    raw_message
+                    + "\n"
+                    + raw_error
+                ).casefold()
+
+                if (
+                    "not reached because the "
+                    "refresh runner stopped"
+                    in skip_context
+                    or (
+                        "cancelled before execution"
+                        in skip_context
+                    )
+                ):
+                    marketplace_state = (
+                        "not_run"
+                    )
+                else:
+                    marketplace_state = (
+                        "unavailable"
+                    )
 
             marketplace_states[
                 marketplace
@@ -2216,6 +2249,7 @@ def refresh_job_to_ui_status(
         "done",
         "failed",
         "unavailable",
+        "not_run",
     }
 
     terminal_count = sum(
