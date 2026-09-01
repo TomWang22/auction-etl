@@ -449,3 +449,306 @@ def test_partial_diagnostics_survive_successful_identity_ingestion() -> None:
             / "15_Ingest_New_Auctions.py"
         )
     )
+def test_parent_failure_terminalizes_stale_running_sibling() -> None:
+    "A failed parent job cannot leave another marketplace running."
+
+    worker = source(
+        WORKER
+    )
+
+    class_tree = ast.parse(
+        worker,
+        filename=str(WORKER),
+    )
+
+    durable_progress = next(
+        node
+        for node in class_tree.body
+        if isinstance(
+            node,
+            ast.ClassDef,
+        )
+        and node.name
+        == "DurableProgress"
+    )
+
+    finalize = next(
+        node
+        for node in durable_progress.body
+        if isinstance(
+            node,
+            ast.FunctionDef,
+        )
+        and node.name
+        == "finalize_runner_failure"
+    )
+
+    block = ast.get_source_segment(
+        worker,
+        finalize,
+    )
+
+    assert block is not None
+    assert 'if state != "waiting":' in block
+    assert 'if state != "running":' in block
+    assert 'state="skipped"' in block
+    assert "refresh was interrupted" in block
+    assert (
+        "the runner stopped after another marketplace failed."
+        in block
+    )
+
+
+def test_failed_job_ui_never_reports_stale_running_phase() -> None:
+    "Failed job phase comes from the parent, not a stale source row."
+
+    refresh_jobs_path = (
+        ROOT
+        / "auction_etl"
+        / "services"
+        / "refresh_jobs.py"
+    )
+
+    value = source(
+        refresh_jobs_path
+    )
+
+    block = function_block(
+        refresh_jobs_path,
+        "refresh_job_to_ui_status",
+    )
+
+    namespace: dict[str, object] = {
+        "MARKETPLACES": (
+            ("buyee", 1),
+            ("ebay", 2),
+            ("gripsweat", 3),
+        ),
+    }
+
+    exec(
+        compile(
+            "from __future__ import annotations\n"
+            "from typing import Any, Mapping\n"
+            + block
+            + "\n",
+            "<refresh_job_to_ui_status>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    translate = namespace[
+        "refresh_job_to_ui_status"
+    ]
+
+    status = translate(
+        {
+            "id": "synthetic",
+            "state": "failed",
+            "message": "Canonical runner failed.",
+            "marketplaces": [
+                {
+                    "marketplace": "buyee",
+                    "state": "done",
+                    "new_count": 2,
+                },
+                {
+                    "marketplace": "ebay",
+                    "state": "skipped",
+                    "message": (
+                        "Marketplace refresh was interrupted because "
+                        "the runner stopped after another marketplace failed."
+                    ),
+                },
+                {
+                    "marketplace": "gripsweat",
+                    "state": "failed",
+                    "message": "Marketplace execution failed.",
+                },
+            ],
+        }
+    )
+
+    assert status["phase"] == "Failed"
+    assert status["progress"] == 33
+    assert status["execution_progress"] == 100
+    assert status["source_states"] == {
+        "buyee": "done",
+        "ebay": "interrupted",
+        "gripsweat": "failed",
+    }
+
+    assert '"interrupted"' in value
+
+
+def test_interrupted_marketplace_has_customer_facing_copy() -> None:
+    "Interrupted work is neither Refreshing nor Unavailable."
+
+    page_path = (
+        ROOT
+        / "app"
+        / "pages"
+        / "15_Ingest_New_Auctions.py"
+    )
+
+    page = source(
+        page_path
+    )
+
+    render_block = function_block(
+        page_path,
+        "render_status",
+    )
+
+    assert 'return "Interrupted"' in page
+    assert '"interrupted": "⏹️"' in page
+    assert "interrupted_stages" in render_block
+    assert 'f"{interrupted_stages} interrupted"' in render_block
+    assert "Records processed before stop:" in render_block
+    assert "discovered new records" in render_block
+
+
+def test_failed_marketplace_progress_is_monotonic() -> None:
+    "Progress updates cannot resurrect a failed marketplace as running."
+
+    worker = source(
+        WORKER
+    )
+
+    assert worker.count(
+        '"failed",\n                "skipped",'
+    ) >= 1
+
+    assert worker.count(
+        '"failed",\n            "skipped",'
+    ) >= 1
+
+
+def test_marketplace_diagnostic_error_survives_later_progress() -> None:
+    "Counter updates must not clear the last durable marketplace error."
+
+    refresh_jobs = source(
+        ROOT
+        / "auction_etl"
+        / "services"
+        / "refresh_jobs.py"
+    )
+
+    assert (
+        "error = COALESCE(\n"
+        "                        :error,\n"
+        "                        error\n"
+        "                    ),"
+        in refresh_jobs
+    )
+
+
+def test_terminal_parent_reclassifies_historical_stale_running_failure() -> None:
+    "A terminal job cannot render a historical failed source as Refreshing."
+
+    refresh_jobs_path = (
+        ROOT
+        / "auction_etl"
+        / "services"
+        / "refresh_jobs.py"
+    )
+
+    block = function_block(
+        refresh_jobs_path,
+        "refresh_job_to_ui_status",
+    )
+
+    namespace: dict[str, object] = {
+        "MARKETPLACES": (
+            ("buyee", 1),
+            ("ebay", 2),
+            ("gripsweat", 3),
+        ),
+    }
+
+    exec(
+        compile(
+            "from __future__ import annotations\n"
+            "from typing import Any, Mapping\n"
+            + block
+            + "\n",
+            "<refresh_job_to_ui_status>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    translate = namespace[
+        "refresh_job_to_ui_status"
+    ]
+
+    status = translate(
+        {
+            "id": "historical",
+            "state": "failed",
+            "marketplaces": [
+                {
+                    "marketplace": "buyee",
+                    "state": "done",
+                },
+                {
+                    "marketplace": "ebay",
+                    "state": "running",
+                    "message": (
+                        "Crawl eBay source example "
+                        "exited with status 1."
+                    ),
+                },
+                {
+                    "marketplace": "gripsweat",
+                    "state": "failed",
+                },
+            ],
+        }
+    )
+
+    assert status["phase"] == "Failed"
+    assert status["source_states"]["ebay"] == "failed"
+    assert status["source_states"]["gripsweat"] == "failed"
+
+
+def test_gripsweat_empty_probe_is_not_marketplace_failure() -> None:
+    "A clean zero-result Gripsweat search is a valid completed attempt."
+
+    probe = source(
+        ROOT
+        / "scripts"
+        / "probe_gripsweat.py"
+    )
+
+    assert "reached_sources" in probe
+    assert "empty_sources" in probe
+    assert "Probe could not reach a usable page for:" in probe
+    assert "No matching records for:" in probe
+
+
+def test_gripsweat_empty_import_is_successful_noop() -> None:
+    "No records to import is not an importer failure."
+
+    importer = source(
+        ROOT
+        / "scripts"
+        / "import_gripsweat_probe.py"
+    )
+
+    assert "or skipped == 0" in importer
+
+
+def test_gripsweat_actual_failure_persists_child_output() -> None:
+    "Real Gripsweat failures retain the exact child output tail."
+
+    runner = source(
+        RUNNER
+    )
+
+    assert "gripsweat_probe_status" in runner
+    assert "gripsweat_probe_output" in runner
+    assert "GRIPSWEAT_PROBE_FAILED" in runner
+    assert "GRIPSWEAT_IMPORT_FAILED" in runner
+    assert "command_output_tail" in runner

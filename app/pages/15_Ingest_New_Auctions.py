@@ -79,6 +79,7 @@ SOURCE_ICONS = {
     "done": "✅",
     "failed": "❌",
     "not_run": "⚪",
+    "interrupted": "⏹️",
     "unknown": "❔",
 }
 
@@ -185,7 +186,7 @@ def source_state_label(
     source_state: str,
     overall_state: str,
 ) -> str:
-    """Return concise product copy for one marketplace state."""
+    "Return concise product copy for one marketplace state."
 
     if source_state == "waiting":
         return "Waiting"
@@ -204,6 +205,9 @@ def source_state_label(
 
     if source_state == "not_run":
         return "Not run"
+
+    if source_state == "interrupted":
+        return "Interrupted"
 
     if source_state == "observed":
         if overall_state == "failed":
@@ -392,8 +396,8 @@ def ingestion_record_counts(
 
 def marketplace_stage_counts(
     status: dict[str, Any] | None,
-) -> tuple[int, int, int, int, int]:
-    """Return completed, failed, unavailable, not-run, and total counts."""
+) -> tuple[int, int, int, int, int, int]:
+    "Return completed, failed, unavailable, not-run, interrupted, and total."
 
     states = durable_source_states(
         status
@@ -427,11 +431,19 @@ def marketplace_stage_counts(
         for source in PLANNED_SOURCES
     )
 
+    interrupted = sum(
+        states.get(
+            source
+        ) == "interrupted"
+        for source in PLANNED_SOURCES
+    )
+
     return (
         completed,
         failed,
         unavailable,
         not_run,
+        interrupted,
         len(
             PLANNED_SOURCES
         ),
@@ -610,6 +622,7 @@ def render_source_progress(
                 in {
                     "failed",
                     "unavailable",
+                    "interrupted",
                 }
                 and reason
             ):
@@ -962,6 +975,7 @@ def render_status(
         failed_stages,
         unavailable_stages,
         not_run_stages,
+        interrupted_stages,
         total_stages,
     ) = marketplace_stage_counts(
         status
@@ -996,6 +1010,11 @@ def render_status(
             f"{not_run_stages} not run"
         )
 
+    if interrupted_stages:
+        stage_parts.append(
+            f"{interrupted_stages} interrupted"
+        )
+
     st.progress(
         stage_fraction,
         text=" · ".join(
@@ -1009,10 +1028,23 @@ def render_status(
             processed_records
             / new_records,
         )
-        progress_text = (
-            f"Record processing: {processed_records:,} "
-            f"of {new_records:,} new records"
-        )
+
+        if state == "failed":
+            progress_text = (
+                f"Records processed before stop: "
+                f"{processed_records:,} of {new_records:,} "
+                "discovered new records"
+            )
+        elif state in RUNNING_STATES:
+            progress_text = (
+                f"Record processing: {processed_records:,} "
+                f"of {new_records:,} new records found so far"
+            )
+        else:
+            progress_text = (
+                f"Record processing: {processed_records:,} "
+                f"of {new_records:,} new records"
+            )
     elif state in RUNNING_STATES:
         summary = marketplace_summary(
             status

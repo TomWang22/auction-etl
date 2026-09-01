@@ -3208,7 +3208,10 @@ def main() -> int:
             / "gripsweat-pagination-audit.json"
         )
 
-        run_command(
+        (
+            gripsweat_probe_status,
+            gripsweat_probe_output,
+        ) = run_command(
             [
                 sys.executable,
                 "scripts/probe_gripsweat.py",
@@ -3229,9 +3232,49 @@ def main() -> int:
             phase="Probe configured Gripsweat sources",
             status_file=status_file,
             status=status,
+            allow_failure=True,
         )
 
-        run_command(
+        if gripsweat_probe_status != 0:
+            gripsweat_probe_message = (
+                "Gripsweat source probe failed with status "
+                f"{gripsweat_probe_status}."
+            )
+            status["gripsweat_source_state"] = "failed"
+            status["gripsweat_runtime_semantics"] = (
+                "GRIPSWEAT_PROBE_FAILED"
+            )
+            status["degraded"] = True
+            status["message"] = gripsweat_probe_message
+
+            set_marketplace_diagnostic(
+                status,
+                "gripsweat",
+                message=gripsweat_probe_message,
+                return_code=gripsweat_probe_status,
+                command_output_tail=(
+                    bounded_command_output(
+                        gripsweat_probe_output
+                    )
+                ),
+            )
+
+            emit_source_state(
+                logger,
+                "Gripsweat",
+                "failed",
+                status_file=status_file,
+                status=status,
+            )
+
+            raise CommandFailure(
+                gripsweat_probe_message
+            )
+
+        (
+            gripsweat_import_status,
+            gripsweat_import_output,
+        ) = run_command(
             [
                 sys.executable,
                 "scripts/import_gripsweat_probe.py",
@@ -3246,7 +3289,44 @@ def main() -> int:
             phase="Import Gripsweat probe",
             status_file=status_file,
             status=status,
+            allow_failure=True,
         )
+
+        if gripsweat_import_status != 0:
+            gripsweat_import_message = (
+                "Gripsweat probe import failed with status "
+                f"{gripsweat_import_status}."
+            )
+            status["gripsweat_source_state"] = "failed"
+            status["gripsweat_runtime_semantics"] = (
+                "GRIPSWEAT_IMPORT_FAILED"
+            )
+            status["degraded"] = True
+            status["message"] = gripsweat_import_message
+
+            set_marketplace_diagnostic(
+                status,
+                "gripsweat",
+                message=gripsweat_import_message,
+                return_code=gripsweat_import_status,
+                command_output_tail=(
+                    bounded_command_output(
+                        gripsweat_import_output
+                    )
+                ),
+            )
+
+            emit_source_state(
+                logger,
+                "Gripsweat",
+                "failed",
+                status_file=status_file,
+                status=status,
+            )
+
+            raise CommandFailure(
+                gripsweat_import_message
+            )
 
         publish_source_visibility(
             database_url=psql_url,

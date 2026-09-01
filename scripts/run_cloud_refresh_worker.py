@@ -840,7 +840,8 @@ class DurableProgress:
         self,
         error: str,
     ) -> None:
-        """Terminalize marketplace rows before the parent job is failed."""
+        "Terminalize every nonterminal marketplace before parent failure."
+
         error_tail = error[-8000:]
         current = self.current_marketplace
 
@@ -860,7 +861,6 @@ class DurableProgress:
             self._failed_marketplaces.add(
                 current
             )
-
             update_marketplace_state(
                 self._engine,
                 job_id=self._job_id,
@@ -880,12 +880,31 @@ class DurableProgress:
             self._states.items()
         ):
             if state != "waiting":
+                if state != "running":
+                    continue
+
+                self._states[
+                    marketplace
+                ] = "skipped"
+                update_marketplace_state(
+                    self._engine,
+                    job_id=self._job_id,
+                    worker_id=self._worker_id,
+                    marketplace=marketplace,
+                    state="skipped",
+                    message=(
+                        "Marketplace refresh was interrupted because "
+                        "the runner stopped after another marketplace failed."
+                    ),
+                    **self._counters[
+                        marketplace
+                    ],
+                )
                 continue
 
             self._states[
                 marketplace
             ] = "skipped"
-
             update_marketplace_state(
                 self._engine,
                 job_id=self._job_id,
@@ -1077,6 +1096,7 @@ class DurableProgress:
             if current_state not in {
                 "running",
                 "done",
+                "failed",
                 "skipped",
             }:
                 current_state = "running"
@@ -1126,6 +1146,7 @@ class DurableProgress:
         if current_state not in {
             "running",
             "done",
+            "failed",
             "skipped",
         }:
             current_state = "running"

@@ -1050,11 +1050,12 @@ def probe_source(
 
 
 def main() -> int:
+    "Run the read-only probe and distinguish empty results from source failure."
+
     args = parse_args()
     sources = load_sources(args.config)
 
     selected_names = set(args.sources or [])
-
     selected = [
         source
         for source in sources
@@ -1134,10 +1135,49 @@ def main() -> int:
         encoding="utf-8",
     )
 
+    reached_sources = {
+        page_probe.source_name
+        for page_probe in summary.pages
+        if page_probe.error is None
+        and (
+            page_probe.http_status is None
+            or (
+                200
+                <= page_probe.http_status
+                < 400
+            )
+        )
+    }
+
+    record_sources = {
+        page_probe.source_name
+        for page_probe in summary.pages
+        if page_probe.error is None
+        and page_probe.item_count > 0
+    }
+
+    expected_sources = {
+        source.name
+        for source in selected
+    }
+
+    failed_sources = (
+        expected_sources
+        - reached_sources
+    )
+
+    empty_sources = (
+        reached_sources
+        - record_sources
+    )
+
     print()
     print("Read-only Gripsweat probe")
     print("-------------------------")
     print(f"Sources requested : {summary.sources_requested}")
+    print(f"Sources reached   : {len(reached_sources)}")
+    print(f"Sources with data : {len(record_sources)}")
+    print(f"Empty sources     : {len(empty_sources)}")
     print(f"Pages loaded      : {summary.pages_loaded}")
     print(f"Pages accepted    : {summary.pages_accepted}")
     print(f"Items found       : {summary.items_found}")
@@ -1147,22 +1187,24 @@ def main() -> int:
     print(f"Database writes   : {summary.database_writes}")
     print(f"Output            : {args.output}")
 
-    successful_sources = {
-        page_probe.source_name
-        for page_probe in summary.pages
-        if page_probe.item_count > 0
-        and page_probe.error is None
-    }
-
-    missing_sources = {
-        source.name
-        for source in selected
-    } - successful_sources
-
-    if missing_sources:
+    if empty_sources:
         print(
-            "No usable records for: "
-            + ", ".join(sorted(missing_sources)),
+            "No matching records for: "
+            + ", ".join(
+                sorted(
+                    empty_sources
+                )
+            )
+        )
+
+    if failed_sources:
+        print(
+            "Probe could not reach a usable page for: "
+            + ", ".join(
+                sorted(
+                    failed_sources
+                )
+            ),
             file=sys.stderr,
         )
         return 1

@@ -1462,7 +1462,10 @@ def update_marketplace_state(
                         :message,
                         message
                     ),
-                    error = :error,
+                    error = COALESCE(
+                        :error,
+                        error
+                    ),
                     updated_at = now()
                 WHERE job_id = :job_id
                   AND marketplace = :marketplace
@@ -2115,34 +2118,61 @@ def refresh_job_to_ui_status(
                 )
             ).casefold()
 
-            if marketplace_state == "skipped":
-                raw_message = str(
-                    raw_row.get(
-                        "message"
-                    )
-                    or ""
+            raw_message = str(
+                raw_row.get(
+                    "message"
                 )
+                or ""
+            )
 
-                raw_error = str(
-                    raw_row.get(
-                        "error"
-                    )
-                    or ""
+            raw_error = str(
+                raw_row.get(
+                    "error"
                 )
+                or ""
+            )
 
-                skip_context = (
-                    raw_message
-                    + "\n"
-                    + raw_error
-                ).casefold()
+            marketplace_context = (
+                raw_message
+                + "\n"
+                + raw_error
+            ).casefold()
 
+            if (
+                marketplace_state == "running"
+                and state not in {
+                    "queued",
+                    "running",
+                }
+            ):
                 if (
+                    "exited with status" in marketplace_context
+                    or "marketplace failed" in marketplace_context
+                    or "execution failed" in marketplace_context
+                ):
+                    marketplace_state = "failed"
+                else:
+                    marketplace_state = "interrupted"
+            elif marketplace_state == "skipped":
+                if (
+                    "refresh was interrupted"
+                    in marketplace_context
+                    or (
+                        "interrupted because "
+                        "the runner stopped"
+                        in marketplace_context
+                    )
+                ):
+                    marketplace_state = (
+                        "interrupted"
+                    )
+                elif (
                     "not reached because the "
                     "refresh runner stopped"
-                    in skip_context
+                    in marketplace_context
                     or (
                         "cancelled before execution"
-                        in skip_context
+                        in marketplace_context
                     )
                 ):
                     marketplace_state = (
@@ -2236,20 +2266,27 @@ def refresh_job_to_ui_status(
                 "error": str(raw_row.get("error") or ""),
             }
 
-    phase = state
+    phase = state.replace(
+        "_",
+        " ",
+    ).title()
 
-    for marketplace, _ordinal in MARKETPLACES:
-        if marketplace_states[
-            marketplace
-        ] == "running":
-            phase = marketplace
-            break
+    if state == "running":
+        phase = "Refreshing"
+
+        for marketplace, _ordinal in MARKETPLACES:
+            if marketplace_states[
+                marketplace
+            ] == "running":
+                phase = marketplace
+                break
 
     terminal_states = {
         "done",
         "failed",
         "unavailable",
         "not_run",
+        "interrupted",
     }
 
     terminal_count = sum(

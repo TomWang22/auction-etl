@@ -540,7 +540,10 @@ def main() -> int:
 
     return (
         0
-        if inserted_or_updated > 0
+        if (
+            inserted_or_updated > 0
+            or skipped == 0
+        )
         else 1
     )
 
