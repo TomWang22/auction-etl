@@ -21,6 +21,8 @@ from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from auction_etl.services.marketplace_browser_runtime import browser
+from sqlalchemy import text
+from auction_etl.database.session import engine as database_engine
 
 
 DEFAULT_CONFIG = Path(os.environ.get("AUCTION_GRIPSWEAT_SOURCES_CONFIG", "config/gripsweat_sources.json"))
@@ -857,6 +859,70 @@ def safe_name(value: str) -> str:
     ).strip("-")
 
 
+def known_gripsweat_item_keys(
+    source_name: str,
+) -> set[str]:
+    """Return stable identities already stored for one Gripsweat source."""
+
+    try:
+        with database_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "SET TRANSACTION READ ONLY"
+                )
+            )
+
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT gripsweat_item_key
+                    FROM warehouse.gripsweat_sale
+                    WHERE source_name = :source_name
+                      AND gripsweat_item_key IS NOT NULL
+                    """
+                ),
+                {
+                    "source_name":
+                        source_name,
+                },
+            )
+
+            return {
+                str(
+                    row[0]
+                ).strip()
+                for row in rows
+                if (
+                    row[0] is not None
+                    and str(
+                        row[0]
+                    ).strip()
+                )
+            }
+
+    except Exception as exc:
+        print(
+            f"[{source_name}] known-identity optimization "
+            f"unavailable: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+        return set()
+
+
+def page_is_fully_known(
+    item_keys: set[str],
+    known_item_keys: set[str],
+) -> bool:
+    """Return whether a nonempty result page contains only known identities."""
+
+    return bool(
+        item_keys
+    ) and item_keys.issubset(
+        known_item_keys
+    )
+
+
 def probe_source(
     page: Page,
     source: Source,
@@ -865,6 +931,7 @@ def probe_source(
     wait_seconds: float,
     diagnostic_dir: Path,
     summary: ProbeSummary,
+    known_item_keys: set[str],
 ) -> None:
     html_dir = diagnostic_dir / "html"
     screenshot_dir = diagnostic_dir / "screenshots"
@@ -954,6 +1021,13 @@ def probe_source(
                 for item in items
             }
 
+            page_fully_known = (
+                page_is_fully_known(
+                    item_keys,
+                    known_item_keys,
+                )
+            )
+
             next_detected = next_page_detected(
                 soup,
                 page_number,
@@ -1010,6 +1084,13 @@ def probe_source(
             summary.items_found += len(items)
             previous_digest = digest
             previous_item_keys = item_keys
+
+            if page_fully_known:
+                print(
+                    "Stopping source: newest remaining page "
+                    f"is fully known ({len(item_keys)} identities)."
+                )
+                break
 
             if not next_detected:
                 print("Stopping source: no next page detected.")
@@ -1107,6 +1188,17 @@ def main() -> int:
                 else configured_pages
             )
 
+            known_item_keys = (
+                known_gripsweat_item_keys(
+                    source.name
+                )
+            )
+
+            print(
+                f"[{source.name}] known identities: "
+                f"{len(known_item_keys)}"
+            )
+
             probe_source(
                 page,
                 source,
@@ -1117,6 +1209,7 @@ def main() -> int:
                 ),
                 diagnostic_dir=args.diagnostic_dir,
                 summary=summary,
+                known_item_keys=known_item_keys,
             )
     finally:
         page.close()

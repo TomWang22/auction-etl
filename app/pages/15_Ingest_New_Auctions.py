@@ -227,34 +227,112 @@ def source_state_label(
 def durable_source_states(
     status: dict[str, Any] | None,
 ) -> dict[str, str]:
-    """Return normalized durable marketplace states."""
+    """Return canonical customer-facing marketplace states."""
+
+    result = {
+        source: "waiting"
+        for source in PLANNED_SOURCES
+    }
 
     if not status:
-        return {}
+        return result
 
-    raw_states = status.get(
-        "source_states"
+    allowed = {
+        "waiting",
+        "running",
+        "observed",
+        "unavailable",
+        "done",
+        "failed",
+        "not_run",
+        "interrupted",
+        "unknown",
+    }
+
+    for state_key in (
+        "source_states",
+        "marketplace_states",
+    ):
+        raw_states = status.get(
+            state_key
+        )
+
+        if not isinstance(
+            raw_states,
+            dict,
+        ):
+            continue
+
+        for source in PLANNED_SOURCES:
+            raw_state = raw_states.get(
+                source
+            )
+
+            if raw_state is None:
+                continue
+
+            state = str(
+                raw_state
+            ).casefold()
+
+            if state in allowed:
+                result[source] = state
+
+    raw_rows = status.get(
+        "marketplaces"
     )
 
     if not isinstance(
-        raw_states,
-        dict,
+        raw_rows,
+        list,
     ):
-        raw_states = status.get(
-            "marketplace_states"
+        summary = status.get(
+            "summary"
         )
 
+        if isinstance(
+            summary,
+            dict,
+        ):
+            candidate = summary.get(
+                "marketplaces"
+            )
+
+            if isinstance(
+                candidate,
+                list,
+            ):
+                raw_rows = candidate
+
     if not isinstance(
-        raw_states,
-        dict,
+        raw_rows,
+        list,
     ):
-        return {}
+        return result
 
-    result: dict[str, str] = {}
+    for raw_row in raw_rows:
+        if not isinstance(
+            raw_row,
+            dict,
+        ):
+            continue
 
-    for source in PLANNED_SOURCES:
-        raw_state = raw_states.get(
-            source
+        source = str(
+            raw_row.get(
+                "marketplace",
+                "",
+            )
+            or ""
+        ).casefold()
+
+        if source not in result:
+            continue
+
+        if result[source] != "waiting":
+            continue
+
+        raw_state = raw_row.get(
+            "state"
         )
 
         if raw_state is None:
@@ -265,11 +343,42 @@ def durable_source_states(
         ).casefold()
 
         if state == "skipped":
-            state = "not_run"
+            context = (
+                str(
+                    raw_row.get(
+                        "message",
+                        "",
+                    )
+                    or ""
+                )
+                + "\n"
+                + str(
+                    raw_row.get(
+                        "error",
+                        "",
+                    )
+                    or ""
+                )
+            ).casefold()
 
-        result[
-            source
-        ] = state
+            not_run_markers = (
+                "refresh was interrupted",
+                "runner stopped",
+                "not reached",
+                "cancelled before execution",
+                "canceled before execution",
+            )
+
+            if any(
+                marker in context
+                for marker in not_run_markers
+            ):
+                state = "not_run"
+            else:
+                state = "unavailable"
+
+        if state in allowed:
+            result[source] = state
 
     return result
 
@@ -958,7 +1067,13 @@ def render_status(
     )
 
     if state == "completed":
-        display_phase = "Completed"
+        display_phase = (
+            "Completed"
+            if all_sources_done(
+                status
+            )
+            else "Completed with issues"
+        )
     elif state == "failed":
         display_phase = "Failed"
     elif state in RUNNING_STATES:
@@ -988,10 +1103,15 @@ def render_status(
         else 0.0
     )
 
+    stage_percent = round(
+        stage_fraction * 100
+    )
+
     stage_parts = [
         (
             f"Marketplaces updated: "
-            f"{completed_stages} of {total_stages}"
+            f"{completed_stages} of {total_stages} "
+            f"({stage_percent}%)"
         )
     ]
 
