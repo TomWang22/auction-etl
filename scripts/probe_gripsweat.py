@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup, Tag
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from auction_etl.browser.manager import browser
+from auction_etl.services.marketplace_browser_runtime import browser
 
 
 DEFAULT_CONFIG = Path(os.environ.get("AUCTION_GRIPSWEAT_SOURCES_CONFIG", "config/gripsweat_sources.json"))

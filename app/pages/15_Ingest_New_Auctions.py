@@ -831,6 +831,19 @@ def render_status(
         "Marketplace refresh"
     )
 
+    if state == "completed":
+        display_phase = "Completed"
+    elif state == "failed":
+        display_phase = "Failed"
+    elif state in RUNNING_STATES:
+        display_phase = "In progress"
+    else:
+        display_phase = "Status unavailable"
+
+    st.caption(
+        f"Latest refresh · {display_phase}"
+    )
+
     if new_records > 0:
         progress_fraction = min(
             1.0,

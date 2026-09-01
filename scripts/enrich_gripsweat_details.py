@@ -18,7 +18,7 @@ from playwright.sync_api import BrowserContext, Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from sqlalchemy import text
 
-from auction_etl.browser.manager import browser
+from auction_etl.services.marketplace_browser_runtime import browser
 from auction_etl.database.session import engine
 
 

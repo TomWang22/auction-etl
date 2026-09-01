@@ -816,6 +816,7 @@ class DurableProgress:
             for marketplace
             in SOURCE_NAMES.values()
         }
+        self._failed_marketplaces: set[str] = set()
         self._counters: dict[
             str,
             dict[str, int],
@@ -824,6 +825,16 @@ class DurableProgress:
             for marketplace
             in SOURCE_NAMES.values()
         }
+
+    @property
+    def runner_failure_marketplace(
+        self,
+    ) -> str | None:
+        """Return a source to fail only when none failed explicitly."""
+        if self._failed_marketplaces:
+            return None
+
+        return self.current_marketplace
 
     def consume(
         self,
@@ -848,6 +859,11 @@ class DurableProgress:
             self._states[
                 marketplace
             ] = state
+
+            if state == "failed":
+                self._failed_marketplaces.add(
+                    marketplace
+                )
 
             update_marketplace_state(
                 self._engine,
@@ -1359,6 +1375,10 @@ def execute_claimed_job(
                 f"with status {return_code}."
             )
 
+        failure_marketplace = (
+            progress.runner_failure_marketplace
+        )
+
         mark_refresh_job_failed(
             engine,
             job_id=job_id,
@@ -1366,7 +1386,7 @@ def execute_claimed_job(
                 worker_id_value
             ),
             marketplace=(
-                progress.current_marketplace
+                failure_marketplace
             ),
             error=failure_text[-8000:],
             message=(

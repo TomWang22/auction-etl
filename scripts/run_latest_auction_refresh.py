@@ -954,6 +954,12 @@ def process_ebay_raw_pages(
         status=status,
     )
 
+    publish_source_visibility(
+        database_url=psql_url,
+        logger=logger,
+        source="eBay",
+    )
+
 
 
 EBAY_KNOWN_STOP_THRESHOLD = 20
@@ -1893,9 +1899,24 @@ def main() -> int:
                 "BUYEE_AUTHENTICATION_REQUIRED"
             )
 
-            raise RuntimeError(
-                "Buyee authentication is required. "
-                "Use the UI authentication button first."
+            status["degraded"] = True
+            status["message"] = (
+                "Buyee authentication is required; "
+                "continuing eBay and Gripsweat."
+            )
+            status["updated_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+            write_json_atomic(
+                status_file,
+                status,
+            )
+            emit_source_state(
+                logger,
+                "Buyee",
+                "failed",
+                status_file=status_file,
+                status=status,
             )
         elif (
             auth_status
@@ -1909,9 +1930,24 @@ def main() -> int:
                 "INDETERMINATE_TIMEOUT"
             )
 
-            raise RuntimeError(
+            status["degraded"] = True
+            status["message"] = (
                 "Buyee authentication verification timed out; "
-                "authentication state remains indeterminate."
+                "continuing eBay and Gripsweat."
+            )
+            status["updated_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+            write_json_atomic(
+                status_file,
+                status,
+            )
+            emit_source_state(
+                logger,
+                "Buyee",
+                "failed",
+                status_file=status_file,
+                status=status,
             )
         elif (
             auth_status
@@ -1959,14 +1995,13 @@ def main() -> int:
             )
 
             if arguments.require_all_sources:
-                raise RuntimeError(
-                    "Required source Buyee is unavailable: "
-                    + str(
-                        status.get(
-                            "buyee_source_state",
-                            "unknown",
-                        )
-                    )
+                status["message"] = (
+                    "Required source Buyee is unavailable; "
+                    "remaining marketplaces will still be attempted."
+                )
+                write_json_atomic(
+                    status_file,
+                    status,
                 )
         elif (
             auth_status
@@ -2020,9 +2055,25 @@ def main() -> int:
                 "BUYEE_VERIFIER_ERROR"
             )
 
-            raise RuntimeError(
+            status["degraded"] = True
+            status["message"] = (
                 "Buyee authentication verifier failed with "
-                f"unexpected exit status {auth_status}."
+                f"unexpected exit status {auth_status}; "
+                "continuing eBay and Gripsweat."
+            )
+            status["updated_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+            write_json_atomic(
+                status_file,
+                status,
+            )
+            emit_source_state(
+                logger,
+                "Buyee",
+                "failed",
+                status_file=status_file,
+                status=status,
             )
 
         create_backup(
@@ -2220,6 +2271,12 @@ def main() -> int:
                     "consecutive_known_at_stop":
                         0,
                 },
+            )
+
+            publish_source_visibility(
+                database_url=psql_url,
+                logger=logger,
+                source="Buyee",
             )
 
             status[
@@ -2662,23 +2719,40 @@ def main() -> int:
                             "Continuing Gripsweat refresh."
                         )
 
-                        if arguments.require_all_sources:
-                            raise RuntimeError(
-                                "Required source eBay is unavailable: "
-                                + str(
-                                    status.get(
-                                        "ebay_source_state",
-                                        "unknown",
-                                    )
-                                )
-                            )
-
                         break
 
-                    raise CommandFailure(
+                    ebay_available = False
+                    failure_message = (
                         f"Crawl eBay source {source_name} "
                         f"exited with status {crawl_status}."
                     )
+                    status["ebay_source_state"] = "failed"
+                    status["ebay_runtime_semantics"] = (
+                        "EBAY_SOURCE_FAILED"
+                    )
+                    status["degraded"] = True
+                    status["message"] = failure_message
+                    status["updated_at"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
+
+                    write_json_atomic(
+                        status_file,
+                        status,
+                    )
+
+                    emit_source_state(
+                        logger,
+                        "eBay",
+                        "failed",
+                        status_file=status_file,
+                        status=status,
+                    )
+                    logger.error(
+                        "%s Continuing Gripsweat refresh.",
+                        failure_message,
+                    )
+                    break
 
                 _merge_incremental_progress(
                     status,
@@ -2953,6 +3027,12 @@ def main() -> int:
             status=status,
         )
 
+        publish_source_visibility(
+            database_url=psql_url,
+            logger=logger,
+            source="Gripsweat",
+        )
+
         gripsweat_probe_sequence = (
             _incremental_identity_sequence(
                 probe_path,
@@ -3105,6 +3185,12 @@ def main() -> int:
                 phase="Import Gripsweat identities",
                 status_file=status_file,
                 status=status,
+            )
+
+            publish_source_visibility(
+                database_url=psql_url,
+                logger=logger,
+                source="Gripsweat",
             )
 
         else:
@@ -3525,6 +3611,83 @@ def main() -> int:
         summary = json.loads(
             summary_path.read_text(encoding="utf-8")
         )
+
+        marketplace_states = status.get(
+            "marketplace_states",
+            {},
+        )
+        if not isinstance(
+            marketplace_states,
+            dict,
+        ):
+            marketplace_states = {}
+
+        failed_marketplaces = sorted(
+            marketplace
+            for marketplace, source_state
+            in marketplace_states.items()
+            if str(source_state).casefold()
+            == "failed"
+        )
+        unavailable_marketplaces = sorted(
+            marketplace
+            for marketplace, source_state
+            in marketplace_states.items()
+            if str(source_state).casefold()
+            == "unavailable"
+        )
+
+        required_unavailable = (
+            unavailable_marketplaces
+            if arguments.require_all_sources
+            else []
+        )
+        terminal_failures = sorted(
+            set(
+                failed_marketplaces
+                + required_unavailable
+            )
+        )
+
+        if terminal_failures:
+            failure_message = (
+                "Marketplace refresh completed all possible "
+                "source attempts but did not satisfy the "
+                "required source contract: "
+                + ", ".join(
+                    terminal_failures
+                )
+                + "."
+            )
+            status.update(
+                {
+                    "state": "failed",
+                    "phase": "failed",
+                    "message": failure_message,
+                    "error": failure_message,
+                    "finished_at": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                    "updated_at": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                    "initial_state": initial_state,
+                    "final_state": final_state,
+                    "summary": summary,
+                    "failed_marketplaces":
+                        failed_marketplaces,
+                    "unavailable_marketplaces":
+                        unavailable_marketplaces,
+                }
+            )
+            write_json_atomic(
+                status_file,
+                status,
+            )
+            logger.error(
+                failure_message
+            )
+            return 1
 
         status.update(
             {

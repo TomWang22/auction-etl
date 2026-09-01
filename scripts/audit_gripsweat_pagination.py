@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from auction_etl.browser.manager import browser
+from auction_etl.services.marketplace_browser_runtime import browser
 
 
 DEFAULT_CONFIG = Path("config/gripsweat_sources.json")

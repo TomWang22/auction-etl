@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from auction_etl.browser.manager import browser
+from auction_etl.services.marketplace_browser_runtime import browser
 from auction_etl.database.session import SessionLocal
 from auction_etl.models.crawl import CrawlJob
 from auction_etl.services.ingest import ingest_raw_page

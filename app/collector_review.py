@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -73,6 +74,7 @@ JUMP_LISTING_KEY = "collector_jump_listing"
 PENDING_JUMP_LISTING_KEY = "_pending_jump_listing_identity"
 RESET_JUMP_LISTING_KEY = "_reset_jump_listing"
 TABLE_SELECTION_REVISION_KEY = "_listing_table_selection_revision"
+LIVE_REVIEW_RENDERED_AT_KEY = "_collector_live_review_rendered_at"
 
 MEDIA_OPTIONS = (
     "Automatic / unset",
@@ -207,6 +209,72 @@ def get_engine() -> Engine:
         ),
         pool_pre_ping=True,
     )
+
+
+def account_refresh_is_active(
+    account_id: str,
+) -> bool:
+    """Return whether this account has a queued or running refresh."""
+    statement = text(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM ops.refresh_job
+            WHERE account_id = CAST(
+                :account_id AS uuid
+            )
+              AND state IN (
+                  'queued',
+                  'running'
+              )
+        )
+        """
+    )
+
+    try:
+        with get_engine().connect() as connection:
+            return bool(
+                connection.execute(
+                    statement,
+                    {
+                        "account_id":
+                            account_id,
+                    },
+                ).scalar_one()
+            )
+    except Exception:
+        return False
+
+
+@st.fragment(
+    run_every="3s",
+)
+def rerun_review_while_refresh_active(
+    account_id: str,
+) -> None:
+    """Refresh the full review page while durable ingestion is active."""
+    if not account_refresh_is_active(
+        account_id
+    ):
+        return
+
+    rendered_at = float(
+        st.session_state.get(
+            LIVE_REVIEW_RENDERED_AT_KEY,
+            0.0,
+        )
+        or 0.0
+    )
+
+    if (
+        time.monotonic()
+        - rendered_at
+        < 2.5
+    ):
+        return
+
+    load_records.clear()
+    st.rerun()
 
 
 ACCOUNT_CONTEXT = require_authenticated_account(
@@ -3884,6 +3952,16 @@ st.title(
 
 st.caption(
     "Search marketplace sales, refine pressing details, track collection status, and compare equivalent pressings."
+)
+
+st.session_state[
+    LIVE_REVIEW_RENDERED_AT_KEY
+] = time.monotonic()
+
+rerun_review_while_refresh_active(
+    str(
+        ACCOUNT_CONTEXT.account_id
+    )
 )
 
 try:
