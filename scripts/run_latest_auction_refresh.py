@@ -1051,7 +1051,6 @@ def process_ebay_raw_pages(
 
 
 EBAY_KNOWN_STOP_THRESHOLD = 20
-GRIPSWEAT_KNOWN_STOP_THRESHOLD = 20
 
 INCREMENTAL_PROGRESS_FIELDS = (
     "discovered",
@@ -1376,6 +1375,16 @@ def _incremental_unique(
         )
 
     return result
+
+
+def _incremental_window_is_fully_known(
+    values: list[str],
+    known: set[str],
+) -> bool:
+    """Return whether a nonempty discovery window contains only known IDs."""
+
+    unique = _incremental_unique(values)
+    return bool(unique) and all(value in known for value in unique)
 
 
 def _incremental_trailing_known(
@@ -3358,18 +3367,22 @@ def main() -> int:
             )
             - gripsweat_probe_known
         )
+        gripsweat_probe_window_fully_known = (
+            _incremental_window_is_fully_known(
+                gripsweat_probe_sequence,
+                gripsweat_item_keys_before,
+            )
+        )
         gripsweat_probe_trailing_known = (
-            _incremental_trailing_known(
+            len(gripsweat_probe_unique)
+            if gripsweat_probe_window_fully_known
+            else _incremental_trailing_known(
                 gripsweat_probe_sequence,
                 gripsweat_item_keys_before,
             )
         )
         gripsweat_stop_after_probe = (
-            bool(
-                gripsweat_probe_sequence
-            )
-            and gripsweat_probe_trailing_known
-            >= GRIPSWEAT_KNOWN_STOP_THRESHOLD
+            gripsweat_probe_window_fully_known
         )
 
         _set_incremental_progress(
@@ -3429,6 +3442,10 @@ def main() -> int:
             gripsweat_probe_trailing_known,
         )
 
+        logger.info(
+            "Probe window all known: %s",
+            "yes" if gripsweat_probe_window_fully_known else "no",
+        )
         if not gripsweat_stop_after_probe:
             run_command(
                 [
