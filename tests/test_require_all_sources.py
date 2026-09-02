@@ -41,11 +41,21 @@ def test_strict_mode_rejects_unavailable_buyee() -> None:
 
 
 def test_strict_mode_rejects_unavailable_ebay() -> None:
-    """Do not call a final run successful without eBay."""
-    assert (
-        "Required source eBay is unavailable"
-        in runner_source()
-    )
+    source = runner_source()
+    blocked_start = source.index("if ebay_access_blocked(")
+    finalizer_start = source.index("required_unavailable = (")
+
+    blocked = source[blocked_start:finalizer_start]
+    finalizer = source[finalizer_start:]
+
+    assert "unavailable_access_blocked" in blocked
+    assert '"unavailable"' in blocked
+    assert "if arguments.require_all_sources" in finalizer
+    assert "unavailable_marketplaces" in finalizer
+    assert "terminal_failures" in finalizer
+    assert "required source contract" in finalizer
+    assert "return 1" in finalizer
+
 
 
 def test_degraded_mode_is_still_present() -> None:

@@ -64,16 +64,18 @@ def test_page_compiles_and_uses_user_facing_refresh_copy() -> None:
 
 
 def test_completed_refresh_keeps_final_progress_visible() -> None:
-    """Completed refreshes keep a visible final progress result."""
-    source = PAGE.read_text(
-        encoding="utf-8",
-    )
+    source = PAGE.read_text(encoding="utf-8")
 
     assert 'if state != "completed":' not in source
     assert 'if state == "completed":' in source
     assert "progress = 100" not in source
-    assert 'display_phase = "Completed"' in source
+    assert "display_phase = (" in source
+    assert '"Completed"' in source
+    assert "if all_sources_done(" in source
+    assert 'else "Completed with issues"' in source
+    assert "stage_fraction" in source
     assert "st.progress(" in source
+
 
 
 def test_technical_output_is_explicitly_advanced_and_secondary() -> None:
@@ -164,15 +166,17 @@ def test_ingest_page_supports_both_durable_state_contracts() -> None:
 
 
 def test_completed_refresh_keeps_progress_bar_visible() -> None:
-    """Completed refreshes retain a visible final progress result."""
-    value = PAGE.read_text(
-        encoding="utf-8"
-    )
+    value = PAGE.read_text(encoding="utf-8")
 
     assert 'if state != "completed":' not in value
-    assert 'progress = 100' not in value
-    assert 'display_phase = "Completed"' in value
+    assert "progress = 100" not in value
+    assert "display_phase = (" in value
+    assert '"Completed"' in value
+    assert "if all_sources_done(" in value
+    assert 'else "Completed with issues"' in value
+    assert "stage_percent = round(" in value
     assert "st.progress(" in value
+
 
 
 def test_missing_durable_source_state_is_not_fake_waiting() -> None:

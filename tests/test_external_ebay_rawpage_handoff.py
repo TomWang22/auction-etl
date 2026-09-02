@@ -139,22 +139,21 @@ def test_browser_crawler_remains_fallback() -> None:
 
 
 def test_existing_access_block_semantics_remain() -> None:
-    """Keep degraded and strict crawler-failure contracts intact."""
     source = runner_source()
+    blocked_start = source.index("if ebay_access_blocked(")
+    finalizer_start = source.index("required_unavailable = (")
 
-    assert "ebay_access_blocked(" in source
-    assert (
-        "EBAY_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
-        in source
-    )
-    assert (
-        "Required source eBay is unavailable"
-        in source
-    )
-    assert (
-        "Continuing Gripsweat refresh."
-        in source
-    )
+    blocked = source[blocked_start:finalizer_start]
+    finalizer = source[finalizer_start:]
+
+    assert "EBAY_SOURCE_UNAVAILABLE_ACCESS_BLOCKED" in blocked
+    assert "unavailable_access_blocked" in blocked
+    assert "Continuing Gripsweat refresh." in blocked
+    assert "arguments.require_all_sources" in finalizer
+    assert "terminal_failures" in finalizer
+    assert "required source contract" in finalizer
+    assert "return 1" in finalizer
+
 
 
 def test_external_handoff_can_mark_ebay_available() -> None:

@@ -3514,8 +3514,8 @@ def main() -> int:
         else:
             logger.info(
                 "Skipping Gripsweat pagination audit: "
-                "newest-page overlap already reached "
-                "the known-ID threshold."
+                "every identity in the newest probe window "
+                "is already known."
             )
 
         with psycopg.connect(

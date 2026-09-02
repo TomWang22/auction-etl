@@ -46,15 +46,15 @@ def test_ebay_manual_mode_remains_unbounded_by_default() -> None:
 
 
 def test_gripsweat_can_stop_after_newest_probe() -> None:
-    """Known newest-page overlap skips normal historical pagination."""
-
     runner = read_source(RUNNER)
 
-    assert "GRIPSWEAT_KNOWN_STOP_THRESHOLD = 20" in runner
-    assert "gripsweat_probe_trailing_known" in runner
-    assert "gripsweat_stop_after_probe" in runner
+    assert "GRIPSWEAT_KNOWN_STOP_THRESHOLD" not in runner
+    assert "def _incremental_window_is_fully_known(" in runner
+    assert "gripsweat_probe_window_fully_known" in runner
+    assert "gripsweat_stop_after_probe = (" in runner
     assert "if not gripsweat_stop_after_probe:" in runner
-    assert "Skipping Gripsweat pagination audit" in runner
+    assert "every identity in the newest probe window " in runner
+
 
 
 def test_gripsweat_detail_navigation_is_new_id_only() -> None:
