@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import base64
 import binascii
+import gzip
 import json
 import os
 from typing import Any, Literal, cast
@@ -94,45 +95,94 @@ class MarketplaceBrowserRuntime:
         return profile.strip().casefold() in cls._ebay_profile_names()
 
     @staticmethod
-    def _decode_ebay_storage_state(encoded: str) -> dict[str, Any]:
+    def _decode_ebay_storage_state(
+        encoded: str,
+    ) -> dict[str, Any]:
+        """Decode plain or gzip-compressed base64 Playwright state."""
+
         try:
-            decoded = base64.b64decode(
+            decoded_bytes = base64.b64decode(
                 encoded,
                 validate=True,
-            ).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError) as exc:
+            )
+        except binascii.Error as exc:
+            raise RuntimeError(
+                f"{_EBAY_STORAGE_STATE_B64_ENV} is not valid base64 UTF-8."
+            ) from exc
+
+        if decoded_bytes.startswith(
+            b"\x1f\x8b"
+        ):
+            try:
+                decoded_bytes = gzip.decompress(
+                    decoded_bytes
+                )
+            except OSError as exc:
+                raise RuntimeError(
+                    f"{_EBAY_STORAGE_STATE_B64_ENV} contains invalid gzip data."
+                ) from exc
+
+        try:
+            decoded = decoded_bytes.decode(
+                "utf-8"
+            )
+        except UnicodeDecodeError as exc:
             raise RuntimeError(
                 f"{_EBAY_STORAGE_STATE_B64_ENV} is not valid base64 UTF-8."
             ) from exc
 
         try:
-            payload = json.loads(decoded)
+            payload = json.loads(
+                decoded
+            )
         except json.JSONDecodeError as exc:
             raise RuntimeError(
                 f"{_EBAY_STORAGE_STATE_B64_ENV} does not contain valid JSON."
             ) from exc
 
-        if not isinstance(payload, dict):
+        if not isinstance(
+            payload,
+            dict,
+        ):
             raise RuntimeError(
                 f"{_EBAY_STORAGE_STATE_B64_ENV} must decode to a JSON object."
             )
 
-        cookies = payload.get("cookies")
-        origins = payload.get("origins", [])
+        cookies = payload.get(
+            "cookies"
+        )
+        origins = payload.get(
+            "origins",
+            [],
+        )
 
-        if not isinstance(cookies, list) or not cookies:
+        if not isinstance(
+            cookies,
+            list,
+        ) or not cookies:
             raise RuntimeError(
                 "The configured eBay storage state contains no cookies."
             )
 
-        if not isinstance(origins, list):
+        if not isinstance(
+            origins,
+            list,
+        ):
             raise RuntimeError(
                 "The configured eBay storage state has an invalid origins value."
             )
 
         has_ebay_cookie = any(
-            isinstance(cookie, dict)
-            and "ebay." in str(cookie.get("domain", "")).casefold()
+            isinstance(
+                cookie,
+                dict,
+            )
+            and "ebay." in str(
+                cookie.get(
+                    "domain",
+                    "",
+                )
+            ).casefold()
             for cookie in cookies
         )
 

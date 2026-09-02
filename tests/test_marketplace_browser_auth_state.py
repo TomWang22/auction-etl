@@ -88,3 +88,40 @@ def test_state_requires_ebay_cookie() -> None:
         MarketplaceBrowserRuntime._decode_ebay_storage_state(
             encoded_state(".example.com")
         )
+
+
+def test_ebay_profile_loads_gzip_compressed_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Accept gzip-compressed storage state within the existing B64 contract."""
+
+    import gzip
+
+    legacy_encoded = encoded_state()
+    raw_json = base64.b64decode(
+        legacy_encoded,
+        validate=True,
+    )
+
+    compressed_encoded = base64.b64encode(
+        gzip.compress(
+            raw_json,
+            compresslevel=9,
+            mtime=0,
+        )
+    ).decode("ascii")
+
+    monkeypatch.setenv(
+        "AUCTION_EBAY_STORAGE_STATE_B64",
+        compressed_encoded,
+    )
+
+    state = (
+        MarketplaceBrowserRuntime
+        ._storage_state_for_profile(
+            "facerecords"
+        )
+    )
+
+    assert state is not None
+    assert state["cookies"][0]["domain"] == ".ebay.com"
