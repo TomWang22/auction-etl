@@ -214,6 +214,15 @@ def parse_args() -> argparse.Namespace:
         default=5.0,
     )
     parser.add_argument(
+        "--navigation-timeout-seconds",
+        type=float,
+        default=15.0,
+        help=(
+            "Maximum DOMContentLoaded navigation time "
+            "for one Gripsweat page."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
@@ -223,7 +232,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_DIAGNOSTIC_DIR,
     )
-    return parser.parse_args()
+    arguments = parser.parse_args()
+
+    if arguments.navigation_timeout_seconds <= 0:
+        parser.error(
+            "--navigation-timeout-seconds must be positive."
+        )
+
+    return arguments
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -816,27 +832,19 @@ def next_page_detected(
     return False
 
 
-def wait_for_page(page: Page, seconds: float) -> None:
-    timeout_ms = max(
+def wait_for_page(
+    page: Page,
+    seconds: float,
+) -> None:
+    """Wait briefly for usable item markup after navigation."""
+
+    timeout_ms = min(
         5_000,
-        int(seconds * 1_000),
+        max(
+            1_000,
+            int(seconds * 1_000),
+        ),
     )
-
-    try:
-        page.wait_for_load_state(
-            "domcontentloaded",
-            timeout=timeout_ms,
-        )
-    except PlaywrightTimeoutError:
-        pass
-
-    try:
-        page.wait_for_load_state(
-            "networkidle",
-            timeout=min(timeout_ms, 15_000),
-        )
-    except PlaywrightTimeoutError:
-        pass
 
     try:
         page.locator(
@@ -848,7 +856,7 @@ def wait_for_page(page: Page, seconds: float) -> None:
     except PlaywrightTimeoutError:
         pass
 
-    page.wait_for_timeout(1_500)
+    page.wait_for_timeout(500)
 
 
 def safe_name(value: str) -> str:
@@ -929,6 +937,7 @@ def probe_source(
     *,
     max_pages: int,
     wait_seconds: float,
+    navigation_timeout_seconds: float,
     diagnostic_dir: Path,
     summary: ProbeSummary,
     known_item_keys: set[str],
@@ -955,10 +964,31 @@ def probe_source(
         )
 
         try:
+            navigation_started_at = time.monotonic()
+
+            print(
+                "GRIPSWEAT_NAVIGATION_START "
+                f"source={source.name} "
+                f"page={page_number} "
+                f"timeout_seconds={navigation_timeout_seconds:.1f}",
+                flush=True,
+            )
+
             response = page.goto(
                 requested_url,
                 wait_until="domcontentloaded",
-                timeout=120_000,
+                timeout=int(
+                    navigation_timeout_seconds * 1_000
+                ),
+            )
+
+
+            print(
+                "GRIPSWEAT_NAVIGATION_READY "
+                f"source={source.name} "
+                f"page={page_number} "
+                f"seconds={time.monotonic() - navigation_started_at:.3f}",
+                flush=True,
             )
 
             summary.pages_loaded += 1
@@ -1206,6 +1236,9 @@ def main() -> int:
                 wait_seconds=max(
                     0.0,
                     args.wait_seconds,
+                ),
+                navigation_timeout_seconds=(
+                    args.navigation_timeout_seconds
                 ),
                 diagnostic_dir=args.diagnostic_dir,
                 summary=summary,
