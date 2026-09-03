@@ -34,7 +34,9 @@ _CLOUD_CHROMIUM_ARGS = (
     "--disable-gpu",
 )
 
-_EPHEMERAL_LAUNCH_TIMEOUT_MS = 60_000
+_EPHEMERAL_LAUNCH_TIMEOUT_MS = 20_000
+_EPHEMERAL_DEFAULT_TIMEOUT_MS = 10_000
+_EPHEMERAL_NAVIGATION_TIMEOUT_MS = 25_000
 _EBAY_STORAGE_STATE_B64_ENV = "AUCTION_EBAY_STORAGE_STATE_B64"
 _EBAY_PROFILE_NAMES_ENV = "AUCTION_EBAY_PROFILE_NAMES"
 _DEFAULT_EBAY_PROFILE_NAMES = ("facerecords",)
@@ -226,14 +228,50 @@ class MarketplaceBrowserRuntime:
         if self._context is not None:
             return self._context
 
+        print(
+            "AUCTION_BROWSER_RUNTIME_PHASE "
+            f"phase=storage_state_start profile={profile}",
+            flush=True,
+        )
+
         storage_state = self._storage_state_for_profile(profile)
+
+        print(
+            "AUCTION_BROWSER_RUNTIME_PHASE "
+            f"phase=storage_state_ready profile={profile}",
+            flush=True,
+        )
+        print(
+            "AUCTION_BROWSER_RUNTIME_PHASE "
+            f"phase=playwright_start profile={profile}",
+            flush=True,
+        )
+
         self._playwright = sync_playwright().start()
 
+        print(
+            "AUCTION_BROWSER_RUNTIME_PHASE "
+            f"phase=playwright_ready profile={profile}",
+            flush=True,
+        )
+
         try:
+            print(
+                "AUCTION_BROWSER_RUNTIME_PHASE "
+                f"phase=chromium_launch profile={profile}",
+                flush=True,
+            )
+
             self._browser = self._playwright.chromium.launch(
                 headless=True,
                 timeout=_EPHEMERAL_LAUNCH_TIMEOUT_MS,
                 args=list(_CLOUD_CHROMIUM_ARGS),
+            )
+
+            print(
+                "AUCTION_BROWSER_RUNTIME_PHASE "
+                f"phase=chromium_ready profile={profile}",
+                flush=True,
             )
 
             options: dict[str, Any] = {
@@ -247,7 +285,26 @@ class MarketplaceBrowserRuntime:
             if storage_state is not None:
                 options["storage_state"] = storage_state
 
+            print(
+                "AUCTION_BROWSER_RUNTIME_PHASE "
+                f"phase=context_create profile={profile}",
+                flush=True,
+            )
+
             self._context = self._browser.new_context(**options)
+
+            self._context.set_default_timeout(
+                _EPHEMERAL_DEFAULT_TIMEOUT_MS
+            )
+            self._context.set_default_navigation_timeout(
+                _EPHEMERAL_NAVIGATION_TIMEOUT_MS
+            )
+
+            print(
+                "AUCTION_BROWSER_RUNTIME_PHASE "
+                f"phase=context_ready profile={profile}",
+                flush=True,
+            )
         except Exception:
             self.close()
             raise

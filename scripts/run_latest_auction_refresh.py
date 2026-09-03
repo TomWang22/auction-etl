@@ -2839,7 +2839,7 @@ def main() -> int:
                         sys.executable,
                         "scripts/run_with_process_watchdog.py",
                         "--timeout-seconds",
-                        "600",
+                        "90",
                         "--kill-grace-seconds",
                         "10",
                         "--",

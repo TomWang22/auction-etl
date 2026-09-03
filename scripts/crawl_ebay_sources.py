@@ -58,6 +58,10 @@ NEXT_SELECTORS = (
 )
 
 
+EBAY_NAVIGATION_TIMEOUT_MS = 25_000
+EBAY_RESULTS_TIMEOUT_MS = 8_000
+
+
 @dataclass(frozen=True, slots=True)
 class Source:
     name: str
@@ -351,9 +355,12 @@ def wait_for_results(
     page: Page,
     seconds: float,
 ) -> None:
-    timeout_ms = max(
-        15_000,
-        int(seconds * 1_000),
+    timeout_ms = min(
+        EBAY_RESULTS_TIMEOUT_MS,
+        max(
+            4_000,
+            int(seconds * 1_000),
+        ),
     )
 
     try:
@@ -685,12 +692,36 @@ def crawl_source(
     print()
     print(f"Source : {source.name}")
     print(f"Seller : {source.seller}")
-    print(f"Profile: {source.profile}")
+    print(
+        f"Profile: {source.profile}",
+        flush=True,
+    )
+
+    print(
+        "EBAY_CRAWL_PHASE=browser_context_start",
+        flush=True,
+    )
 
     context = browser.context(
         source.profile
     )
+    print(
+        "EBAY_CRAWL_PHASE=browser_context_ready",
+        flush=True,
+    )
+
     page = context.new_page()
+    page.set_default_timeout(
+        EBAY_RESULTS_TIMEOUT_MS
+    )
+    page.set_default_navigation_timeout(
+        EBAY_NAVIGATION_TIMEOUT_MS
+    )
+
+    print(
+        "EBAY_CRAWL_PHASE=page_ready",
+        flush=True,
+    )
 
     previous_digest: str | None = None
     source_pages = 0
@@ -740,10 +771,22 @@ def crawl_source(
                         f"{page_number}: {url}"
                     )
 
+                    print(
+                        "EBAY_CRAWL_PHASE=navigation_start "
+                        f"page={page_number}",
+                        flush=True,
+                    )
+
                     response = page.goto(
                         url,
                         wait_until="domcontentloaded",
-                        timeout=60_000,
+                        timeout=EBAY_NAVIGATION_TIMEOUT_MS,
+                    )
+
+                    print(
+                        "EBAY_CRAWL_PHASE=navigation_ready "
+                        f"page={page_number}",
+                        flush=True,
                     )
 
                     stats.pages_loaded += 1
