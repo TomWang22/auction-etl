@@ -732,6 +732,41 @@ def classify(row: dict[str, Any]) -> Classification:
     )
 
 
+RECLASSIFICATION_FIELDS = (
+    "auto_catalog_number",
+    "auto_region",
+    "auto_media_type",
+    "auto_disc_count",
+    "auto_bulk_lot",
+    "auto_obi",
+    "auto_insert_present",
+    "auto_poster_present",
+    "auto_rental",
+    "auto_sticker",
+    "auto_promo",
+    "auto_sealed",
+    "auto_reissue",
+    "auto_first_press",
+    "auto_importance_score",
+    "auto_verdict",
+)
+
+
+def automatic_classification_changed(
+    row: dict[str, Any],
+    payload: dict[str, Any],
+) -> bool:
+    """Return whether a calculated automatic value differs from storage."""
+
+    return any(
+        row.get(
+            f"stored_{field}"
+        )
+        != payload[field]
+        for field in RECLASSIFICATION_FIELDS
+    )
+
+
 def available_columns(
     schema: str,
     table_name: str,
@@ -838,8 +873,27 @@ def main() -> int:
             {optional_expression("description")} AS description,
             {optional_expression("condition_text")} AS condition_text,
             {optional_expression("gross_price", "numeric")} AS gross_price,
-            {optional_expression("bid_count", "integer")} AS bid_count
+            {optional_expression("bid_count", "integer")} AS bid_count,
+            c.auto_catalog_number AS stored_auto_catalog_number,
+            c.auto_region AS stored_auto_region,
+            c.auto_media_type AS stored_auto_media_type,
+            c.auto_disc_count AS stored_auto_disc_count,
+            c.auto_bulk_lot AS stored_auto_bulk_lot,
+            c.auto_obi AS stored_auto_obi,
+            c.auto_insert_present AS stored_auto_insert_present,
+            c.auto_poster_present AS stored_auto_poster_present,
+            c.auto_rental AS stored_auto_rental,
+            c.auto_sticker AS stored_auto_sticker,
+            c.auto_promo AS stored_auto_promo,
+            c.auto_sealed AS stored_auto_sealed,
+            c.auto_reissue AS stored_auto_reissue,
+            c.auto_first_press AS stored_auto_first_press,
+            c.auto_importance_score AS stored_auto_importance_score,
+            c.auto_verdict AS stored_auto_verdict
         FROM warehouse.auction AS a
+        LEFT JOIN warehouse.auction_collector AS c
+          ON c.marketplace = a.marketplace
+         AND c.listing_id = a.listing_id
         {where_clause}
         ORDER BY
             a.marketplace,
@@ -897,7 +951,7 @@ def main() -> int:
         rows = connection.execute(
             text(select_sql),
             parameters,
-        ).mappings()
+        ).mappings().all()
 
         for row_mapping in rows:
             row = dict(row_mapping)
@@ -978,6 +1032,12 @@ def main() -> int:
                     classification.verdict
                 ),
             }
+
+            if not automatic_classification_changed(
+                row,
+                payload,
+            ):
+                continue
 
             if args.dry_run:
                 continue

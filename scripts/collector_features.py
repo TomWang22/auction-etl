@@ -716,11 +716,15 @@ def load_auctions(
             a.ended_at,
             d.started_at,
             d.condition_text,
-            d.detail_price
+            d.detail_price,
+            c.source_fingerprint AS collector_source_fingerprint
         FROM warehouse.auction AS a
         LEFT JOIN warehouse.auction_detail AS d
           ON d.marketplace = a.marketplace
          AND d.listing_id = a.listing_id
+        LEFT JOIN warehouse.auction_collector AS c
+          ON c.marketplace = a.marketplace
+         AND c.listing_id = a.listing_id
         {where_clause}
         ORDER BY
             a.ended_at DESC NULLS LAST,
@@ -774,14 +778,6 @@ def build_features(
     seller_stats = load_seller_stats()
     rows = load_auctions(marketplace)
 
-    existing_statement = text(
-        """
-        SELECT source_fingerprint
-        FROM warehouse.auction_collector
-        WHERE marketplace = :marketplace
-          AND listing_id = :listing_id
-        """
-    )
 
     upsert_statement = text(
         """
@@ -925,13 +921,9 @@ def build_features(
 
             row_fingerprint = fingerprint(row)
 
-            existing = connection.execute(
-                existing_statement,
-                {
-                    "marketplace": row["marketplace"],
-                    "listing_id": row["listing_id"],
-                },
-            ).scalar_one_or_none()
+            existing = row.get(
+                "collector_source_fingerprint"
+            )
 
             if (
                 not force
