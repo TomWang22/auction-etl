@@ -771,20 +771,77 @@ def probe_items(path: Path) -> list[dict[str, Any]]:
     return items
 
 
-def reimport_probe_rows(path: Path) -> tuple[int, int]:
-    """Refresh probe detail fields on existing sale identities only.
+def unique_probe_sale_id(
+    matching_ids: Iterable[int],
+    *,
+    source_name: str,
+    item_id: str,
+) -> int:
+    """Require probe identities to resolve exactly one stored sale."""
 
-    GRIPSWEAT_UPDATE_ONLY_DETAIL_REIMPORT_V1
+    unique_ids = sorted(
+        {
+            int(value)
+            for value in matching_ids
+        }
+    )
+
+    if not unique_ids:
+        raise RuntimeError(
+            "No existing Gripsweat sale row resolved for "
+            f"{source_name}/{item_id} across URL, "
+            "source/item, or original-listing identity."
+        )
+
+    if len(unique_ids) != 1:
+        raise RuntimeError(
+            "Gripsweat probe identities resolve to different "
+            "existing sale rows for "
+            f"{source_name}/{item_id}: "
+            + ", ".join(
+                str(value)
+                for value in unique_ids
+            )
+        )
+
+    return unique_ids[0]
+
+
+def reimport_probe_rows(path: Path) -> tuple[int, int]:
+    """Refresh probe fields on one canonically resolved stored sale.
+
+    GRIPSWEAT_UPDATE_ONLY_DETAIL_REIMPORT_V2
     """
+
     items = probe_items(path)
     updated = 0
     invalid = 0
 
-    statement = text(
+    identity_statement = text(
+        """
+        SELECT id
+        FROM warehouse.gripsweat_sale
+        WHERE
+            gripsweat_url = :gripsweat_url
+            OR (
+                source_name = :source_name
+                AND gripsweat_item_key = :gripsweat_item_key
+            )
+            OR (
+                original_marketplace = :original_marketplace
+                AND original_listing_id = :original_listing_id
+            )
+        ORDER BY id
+        FOR UPDATE
+        """
+    )
+
+    update_statement = text(
         """
         UPDATE warehouse.gripsweat_sale
         SET
             configured_artist = :configured_artist,
+            gripsweat_item_key = :gripsweat_item_key,
             gripsweat_item_id = :gripsweat_item_id,
             gripsweat_url = :gripsweat_url,
             title = COALESCE(
@@ -811,8 +868,7 @@ def reimport_probe_rows(path: Path) -> tuple[int, int]:
                 :original_listing_id,
                 original_listing_id
             )
-        WHERE source_name = :source_name
-          AND gripsweat_item_key = :gripsweat_item_key
+        WHERE id = :sale_id
         """
     )
 
@@ -858,65 +914,82 @@ def reimport_probe_rows(path: Path) -> tuple[int, int]:
                 invalid += 1
                 continue
 
-            result = connection.execute(
-                statement,
-                {
-                    "source_name":
-                        source_name,
-                    "configured_artist": (
-                        configured_artist
-                        or source_name
+            parameters = {
+                "source_name":
+                    source_name,
+                "configured_artist": (
+                    configured_artist
+                    or source_name
+                ),
+                "gripsweat_item_key":
+                    item_id,
+                "gripsweat_item_id":
+                    item_id,
+                "gripsweat_url":
+                    url,
+                "title":
+                    normalize_text(
+                        item.get(
+                            "title"
+                        )
                     ),
-                    "gripsweat_item_key":
-                        item_id,
-                    "gripsweat_item_id":
-                        item_id,
-                    "gripsweat_url":
-                        url,
-                    "title":
-                        normalize_text(
-                            item.get(
-                                "title"
-                            )
-                        ),
-                    "sold_price":
-                        decimal_value(
-                            first_value(
-                                item,
-                                (
-                                    "sold_price",
-                                    "price",
-                                ),
-                            )
-                        ),
-                    "currency":
-                        normalize_text(
-                            item.get(
-                                "currency"
-                            )
-                        ),
-                    "image_url":
-                        normalize_text(
-                            first_value(
-                                item,
-                                (
-                                    "image_url",
-                                    "image",
-                                ),
-                            )
-                        ),
-                    "original_marketplace":
-                        normalize_text(
-                            item.get(
-                                "original_marketplace"
-                            )
-                        ),
-                    "original_listing_id":
-                        normalize_text(
-                            item.get(
-                                "original_listing_id"
-                            )
-                        ),
+                "sold_price":
+                    decimal_value(
+                        first_value(
+                            item,
+                            (
+                                "sold_price",
+                                "price",
+                            ),
+                        )
+                    ),
+                "currency":
+                    normalize_text(
+                        item.get(
+                            "currency"
+                        )
+                    ),
+                "image_url":
+                    normalize_text(
+                        first_value(
+                            item,
+                            (
+                                "image_url",
+                                "image",
+                            ),
+                        )
+                    ),
+                "original_marketplace":
+                    normalize_text(
+                        item.get(
+                            "original_marketplace"
+                        )
+                    ),
+                "original_listing_id":
+                    normalize_text(
+                        item.get(
+                            "original_listing_id"
+                        )
+                    ),
+            }
+
+            matching_ids = connection.execute(
+                identity_statement,
+                parameters,
+            ).scalars().all()
+
+            sale_id = unique_probe_sale_id(
+                matching_ids,
+                source_name=source_name,
+                item_id=item_id,
+            )
+
+            result = connection.execute(
+                update_statement,
+                {
+                    **parameters,
+                    "sale_id":
+                        sale_id,
                 },
             )
 
@@ -927,10 +1000,10 @@ def reimport_probe_rows(path: Path) -> tuple[int, int]:
 
             if affected != 1:
                 raise RuntimeError(
-                    "Expected exactly one existing Gripsweat "
-                    "sale row for "
-                    f"{source_name}/{item_id}; "
-                    f"updated {affected}."
+                    "Resolved Gripsweat sale row "
+                    f"id={sale_id} for "
+                    f"{source_name}/{item_id}, "
+                    f"but update affected {affected} rows."
                 )
 
             updated += 1
