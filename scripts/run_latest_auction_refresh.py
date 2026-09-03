@@ -822,6 +822,120 @@ def enabled_ebay_sources(
     return list(dict.fromkeys(names))
 
 
+def ebay_external_handoff_only(
+    path: Path,
+) -> bool:
+    """Return whether all enabled eBay sources prohibit browser acquisition."""
+
+    payload = json.loads(
+        path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    if isinstance(payload, dict):
+        values = payload.get(
+            "sources",
+            payload,
+        )
+
+        if isinstance(values, dict):
+            entries = [
+                dict(
+                    value,
+                    _fallback_name=key,
+                )
+                for key, value in values.items()
+                if isinstance(
+                    value,
+                    dict,
+                )
+            ]
+
+        elif isinstance(
+            values,
+            list,
+        ):
+            entries = [
+                entry
+                for entry in values
+                if isinstance(
+                    entry,
+                    dict,
+                )
+            ]
+
+        else:
+            entries = []
+
+    elif isinstance(
+        payload,
+        list,
+    ):
+        entries = [
+            entry
+            for entry in payload
+            if isinstance(
+                entry,
+                dict,
+            )
+        ]
+
+    else:
+        entries = []
+
+    enabled = [
+        entry
+        for entry in entries
+        if entry.get(
+            "enabled",
+            True,
+        ) is not False
+    ]
+
+    if not enabled:
+        raise RuntimeError(
+            "No enabled eBay source exists."
+        )
+
+    modes: set[str] = set()
+
+    for entry in enabled:
+        raw_mode = entry.get(
+            "acquisition_mode",
+            "browser",
+        )
+
+        mode = str(
+            raw_mode
+        ).strip().casefold()
+
+        if mode not in {
+            "browser",
+            "external",
+        }:
+            name = (
+                entry.get("name")
+                or entry.get("source")
+                or entry.get("slug")
+                or entry.get("_fallback_name")
+                or "unknown"
+            )
+
+            raise RuntimeError(
+                "Unsupported eBay acquisition_mode "
+                f"{raw_mode!r} for source {name!r}."
+            )
+
+        modes.add(
+            mode
+        )
+
+    return modes == {
+        "external",
+    }
+
+
 def ebay_access_blocked(
     return_code: int,
     output: str,
@@ -2822,6 +2936,56 @@ def main() -> int:
                 phase_label="external raw-page handoff",
                 raw_page_id=arguments.ebay_structured_raw_page_id,
             )
+        elif ebay_external_handoff_only(
+            ebay_config_path
+        ):
+            ebay_available = False
+
+            external_message = (
+                "eBay acquisition is external-only; "
+                "no pending structured raw-page handoff exists. "
+                "Skipping browser acquisition."
+            )
+
+            status["ebay_source_state"] = (
+                "external_handoff_idle"
+            )
+            status["ebay_runtime_semantics"] = (
+                "EBAY_EXTERNAL_HANDOFF_IDLE"
+            )
+
+            set_marketplace_diagnostic(
+                status,
+                "ebay",
+                message=external_message,
+                return_code=0,
+                browser_acquisition_executed=False,
+                ebay_request_executed=False,
+                external_handoff_pending=False,
+            )
+
+            logger.info(
+                ""
+            )
+            logger.info(
+                external_message
+            )
+            logger.info(
+                "Existing eBay warehouse rows are preserved."
+            )
+            logger.info(
+                "A future structured eBay raw page will be "
+                "processed before this policy gate."
+            )
+
+            emit_source_state(
+                logger,
+                "eBay",
+                "done",
+                status_file=status_file,
+                status=status,
+            )
+
         else:
             for source_name in enabled_ebay_sources(
                 ebay_config_path
