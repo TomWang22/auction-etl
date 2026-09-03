@@ -119,6 +119,10 @@ def classify_ebay_page(
         "access denied",
         "temporarily blocked",
         "verify you are human",
+        "please verify yourself",
+        "security measure",
+        "complete the security check",
+        "press and hold",
         "captcha",
         "unusual traffic",
     )

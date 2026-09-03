@@ -841,6 +841,9 @@ def ebay_access_blocked(
     blocked_signals = (
         "blocked http status 403",
         "security measure",
+        "please verify yourself",
+        "press and hold",
+        "ebay returned an access/error page to the deployed worker",
         "captcha",
         "robot check",
         "access denied",
