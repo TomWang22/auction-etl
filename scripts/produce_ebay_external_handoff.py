@@ -27,7 +27,9 @@ from urllib.parse import (
 from bs4 import BeautifulSoup
 
 from scripts.acquire_ebay_structured import (
+    EbayAccessBlockedError,
     EbayAcquisitionError,
+    EbayAuthenticationRequiredError,
     acquire_page,
     atomic_write_json,
     build_payload_from_html,
@@ -969,6 +971,66 @@ def main() -> int:
 
         return 0
 
+    except EbayAccessBlockedError as error:
+        print(
+            f"ERROR: {error}",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_EXTERNAL_HANDOFF_PRODUCER=ACCESS_BLOCKED",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_EXTERNAL_ACCESS_CONTROL_REQUIRED=true",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_STRUCTURED_IMPORT_APPLIED=false",
+            file=sys.stderr,
+        )
+        print(
+            "EXTERNAL_RAW_PAGE_CREATED=false",
+            file=sys.stderr,
+        )
+        print(
+            "REFRESH_EXECUTED=false",
+            file=sys.stderr,
+        )
+        print(
+            "AUTOMATIC_RETRY=false",
+            file=sys.stderr,
+        )
+        return 20
+    except EbayAuthenticationRequiredError as error:
+        print(
+            f"ERROR: {error}",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_EXTERNAL_HANDOFF_PRODUCER=AUTHENTICATION_REQUIRED",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_EXTERNAL_AUTHENTICATION_REQUIRED=true",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_STRUCTURED_IMPORT_APPLIED=false",
+            file=sys.stderr,
+        )
+        print(
+            "EXTERNAL_RAW_PAGE_CREATED=false",
+            file=sys.stderr,
+        )
+        print(
+            "REFRESH_EXECUTED=false",
+            file=sys.stderr,
+        )
+        print(
+            "AUTOMATIC_RETRY=false",
+            file=sys.stderr,
+        )
+        return 21
     except (
         EbayAcquisitionError,
         ExternalProducerError,

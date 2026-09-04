@@ -32,6 +32,31 @@ from auction_etl.parsers.ebay import parse_search
 
 BLOCKED_HTTP_STATUSES = frozenset({401, 403, 429})
 ITEM_LINK_SELECTOR = 'a[href*="/itm/"]'
+
+ACCESS_CONTROL_SELECTORS = (
+    "iframe[src*='captcha' i]",
+    "iframe[title*='captcha' i]",
+    "[id*='captcha' i]",
+    "[class*='captcha' i]",
+    "form[action*='captcha' i]",
+    "[data-testid*='captcha' i]",
+    "iframe[src*='challenge' i]",
+    "[id*='challenge' i]",
+    "[data-testid*='challenge' i]",
+)
+
+ACCESS_CONTROL_TEXT_MARKERS = (
+    "access denied",
+    "temporarily blocked",
+    "verify you are human",
+    "please verify yourself",
+    "security measure",
+    "complete the security check",
+    "press and hold",
+    "captcha",
+    "unusual traffic",
+)
+
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_SETTLE_SECONDS = 2.0
 
@@ -171,6 +196,87 @@ def is_ebay_generic_error_page(
         and "please go back and try again"
         in normalized_body
     )
+
+
+def ebay_access_control_text_present(
+    *,
+    title: str,
+    body: str,
+) -> bool:
+    """Return whether rendered text proves an eBay access-control page."""
+
+    normalized = " ".join(
+        (
+            title
+            + "\n"
+            + body
+        ).casefold().split()
+    )
+
+    return any(
+        marker in normalized
+        for marker in ACCESS_CONTROL_TEXT_MARKERS
+    )
+
+
+def visible_ebay_access_control_selector(
+    page: Any,
+) -> str | None:
+    """Return the first visible CAPTCHA/challenge selector."""
+
+    for selector in ACCESS_CONTROL_SELECTORS:
+        try:
+            locator = page.locator(
+                selector
+            )
+            count = min(
+                locator.count(),
+                8,
+            )
+        except Exception:
+            continue
+
+        for index in range(
+            count
+        ):
+            try:
+                if locator.nth(
+                    index
+                ).is_visible():
+                    return selector
+            except Exception:
+                continue
+
+    return None
+
+
+def ebay_access_control_reason(
+    page: Any,
+    *,
+    title: str,
+    body: str,
+) -> str | None:
+    """Return deterministic access-control evidence or None."""
+
+    selector = visible_ebay_access_control_selector(
+        page
+    )
+
+    if selector is not None:
+        return (
+            "visible access-control element "
+            f"{selector!r}"
+        )
+
+    if ebay_access_control_text_present(
+        title=title,
+        body=body,
+    ):
+        return (
+            "rendered eBay access-control text"
+        )
+
+    return None
 
 
 def collector_url_for_source(source_name: str) -> str:
@@ -593,13 +699,6 @@ def acquire_page(
                 f"with HTTP {http_status}."
             )
 
-        if is_signin_url(
-            page.url
-        ):
-            raise EbayAuthenticationRequiredError(
-                "eBay redirected the acquisition session to sign-in."
-            )
-
         page_title = page.title()
 
         try:
@@ -613,6 +712,27 @@ def acquire_page(
             )
         except PlaywrightError:
             page_body = ""
+
+        access_control_reason = ebay_access_control_reason(
+            page,
+            title=page_title,
+            body=page_body,
+        )
+
+        if access_control_reason is not None:
+            raise EbayAccessBlockedError(
+                "eBay access control challenge detected before "
+                "result extraction: "
+                + access_control_reason
+                + "."
+            )
+
+        if is_signin_url(
+            page.url
+        ):
+            raise EbayAuthenticationRequiredError(
+                "eBay redirected the acquisition session to sign-in."
+            )
 
         if is_ebay_generic_error_page(
             title=page_title,
@@ -641,6 +761,33 @@ def acquire_page(
             )
 
         final_url = page.url
+        final_title = page.title()
+
+        try:
+            final_body = page.locator(
+                "body"
+            ).inner_text(
+                timeout=min(
+                    timeout_ms,
+                    5_000,
+                )
+            )
+        except PlaywrightError:
+            final_body = ""
+
+        final_access_control_reason = ebay_access_control_reason(
+            page,
+            title=final_title,
+            body=final_body,
+        )
+
+        if final_access_control_reason is not None:
+            raise EbayAccessBlockedError(
+                "eBay access control challenge detected after "
+                "page settlement: "
+                + final_access_control_reason
+                + "."
+            )
 
         if is_signin_url(
             final_url
@@ -838,6 +985,42 @@ def main() -> int:
             arguments.output,
             payload,
         )
+    except EbayAccessBlockedError as exc:
+        print(
+            f"ERROR: {exc}",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_STRUCTURED_ACQUISITION=ACCESS_BLOCKED",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_ACCESS_CONTROL_REQUIRED=true",
+            file=sys.stderr,
+        )
+        print(
+            "AUTOMATIC_RETRY=false",
+            file=sys.stderr,
+        )
+        return 20
+    except EbayAuthenticationRequiredError as exc:
+        print(
+            f"ERROR: {exc}",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_STRUCTURED_ACQUISITION=AUTHENTICATION_REQUIRED",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_AUTHENTICATION_REQUIRED=true",
+            file=sys.stderr,
+        )
+        print(
+            "AUTOMATIC_RETRY=false",
+            file=sys.stderr,
+        )
+        return 21
     except (
         EbayAcquisitionError,
         OSError,
@@ -849,6 +1032,10 @@ def main() -> int:
         )
         print(
             "EBAY_STRUCTURED_ACQUISITION=FAIL",
+            file=sys.stderr,
+        )
+        print(
+            "AUTOMATIC_RETRY=false",
             file=sys.stderr,
         )
         return 1
