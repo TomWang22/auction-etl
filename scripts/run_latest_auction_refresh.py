@@ -2944,7 +2944,7 @@ def main() -> int:
             external_message = (
                 "eBay acquisition is external-only; "
                 "no pending structured raw-page handoff exists. "
-                "Skipping browser acquisition."
+                "eBay was not checked."
             )
 
             status["ebay_source_state"] = (
@@ -2953,6 +2953,8 @@ def main() -> int:
             status["ebay_runtime_semantics"] = (
                 "EBAY_EXTERNAL_HANDOFF_IDLE"
             )
+            status["degraded"] = True
+            status["message"] = external_message
 
             set_marketplace_diagnostic(
                 status,
@@ -2967,7 +2969,7 @@ def main() -> int:
             logger.info(
                 ""
             )
-            logger.info(
+            logger.warning(
                 external_message
             )
             logger.info(
@@ -2981,7 +2983,7 @@ def main() -> int:
             emit_source_state(
                 logger,
                 "eBay",
-                "done",
+                "unavailable",
                 status_file=status_file,
                 status=status,
             )

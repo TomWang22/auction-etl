@@ -181,8 +181,8 @@ def test_external_gate_occurs_after_structured_handoff_priority() -> None:
     )
 
 
-def test_external_idle_does_not_mark_source_failed() -> None:
-    """External idle is an intentional completed stage."""
+def test_external_idle_is_unavailable_and_degraded() -> None:
+    """No external handoff must not report a successful eBay check."""
 
     source = inspect.getsource(
         refresh.main
@@ -191,7 +191,6 @@ def test_external_idle_does_not_mark_source_failed() -> None:
     start = source.index(
         "elif ebay_external_handoff_only("
     )
-
     end = source.index(
         "else:\n"
         "            for source_name in enabled_ebay_sources(",
@@ -203,10 +202,21 @@ def test_external_idle_does_not_mark_source_failed() -> None:
     ]
 
     assert '"eBay",' in branch
-    assert '"done",' in branch
+    assert '"unavailable",' in branch
+    assert '"done",' not in branch
 
     assert (
         "EBAY_EXTERNAL_HANDOFF_IDLE"
+        in branch
+    )
+
+    assert (
+        'status["degraded"] = True'
+        in branch
+    )
+
+    assert (
+        "eBay was not checked."
         in branch
     )
 
@@ -218,11 +228,6 @@ def test_external_idle_does_not_mark_source_failed() -> None:
     assert (
         "ebay_request_executed=False"
         in branch
-    )
-
-    assert (
-        'status["degraded"]'
-        not in branch
     )
 
 

@@ -1,8 +1,8 @@
 [
   {
     "name": "facerecords",
-    "seller": "",
-    "url": "https://www.ebay.com/sch/i.html?_nkw=teresa+teng&_sacat=176985&_from=R40&rt=nc&LH_Complete=1&LH_Sold=1&_sop=13&_ipg=240",
+    "seller": "facerecords",
+    "url": "https://www.ebay.com/sch/i.html?_nkw=teresa+teng&_ssn=facerecords&LH_Complete=1&LH_Sold=1&_sop=13",
     "enabled": true,
     "max_pages": 25,
     "exclude_bulk": true,

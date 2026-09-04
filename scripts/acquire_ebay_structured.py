@@ -19,6 +19,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote, urljoin, urlparse
 
+from auction_etl.browser.defaults import (
+    CHANNEL,
+    COLOR_SCHEME,
+    LOCALE,
+    TIMEZONE,
+    USER_AGENT,
+    VIEWPORT,
+)
 from auction_etl.parsers.ebay import parse_search
 
 
@@ -139,6 +147,32 @@ def is_access_block_status(status: int | None) -> bool:
     return status in BLOCKED_HTTP_STATUSES
 
 
+def is_ebay_generic_error_page(
+    *,
+    title: str,
+    body: str,
+) -> bool:
+    """Return whether eBay rendered its generic HTTP-200 error page."""
+
+    normalized_title = " ".join(
+        title.split()
+    ).casefold()
+
+    normalized_body = " ".join(
+        body.split()
+    ).casefold()
+
+    if normalized_title == "error page | ebay":
+        return True
+
+    return (
+        "something went wrong on our end"
+        in normalized_body
+        and "please go back and try again"
+        in normalized_body
+    )
+
+
 def collector_url_for_source(source_name: str) -> str:
     """Return the raw-page URI expected by the external eBay handoff."""
 
@@ -242,6 +276,47 @@ def canonical_listing(
     return result
 
 
+
+def records_for_expected_seller(
+    records: Sequence[Mapping[str, Any]],
+    expected_seller: str | None,
+) -> list[Mapping[str, Any]]:
+    """Return records belonging exactly to the configured seller."""
+
+    expected = normalized_text(
+        expected_seller
+    )
+
+    if expected is None:
+        return list(
+            records
+        )
+
+    expected_key = expected.casefold()
+
+    matches = [
+        record
+        for record in records
+        if (
+            normalized_text(
+                record.get(
+                    "seller"
+                )
+            )
+            or ""
+        ).casefold()
+        == expected_key
+    ]
+
+    if not matches:
+        raise EbayAcquisitionError(
+            "Acquisition produced zero parser-compatible listings "
+            f"for expected seller {expected!r}."
+        )
+
+    return matches
+
+
 def canonical_listings(
     records: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, str]]:
@@ -290,9 +365,10 @@ def build_payload_from_html(
     final_url: str,
     http_status: int | None,
     item_link_count: int,
+    expected_seller: str | None = None,
     collected_at_utc: str | None = None,
 ) -> dict[str, object]:
-    """Parse browser HTML and construct one structured import artifact."""
+    """Parse browser HTML and construct one seller-scoped structured import artifact."""
 
     if not html.strip():
         raise EbayAcquisitionError(
@@ -303,11 +379,16 @@ def build_payload_from_html(
         html
     )
 
-    listings = canonical_listings(
-        parsed_records
+    scoped_records = records_for_expected_seller(
+        parsed_records,
+        expected_seller,
     )
 
-    return {
+    listings = canonical_listings(
+        scoped_records
+    )
+
+    result: dict[str, object] = {
         "schema": "auction-etl/ebay-structured-acquisition/v1",
         "source_name": source_name.strip(),
         "source_url": requested_url,
@@ -325,6 +406,17 @@ def build_payload_from_html(
         ),
         "listings": listings,
     }
+
+    seller_filter = normalized_text(
+        expected_seller
+    )
+
+    if seller_filter is not None:
+        result[
+            "seller_filter"
+        ] = seller_filter
+
+    return result
 
 
 def atomic_write_json(
@@ -375,6 +467,39 @@ def atomic_write_json(
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+
+def persistent_profile_context_options(
+    *,
+    profile_dir: Path,
+    headless: bool,
+) -> dict[str, object]:
+    """Return BrowserManager-equivalent persistent-context options."""
+
+    options: dict[str, object] = {
+        "user_data_dir": str(
+            profile_dir
+        ),
+        "headless": headless,
+        "viewport": dict(
+            VIEWPORT
+        ),
+        "locale": LOCALE,
+        "timezone_id": TIMEZONE,
+        "color_scheme": COLOR_SCHEME,
+    }
+
+    if USER_AGENT is not None:
+        options[
+            "user_agent"
+        ] = USER_AGENT
+
+    if CHANNEL is not None:
+        options[
+            "channel"
+        ] = CHANNEL
+
+    return options
 
 
 def acquire_page(
@@ -475,6 +600,29 @@ def acquire_page(
                 "eBay redirected the acquisition session to sign-in."
             )
 
+        page_title = page.title()
+
+        try:
+            page_body = page.locator(
+                "body"
+            ).inner_text(
+                timeout=min(
+                    timeout_ms,
+                    5_000,
+                )
+            )
+        except PlaywrightError:
+            page_body = ""
+
+        if is_ebay_generic_error_page(
+            title=page_title,
+            body=page_body,
+        ):
+            raise EbayAcquisitionError(
+                "eBay returned its generic Error Page for the "
+                "configured search URL."
+            )
+
         try:
             page.locator(
                 ITEM_LINK_SELECTOR
@@ -521,10 +669,10 @@ def acquire_page(
                 context = (
                     playwright.chromium
                     .launch_persistent_context(
-                        user_data_dir=str(
-                            resolved_profile
-                        ),
-                        headless=headless,
+                        **persistent_profile_context_options(
+                            profile_dir=resolved_profile,
+                            headless=headless,
+                        )
                     )
                 )
 
@@ -601,6 +749,14 @@ def parse_arguments() -> argparse.Namespace:
         help="Logical eBay source name.",
     )
     parser.add_argument(
+        "--expected-seller",
+        default=None,
+        help=(
+            "Fail closed unless parsed listings belong to this "
+            "exact eBay seller."
+        ),
+    )
+    parser.add_argument(
         "--output",
         required=True,
         type=Path,
@@ -675,6 +831,7 @@ def main() -> int:
             final_url=acquired.final_url,
             http_status=acquired.http_status,
             item_link_count=acquired.item_link_count,
+            expected_seller=arguments.expected_seller,
         )
 
         atomic_write_json(

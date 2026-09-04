@@ -525,10 +525,10 @@ with refresh_tab:
     st.subheader("Safe refresh controls")
 
     st.write(
-        "Inspection is read-only. A new ingestion round performs "
-        "one fresh FaceRecords eBay crawl, parses and normalizes "
-        "that cohort, and guarded-ingests only identities that are "
-        "new to the warehouse."
+        "Inspection is read-only. Buyee and Gripsweat are refreshed "
+        "by the persistent worker. eBay is external-acquisition only: "
+        "a refresh processes a pending FaceRecords handoff when one "
+        "exists; otherwise eBay is shown unavailable, not complete."
     )
 
     job_running = (
