@@ -98,3 +98,32 @@ def test_ebay_success_without_required_markers_is_unknown() -> None:
     )
 
     assert result.state is MarketplaceAccessState.UNKNOWN_ERROR
+
+
+
+def test_ebay_search_results_with_listing_evidence_are_available() -> None:
+    """Actual item identities prove a successful sold-search response."""
+
+    result = classify_ebay_page(
+        status_code=200,
+        title="teresa teng sold items | eBay",
+        body="52 results for teresa teng",
+        listing_count=52,
+    )
+
+    assert result.state is MarketplaceAccessState.AVAILABLE
+    assert "52 listing identity" in result.message
+
+
+def test_ebay_block_status_wins_over_listing_evidence() -> None:
+    """HTTP blocking cannot be hidden by stale listing markup."""
+
+    result = classify_ebay_page(
+        status_code=403,
+        title="Error Page | eBay",
+        body="Something went wrong on our end.",
+        listing_count=52,
+    )
+
+    assert result.state is MarketplaceAccessState.ACCESS_BLOCKED
+    assert "HTTP 403" in result.message

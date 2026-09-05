@@ -830,10 +830,13 @@ def crawl_source(
                     except Exception:
                         body = html
 
+                    count = listing_count(html)
+
                     page_result = classify_ebay_page(
                         status_code=status,
                         title=title,
                         body=body,
+                        listing_count=count,
                     )
 
                     if (
@@ -884,7 +887,6 @@ def crawl_source(
                             page_result.message
                         )
 
-                    count = listing_count(html)
 
 
                     digest = hashlib.sha256(

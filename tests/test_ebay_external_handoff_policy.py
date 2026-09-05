@@ -140,19 +140,48 @@ def test_no_enabled_source_fails_closed(
         )
 
 
-def test_production_config_is_external_only() -> None:
-    """Production config must opt out of worker-side eBay acquisition."""
+def test_production_config_uses_public_browser_acquisition() -> None:
+    """Production eBay uses anonymous sold/completed browser acquisition."""
 
     config = Path(
         "config/ebay_sources.json"
     )
 
+    payload = json.loads(
+        config.read_text(
+            encoding="utf-8",
+        )
+    )
+
+    assert isinstance(
+        payload,
+        list,
+    )
+    assert len(
+        payload
+    ) == 1
+
+    source = payload[0]
+
     assert (
         refresh.ebay_external_handoff_only(
             config
         )
-        is True
+        is False
     )
+
+    assert source["acquisition_mode"] == "browser"
+    assert source["profile"] == "ebay-public"
+    assert source["seller"] == "all-sellers"
+
+    url = str(
+        source["url"]
+    )
+
+    assert "_ssn=" not in url
+    assert "_nkw=teresa+teng" in url
+    assert "LH_Complete=1" in url
+    assert "LH_Sold=1" in url
 
 
 def test_external_gate_occurs_after_structured_handoff_priority() -> None:
