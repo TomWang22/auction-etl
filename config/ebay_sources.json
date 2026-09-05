@@ -12,6 +12,6 @@
     "profile": "ebay-public",
     "wait_seconds": 4.0,
     "min_items": 1,
-    "acquisition_mode": "browser"
+    "acquisition_mode": "external"
   }
 ]

@@ -72,8 +72,8 @@ def build_with_records(
     )
 
 
-def test_production_config_restores_facerecords_scope() -> None:
-    """Production external acquisition must be seller-scoped."""
+def test_production_config_uses_public_all_sellers_scope() -> None:
+    """Production acquisition searches public sold results for the artist."""
 
     payload = json.loads(
         CONFIG.read_text(
@@ -97,7 +97,9 @@ def test_production_config_restores_facerecords_scope() -> None:
         )
     ]
 
-    assert len(enabled) == 1
+    assert len(
+        enabled
+    ) == 1
 
     source = enabled[0]
 
@@ -107,7 +109,11 @@ def test_production_config_restores_facerecords_scope() -> None:
 
     assert source[
         "seller"
-    ] == "facerecords"
+    ] == "all-sellers"
+
+    assert source[
+        "profile"
+    ] == "ebay-public"
 
     assert source[
         "acquisition_mode"
@@ -121,10 +127,12 @@ def test_production_config_restores_facerecords_scope() -> None:
         ).query
     )
 
+    assert "_ssn" not in query
+
     assert query[
-        "_ssn"
+        "_nkw"
     ] == [
-        "facerecords"
+        "teresa teng"
     ]
 
     assert query[
@@ -138,6 +146,7 @@ def test_production_config_restores_facerecords_scope() -> None:
     assert query[
         "_sop"
     ] == ["13"]
+
 
 
 def test_expected_seller_excludes_other_sellers(
@@ -259,8 +268,8 @@ def test_unscoped_call_preserves_existing_parser_behavior(
     )
 
 
-def test_production_config_uses_minimal_seller_search_url() -> None:
-    """The producer URL must omit the broken broad-search modifiers."""
+def test_production_config_uses_minimal_public_search_url() -> None:
+    """Production URL contains artist and sold/completed filters only."""
 
     payload = json.loads(
         CONFIG.read_text(
@@ -272,18 +281,29 @@ def test_production_config_uses_minimal_seller_search_url() -> None:
         row
         for row in payload
         if (
-            isinstance(row, dict)
-            and row.get("enabled", True) is not False
+            isinstance(
+                row,
+                dict,
+            )
+            and row.get(
+                "enabled",
+                True,
+            )
+            is not False
         )
     ]
 
-    assert len(enabled) == 1
+    assert len(
+        enabled
+    ) == 1
 
     source = enabled[0]
 
     parsed = urlsplit(
         str(
-            source["url"]
+            source[
+                "url"
+            ]
         )
     )
 
@@ -293,11 +313,26 @@ def test_production_config_uses_minimal_seller_search_url() -> None:
     )
 
     assert parsed.path == "/sch/i.html"
-    assert query["_nkw"] == ["teresa teng"]
-    assert query["_ssn"] == ["facerecords"]
-    assert query["LH_Complete"] == ["1"]
-    assert query["LH_Sold"] == ["1"]
-    assert query["_sop"] == ["13"]
+
+    assert query[
+        "_nkw"
+    ] == [
+        "teresa teng"
+    ]
+
+    assert "_ssn" not in query
+
+    assert query[
+        "LH_Complete"
+    ] == ["1"]
+
+    assert query[
+        "LH_Sold"
+    ] == ["1"]
+
+    assert query[
+        "_sop"
+    ] == ["13"]
 
     for forbidden_key in (
         "_sacat",

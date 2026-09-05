@@ -29,6 +29,7 @@ from scripts.produce_ebay_external_handoff import (
     has_next_page,
     load_source,
     page_url,
+    profile_directory,
 )
 
 
@@ -97,7 +98,7 @@ def test_load_source_accepts_exact_seller_scope(
 def test_load_source_rejects_missing_seller_scope(
     tmp_path: Path,
 ) -> None:
-    """The old broad-search configuration must fail producer validation."""
+    """An empty acquisition scope must fail validation."""
 
     config = (
         tmp_path
@@ -112,11 +113,12 @@ def test_load_source_rejects_missing_seller_scope(
 
     with pytest.raises(
         ExternalProducerError,
-        match="exact seller",
+        match="seller scope",
     ):
         load_source(
             config
         )
+
 
 
 def test_load_source_rejects_mismatched_query_seller(
@@ -379,3 +381,103 @@ def test_profile_acquisition_matches_managed_browser_defaults(
         assert options[
             "channel"
         ] == CHANNEL
+
+
+
+def test_load_source_accepts_public_all_sellers_scope(
+    tmp_path: Path,
+) -> None:
+    """Public sold acquisition has no seller or persistent-profile requirement."""
+
+    config = (
+        tmp_path
+        / "public-ebay.json"
+    )
+
+    config.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "facerecords",
+                    "seller": "all-sellers",
+                    "url": (
+                        "https://www.ebay.com/sch/i.html"
+                        "?_nkw=teresa+teng"
+                        "&LH_Complete=1"
+                        "&LH_Sold=1"
+                        "&_sop=13"
+                    ),
+                    "enabled": True,
+                    "max_pages": 25,
+                    "profile": "ebay-public",
+                    "wait_seconds": 4.0,
+                    "min_items": 1,
+                    "acquisition_mode": "external",
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    source = load_source(
+        config
+    )
+
+    assert source.seller == "all-sellers"
+    assert source.profile == "ebay-public"
+
+    assert (
+        profile_directory(
+            source
+        )
+        is None
+    )
+
+
+def test_public_all_sellers_rejects_ssn(
+    tmp_path: Path,
+) -> None:
+    """Public search cannot silently revert to a seller restriction."""
+
+    config = (
+        tmp_path
+        / "bad-public-ebay.json"
+    )
+
+    config.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "facerecords",
+                    "seller": "all-sellers",
+                    "url": (
+                        "https://www.ebay.com/sch/i.html"
+                        "?_nkw=teresa+teng"
+                        "&_ssn=facerecords"
+                        "&LH_Complete=1"
+                        "&LH_Sold=1"
+                        "&_sop=13"
+                    ),
+                    "enabled": True,
+                    "max_pages": 25,
+                    "profile": "ebay-public",
+                    "wait_seconds": 4.0,
+                    "min_items": 1,
+                    "acquisition_mode": "external",
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ExternalProducerError,
+        match="must not contain an _ssn",
+    ):
+        load_source(
+            config
+        )

@@ -40,6 +40,9 @@ from scripts.acquire_ebay_structured import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+PUBLIC_ALL_SELLERS = "all-sellers"
+PUBLIC_ANONYMOUS_PROFILE = "ebay-public"
+
 DEFAULT_CONFIG = (
     ROOT
     / "config"
@@ -142,7 +145,7 @@ def load_source(
     path: Path,
     requested_name: str | None = None,
 ) -> ExternalSource:
-    """Load exactly one validated external seller-scoped source."""
+    """Load one validated external eBay source."""
 
     try:
         payload = json.loads(
@@ -192,13 +195,17 @@ def load_source(
         enabled = [
             row
             for row in enabled
-            if str(
-                row.get(
-                    "name",
-                    "",
+            if (
+                str(
+                    row.get(
+                        "name",
+                        "",
+                    )
                 )
-            ).strip().casefold()
-            == requested
+                .strip()
+                .casefold()
+                == requested
+            )
         ]
 
     if len(enabled) != 1:
@@ -251,12 +258,12 @@ def load_source(
 
     if not seller:
         raise ExternalProducerError(
-            "External eBay source must define an exact seller."
+            "External eBay source must define seller scope."
         )
 
     if not profile:
         raise ExternalProducerError(
-            "External eBay source must define a browser profile."
+            "External eBay source must define a profile label."
         )
 
     if acquisition_mode != "external":
@@ -274,8 +281,7 @@ def load_source(
     ).casefold()
 
     if (
-        parsed.scheme.casefold()
-        != "https"
+        parsed.scheme.casefold() != "https"
         or not (
             hostname == "ebay.com"
             or hostname.endswith(
@@ -300,7 +306,28 @@ def load_source(
         .strip()
     )
 
-    if (
+    public_scope = (
+        seller.casefold()
+        == PUBLIC_ALL_SELLERS
+    )
+
+    if public_scope:
+        if seller_filter:
+            raise ExternalProducerError(
+                "Public all-sellers acquisition must not "
+                "contain an _ssn seller restriction."
+            )
+
+        if (
+            profile.casefold()
+            != PUBLIC_ANONYMOUS_PROFILE
+        ):
+            raise ExternalProducerError(
+                "Public all-sellers acquisition must use "
+                f"profile={PUBLIC_ANONYMOUS_PROFILE!r}."
+            )
+
+    elif (
         seller_filter.casefold()
         != seller.casefold()
     ):
@@ -357,6 +384,7 @@ def load_source(
             field="min_items",
         ),
     )
+
 
 
 def page_url(
@@ -454,8 +482,23 @@ def has_next_page(
 
 def profile_directory(
     source: ExternalSource,
-) -> Path:
-    """Resolve the established profile without creating a replacement."""
+) -> Path | None:
+    """Return persistent state only for a seller-scoped source."""
+
+    if (
+        source.seller.casefold()
+        == PUBLIC_ALL_SELLERS
+    ):
+        if (
+            source.profile.casefold()
+            != PUBLIC_ANONYMOUS_PROFILE
+        ):
+            raise ExternalProducerError(
+                "Public all-sellers acquisition must use "
+                f"profile={PUBLIC_ANONYMOUS_PROFILE!r}."
+            )
+
+        return None
 
     configured_root = os.environ.get(
         "AUCTION_BROWSER_PROFILE_ROOT",
@@ -492,6 +535,7 @@ def profile_directory(
         ) from error
 
     return path
+
 
 
 def merge_listings(
@@ -690,7 +734,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Produce one bounded seller-scoped structured eBay handoff."""
+    """Produce one bounded structured eBay handoff."""
 
     arguments = parse_arguments()
 
@@ -704,6 +748,15 @@ def main() -> int:
 
         profile = profile_directory(
             source
+        )
+
+        expected_seller = (
+            None
+            if (
+                source.seller.casefold()
+                == PUBLIC_ALL_SELLERS
+            )
+            else source.seller
         )
 
         configured_pages = (
@@ -774,7 +827,7 @@ def main() -> int:
                 final_url=acquired.final_url,
                 http_status=acquired.http_status,
                 item_link_count=acquired.item_link_count,
-                expected_seller=source.seller,
+                expected_seller=expected_seller,
                 collected_at_utc=collected_at,
             )
 
@@ -786,8 +839,8 @@ def main() -> int:
 
             if page_count < source.min_items:
                 raise ExternalProducerError(
-                    f"Page {page_number} produced only {page_count} "
-                    f"seller-scoped listings; minimum is "
+                    f"Page {page_number} produced only "
+                    f"{page_count} listings; minimum is "
                     f"{source.min_items}."
                 )
 
@@ -800,28 +853,39 @@ def main() -> int:
 
             if added == 0:
                 raise ExternalProducerError(
-                    f"Page {page_number} repeated only already-seen "
-                    "identities; refusing ambiguous pagination."
+                    f"Page {page_number} repeated only "
+                    "already-seen identities; refusing "
+                    "ambiguous pagination."
                 )
 
             page_metadata.append(
                 {
                     "page_number": page_number,
-                    "requested_url": acquired.requested_url,
-                    "final_url": acquired.final_url,
-                    "http_status": acquired.http_status,
-                    "item_link_count": acquired.item_link_count,
-                    "seller_scoped_listings": page_count,
-                    "new_unique_listings": added,
+                    "requested_url": (
+                        acquired.requested_url
+                    ),
+                    "final_url": (
+                        acquired.final_url
+                    ),
+                    "http_status": (
+                        acquired.http_status
+                    ),
+                    "item_link_count": (
+                        acquired.item_link_count
+                    ),
+                    "matched_listings": (
+                        page_count
+                    ),
+                    "new_unique_listings": (
+                        added
+                    ),
                 }
             )
 
             print(
                 "EBAY_EXTERNAL_PAGE="
                 + json.dumps(
-                    page_metadata[
-                        -1
-                    ],
+                    page_metadata[-1],
                     sort_keys=True,
                     ensure_ascii=False,
                 ),
@@ -835,13 +899,11 @@ def main() -> int:
 
         if not merged:
             raise ExternalProducerError(
-                "External producer acquired zero seller-scoped listings."
+                "External producer acquired zero listings."
             )
 
         listings = [
-            merged[
-                item_id
-            ]
+            merged[item_id]
             for item_id in sorted(
                 merged
             )
@@ -851,25 +913,38 @@ def main() -> int:
             str,
             object,
         ] = {
-            "schema": "auction-etl/ebay-structured-acquisition/v1",
+            "schema": (
+                "auction-etl/"
+                "ebay-structured-acquisition/v1"
+            ),
             "source_name": source.name,
             "source_url": source.url,
-            "collector_url": collector_url_for_source(
-                source.name
+            "collector_url": (
+                collector_url_for_source(
+                    source.name
+                )
             ),
-            "seller_filter": source.seller,
-            "collected_at_utc": collected_at,
+            "collected_at_utc": (
+                collected_at
+            ),
             "page": {
                 "page_count": len(
                     page_metadata
                 ),
-                "pages": page_metadata,
+                "pages": (
+                    page_metadata
+                ),
             },
             "listing_count": len(
                 listings
             ),
             "listings": listings,
         }
+
+        if expected_seller is not None:
+            document[
+                "seller_filter"
+            ] = expected_seller
 
         output = (
             arguments.output
@@ -882,27 +957,51 @@ def main() -> int:
             document,
         )
 
+        profile_label = (
+            str(profile)
+            if profile is not None
+            else "ephemeral-anonymous"
+        )
+
         print()
+
         print(
             f"EBAY_EXTERNAL_SOURCE={source.name}"
         )
+
         print(
-            f"EBAY_EXTERNAL_SELLER={source.seller}"
+            f"EBAY_EXTERNAL_SELLER_SCOPE={source.seller}"
         )
+
         print(
-            f"EBAY_EXTERNAL_PROFILE={profile}"
+            f"EBAY_EXTERNAL_PROFILE={profile_label}"
         )
+
         print(
-            f"EBAY_EXTERNAL_PAGES_ACQUIRED={len(page_metadata)}"
+            "EBAY_EXTERNAL_EXPECTED_SELLER="
+            + (
+                expected_seller
+                if expected_seller is not None
+                else "NONE"
+            )
         )
+
         print(
-            f"EBAY_EXTERNAL_LISTINGS={len(listings)}"
+            f"EBAY_EXTERNAL_PAGES_ACQUIRED="
+            f"{len(page_metadata)}"
         )
+
+        print(
+            f"EBAY_EXTERNAL_LISTINGS="
+            f"{len(listings)}"
+        )
+
         print(
             f"EBAY_EXTERNAL_ARTIFACT={output}"
         )
 
         print()
+
         print(
             "================ IMPORTER DRY RUN ================"
         )
@@ -919,30 +1018,39 @@ def main() -> int:
 
         if not arguments.apply:
             print()
+
             print(
                 "EBAY_EXTERNAL_HANDOFF_PRODUCER=PASS"
             )
+
             print(
                 "MODE=DRY_RUN"
             )
+
             print(
                 "DATABASE_SESSION_OPENED=false"
             )
+
             print(
                 "DATABASE_WRITE=false"
             )
+
             print(
                 "EXTERNAL_RAW_PAGE_CREATED=false"
             )
+
             print(
                 "REFRESH_EXECUTED=false"
             )
+
             print(
                 "AUTOMATIC_RETRY=false"
             )
+
             return 0
 
         print()
+
         print(
             "================ EXPLICIT APPLY ================"
         )
@@ -956,15 +1064,19 @@ def main() -> int:
         print(
             "EBAY_EXTERNAL_HANDOFF_PRODUCER=PASS"
         )
+
         print(
             "MODE=APPLY"
         )
+
         print(
             "EXTERNAL_RAW_PAGE_APPLY_REQUESTED=true"
         )
+
         print(
             "REFRESH_EXECUTED=false"
         )
+
         print(
             "AUTOMATIC_RETRY=false"
         )
@@ -976,61 +1088,77 @@ def main() -> int:
             f"ERROR: {error}",
             file=sys.stderr,
         )
+
         print(
             "EBAY_EXTERNAL_HANDOFF_PRODUCER=ACCESS_BLOCKED",
             file=sys.stderr,
         )
+
         print(
             "EBAY_EXTERNAL_ACCESS_CONTROL_REQUIRED=true",
             file=sys.stderr,
         )
+
         print(
             "EBAY_STRUCTURED_IMPORT_APPLIED=false",
             file=sys.stderr,
         )
+
         print(
             "EXTERNAL_RAW_PAGE_CREATED=false",
             file=sys.stderr,
         )
+
         print(
             "REFRESH_EXECUTED=false",
             file=sys.stderr,
         )
+
         print(
             "AUTOMATIC_RETRY=false",
             file=sys.stderr,
         )
+
         return 20
+
     except EbayAuthenticationRequiredError as error:
         print(
             f"ERROR: {error}",
             file=sys.stderr,
         )
+
         print(
             "EBAY_EXTERNAL_HANDOFF_PRODUCER=AUTHENTICATION_REQUIRED",
             file=sys.stderr,
         )
+
         print(
             "EBAY_EXTERNAL_AUTHENTICATION_REQUIRED=true",
             file=sys.stderr,
         )
+
         print(
             "EBAY_STRUCTURED_IMPORT_APPLIED=false",
             file=sys.stderr,
         )
+
         print(
             "EXTERNAL_RAW_PAGE_CREATED=false",
             file=sys.stderr,
         )
+
         print(
             "REFRESH_EXECUTED=false",
             file=sys.stderr,
         )
+
         print(
             "AUTOMATIC_RETRY=false",
             file=sys.stderr,
         )
+
         return 21
+
     except (
         EbayAcquisitionError,
         ExternalProducerError,
@@ -1041,15 +1169,19 @@ def main() -> int:
             f"ERROR: {error}",
             file=sys.stderr,
         )
+
         print(
             "EBAY_EXTERNAL_HANDOFF_PRODUCER=FAIL",
             file=sys.stderr,
         )
+
         print(
             "AUTOMATIC_RETRY=false",
             file=sys.stderr,
         )
+
         return 1
+
 
 
 if __name__ == "__main__":
