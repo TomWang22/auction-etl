@@ -60,6 +60,11 @@ class CommandFailure(RuntimeError):
     """Raised when a child command fails."""
 
 
+BUYEE_PUBLIC_AUTHENTICATION_REDIRECT_MARKER = (
+    "BUYEE_PUBLIC_RESULT=AUTHENTICATION_REDIRECT"
+)
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -1831,6 +1836,8 @@ def main() -> int:
         root / "scripts" / "inspect_recent_ingestion.py",
         root / "scripts" / "crawl_buyee_live_details.py",
         root / "scripts" / "crawl_buyee_http_details.py",
+        root / "scripts" / "crawl_buyee_public_sources.py",
+        root / "config" / "buyee_sources.json",
         root / "scripts" / "crawl_ebay_sources.py",
         root / "scripts" / "setup_gripsweat_schema.py",
         root / "scripts" / "probe_gripsweat.py",
@@ -2349,6 +2356,153 @@ def main() -> int:
             ),
             logger=logger,
         )
+
+        buyee_public_status = 0
+        buyee_crawl_output = ""
+
+        if buyee_available:
+            (
+                buyee_public_status,
+                buyee_crawl_output,
+            ) = run_command(
+                [
+                    sys.executable,
+                    "scripts/crawl_buyee_public_sources.py",
+                    "--config",
+                    str(
+                        root
+                        / "config"
+                        / "buyee_sources.json"
+                    ),
+                    "--apply",
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Crawl public Buyee completed-auction sources",
+                status_file=status_file,
+                status=status,
+                allow_failure=True,
+            )
+
+        normalized_buyee_output = "\n".join(
+            line.strip()
+            for line in buyee_crawl_output.splitlines()
+        )
+
+        buyee_authentication_required = (
+            BUYEE_PUBLIC_AUTHENTICATION_REDIRECT_MARKER
+            in normalized_buyee_output
+        )
+
+        status["buyee_public_exit_code"] = (
+            buyee_public_status
+        )
+
+        if (
+            buyee_available
+            and buyee_public_status != 0
+        ):
+            status["degraded"] = True
+            status["updated_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+
+            if buyee_authentication_required:
+                public_failure_message = (
+                    "Public Buyee acquisition was redirected to "
+                    "authentication; skipping remaining Buyee "
+                    "acquisition and continuing other marketplaces."
+                )
+                status["authentication_required"] = True
+                status["buyee_source_state"] = (
+                    "authentication_required"
+                )
+                status["buyee_runtime_semantics"] = (
+                    "BUYEE_PUBLIC_AUTHENTICATION_REDIRECT"
+                )
+                source_state = "failed"
+            elif (
+                "BUYEE_PUBLIC_RESULT=ACCESS_BLOCKED"
+                in normalized_buyee_output
+            ):
+                public_failure_message = (
+                    "Public Buyee acquisition encountered an "
+                    "access-control block; skipping remaining Buyee "
+                    "acquisition and continuing other marketplaces."
+                )
+                status["buyee_source_state"] = (
+                    "unavailable_access_blocked"
+                )
+                status["buyee_runtime_semantics"] = (
+                    "BUYEE_PUBLIC_ACCESS_BLOCKED"
+                )
+                source_state = "unavailable"
+            elif (
+                "BUYEE_PUBLIC_RESULT=NO_USABLE_RESULTS"
+                in normalized_buyee_output
+            ):
+                public_failure_message = (
+                    "Public Buyee acquisition produced no usable "
+                    "results; skipping remaining Buyee acquisition "
+                    "and continuing other marketplaces."
+                )
+                status["buyee_source_state"] = (
+                    "unavailable_no_results"
+                )
+                status["buyee_runtime_semantics"] = (
+                    "BUYEE_PUBLIC_NO_USABLE_RESULTS"
+                )
+                source_state = "unavailable"
+            else:
+                public_failure_message = (
+                    "Public Buyee acquisition failed with status "
+                    f"{buyee_public_status}; skipping remaining "
+                    "Buyee acquisition and continuing other "
+                    "marketplaces."
+                )
+                status["buyee_source_state"] = (
+                    "public_crawl_failed"
+                )
+                status["buyee_runtime_semantics"] = (
+                    "BUYEE_PUBLIC_CRAWL_FAILED"
+                )
+                source_state = "failed"
+
+            status["message"] = (
+                public_failure_message
+            )
+
+            set_marketplace_diagnostic(
+                status,
+                "buyee",
+                message=public_failure_message,
+                return_code=buyee_public_status,
+                command_output_tail=(
+                    bounded_command_output(
+                        buyee_crawl_output
+                    )
+                ),
+            )
+
+            write_json_atomic(
+                status_file,
+                status,
+            )
+
+            emit_source_state(
+                logger,
+                "Buyee",
+                source_state,
+                status_file=status_file,
+                status=status,
+            )
+
+            logger.warning(
+                public_failure_message
+            )
+
+            buyee_available = False
 
         if buyee_available:
             _, buyee_crawl_output = run_command(

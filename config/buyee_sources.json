@@ -1,0 +1,15 @@
+[
+  {
+    "name": "template",
+    "artist": "",
+    "query": "",
+    "url": "https://buyee.jp/item/search?query=&closed=1&seller=0&customer=0&translationType=98&page=1",
+    "profile": "buyee-public",
+    "enabled": false,
+    "completed_only": true,
+    "acquisition_mode": "public-browser",
+    "max_pages": 3,
+    "wait_seconds": 2.0,
+    "min_items": 1
+  }
+]
