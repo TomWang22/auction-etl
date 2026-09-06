@@ -140,8 +140,8 @@ def test_no_enabled_source_fails_closed(
         )
 
 
-def test_production_config_uses_public_external_acquisition() -> None:
-    """Production eBay is public, with acquisition outside Railway."""
+def test_production_config_uses_anonymous_browser_acquisition() -> None:
+    """Production eBay uses anonymous browser acquisition."""
 
     config = Path(
         "config/ebay_sources.json"
@@ -168,12 +168,12 @@ def test_production_config_uses_public_external_acquisition() -> None:
         refresh.ebay_external_handoff_only(
             config
         )
-        is True
+        is False
     )
 
     assert source[
         "acquisition_mode"
-    ] == "external"
+    ] == "browser"
 
     assert source[
         "profile"

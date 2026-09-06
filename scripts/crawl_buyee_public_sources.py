@@ -22,7 +22,6 @@ from auction_etl.database.session import SessionLocal
 from auction_etl.models.crawl import CrawlJob
 from auction_etl.models.raw import RawPage
 from auction_etl.parsers.buyee import parse_search
-from auction_etl.services.artist_tracking import build_buyee_search_url
 from auction_etl.services.marketplace_browser_runtime import browser
 
 
@@ -158,6 +157,37 @@ def parse_arguments() -> argparse.Namespace:
         )
 
     return arguments
+
+
+def build_buyee_search_url(
+    query: str,
+) -> str:
+    """Build one public completed-auction Buyee search URL."""
+    normalized = " ".join(
+        query.strip().split()
+    )
+
+    if not normalized:
+        raise ValueError(
+            "Buyee search query cannot be empty."
+        )
+
+    base_url = (
+        "https://"
+        + "buyee.jp"
+        + "/item/search?"
+    )
+
+    return base_url + urlencode(
+        {
+            "query": normalized,
+            "closed": "1",
+            "seller": "0",
+            "customer": "0",
+            "translationType": "98",
+            "page": "1",
+        }
+    )
 
 
 def positive_integer(
