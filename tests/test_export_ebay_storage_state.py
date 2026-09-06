@@ -249,13 +249,11 @@ def test_load_source_url_reads_configured_facerecords(
 
 
 def test_verify_source_access_accepts_real_item_links() -> None:
-    """Permit export only after genuine result links are visible."""
-
+    """Navigate once and permit verified genuine result links."""
     source_url = (
         "https://www.ebay.com/sch/i.html"
         "?_ssn=facerecords"
     )
-
     page = FakePage(
         final_url=source_url,
         status=200,
@@ -270,8 +268,177 @@ def test_verify_source_access_accepts_real_item_links() -> None:
     )
 
     assert result.item_link_count == 7
-    assert result.http_status is None
-    assert page.goto_calls == []
+    assert result.http_status == 200
+    assert page.goto_calls == [
+        source_url
+    ]
+
+
+def test_source_url_matches_allows_extra_ebay_parameters() -> None:
+    """Allow eBay-added parameters without changing source identity."""
+    requested_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+    final_url = (
+        requested_url
+        + "&_sacat=176985"
+        + "&_from=R40"
+        + "&rt=nc"
+        + "&_ipg=240"
+    )
+
+    assert EXPORTER.source_url_matches(
+        requested_url,
+        final_url,
+    )
+
+
+def test_source_url_matches_rejects_homepage() -> None:
+    """The homepage never satisfies a configured search source."""
+    source_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+
+    assert not EXPORTER.source_url_matches(
+        source_url,
+        "https://www.ebay.com/",
+    )
+
+
+def test_source_url_matches_rejects_other_ebay_subdomain() -> None:
+    """A different eBay hostname must not satisfy source identity."""
+    requested_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+    final_url = (
+        "https://devicebind.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+
+    assert not EXPORTER.source_url_matches(
+        requested_url,
+        final_url,
+    )
+
+
+def test_source_url_matches_rejects_changed_query() -> None:
+    """Changing configured search identity must fail matching."""
+    requested_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+    final_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=another+artist"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+
+    assert not EXPORTER.source_url_matches(
+        requested_url,
+        final_url,
+    )
+
+
+def test_require_source_page_rejects_external_redirect() -> None:
+    """Preserve explicit classification of non-eBay redirects."""
+    requested_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+
+    with pytest.raises(
+        EXPORTER.EbayAccessBlockedError,
+        match="outside ebay.com",
+    ):
+        EXPORTER.require_source_page(
+            requested_url=requested_url,
+            final_url="https://example.com/",
+        )
+
+
+def test_verify_source_access_rejects_homepage_item_links() -> None:
+    """Homepage recommendations must not create false verification."""
+    source_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+    page = FakePage(
+        final_url="https://www.ebay.com/",
+        status=200,
+        item_link_count=291,
+    )
+
+    with pytest.raises(
+        EXPORTER.EbayStorageStateError,
+        match="does not match the configured source",
+    ):
+        EXPORTER.verify_source_access(
+            page=page,
+            source_url=source_url,
+            navigation_timeout_seconds=10,
+            result_timeout_seconds=10,
+        )
+
+    assert page.goto_calls == [
+        source_url
+    ]
+
+
+def test_verify_source_access_rejects_http_403() -> None:
+    """A blocked source navigation must terminate without retry."""
+    source_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+    page = FakePage(
+        final_url=source_url,
+        status=403,
+        item_link_count=291,
+    )
+
+    with pytest.raises(
+        EXPORTER.EbayAccessBlockedError,
+        match="HTTP 403",
+    ):
+        EXPORTER.verify_source_access(
+            page=page,
+            source_url=source_url,
+            navigation_timeout_seconds=10,
+            result_timeout_seconds=10,
+        )
+
+    assert page.goto_calls == [
+        source_url
+    ]
 
 
 def test_verify_source_access_rejects_signin_redirect() -> None:
@@ -550,27 +717,22 @@ def test_persist_storage_state_writes_valid_secret_file(
     assert mode == 0o600
 
 
-def test_verify_source_access_does_not_navigate_after_operator_confirmation() -> None:
-    """Source verification must inspect the operator-prepared page in place."""
-
+def test_verify_source_access_performs_one_source_navigation() -> None:
+    """Source verification must perform exactly one configured navigation."""
     import ast
-    from pathlib import Path
 
     exporter_path = (
         Path(__file__).resolve().parents[1]
         / "scripts"
         / "export_ebay_storage_state.py"
     )
-
     exporter_source = exporter_path.read_text(
         encoding="utf-8",
     )
-
     tree = ast.parse(
         exporter_source,
         filename=str(exporter_path),
     )
-
     functions = [
         node
         for node in tree.body
@@ -599,10 +761,9 @@ def test_verify_source_access_does_not_navigate_after_operator_confirmation() ->
         )
     ]
 
-    assert page_goto_calls == []
-
+    assert len(page_goto_calls) == 1
     assert (
         "EBAY_SOURCE_VERIFICATION_MODE="
-        "existing_operator_page"
+        "configured_source_navigation"
         in exporter_source
     )

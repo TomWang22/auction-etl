@@ -21,7 +21,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import (
     Browser,
@@ -206,6 +206,126 @@ def require_ebay_url(url: str) -> str:
         )
 
     return normalized
+
+
+def normalized_ebay_host(
+    host: str | None,
+) -> str | None:
+    """Return the canonical hostname used for source identity."""
+    if host is None:
+        return None
+
+    normalized = host.strip().casefold().rstrip(".")
+
+    if normalized in {
+        "ebay.com",
+        "www.ebay.com",
+    }:
+        return "www.ebay.com"
+
+    return normalized
+
+
+def normalized_query(
+    url: str,
+) -> dict[str, tuple[str, ...]]:
+    """Return normalized query values for source matching."""
+    parsed = urlsplit(url)
+
+    return {
+        key: tuple(
+            sorted(
+                value.strip()
+                for value in values
+            )
+        )
+        for key, values in parse_qs(
+            parsed.query,
+            keep_blank_values=True,
+        ).items()
+    }
+
+
+def source_url_matches(
+    requested_url: str,
+    final_url: str,
+) -> bool:
+    """Return whether a final page satisfies the configured source URL."""
+    try:
+        requested = urlsplit(
+            require_ebay_url(
+                requested_url
+            )
+        )
+        final = urlsplit(
+            require_ebay_url(
+                final_url
+            )
+        )
+    except EbayStorageStateError:
+        return False
+
+    if (
+        normalized_ebay_host(requested.hostname)
+        != normalized_ebay_host(final.hostname)
+    ):
+        return False
+
+    if (
+        requested.path.rstrip("/")
+        != final.path.rstrip("/")
+    ):
+        return False
+
+    requested_query = normalized_query(
+        requested_url
+    )
+    final_query = normalized_query(
+        final_url
+    )
+
+    return all(
+        final_query.get(key) == values
+        for key, values in requested_query.items()
+    )
+
+
+def require_source_page(
+    *,
+    requested_url: str,
+    final_url: str,
+) -> None:
+    """Require the active page to satisfy the configured source."""
+    try:
+        parsed_final = urlsplit(
+            final_url.strip()
+        )
+    except ValueError as exc:
+        raise EbayStorageStateError(
+            "eBay finished on a malformed URL."
+        ) from exc
+
+    if not is_ebay_host(
+        parsed_final.hostname
+    ):
+        raise EbayAccessBlockedError(
+            "eBay verification redirected outside ebay.com."
+        )
+
+    validated_final_url = require_ebay_url(
+        final_url
+    )
+
+    if source_url_matches(
+        requested_url,
+        validated_final_url,
+    ):
+        return
+
+    raise EbayStorageStateError(
+        "The active eBay page does not match the configured "
+        "source search."
+    )
 
 
 def configured_sources(payload: Any) -> list[dict[str, Any]]:
@@ -559,7 +679,6 @@ def verify_source_access(
     result_timeout_seconds: float,
 ) -> SourceVerification:
     """Verify that the configured source exposes real listing links."""
-
     requested_url = require_ebay_url(
         source_url
     )
@@ -581,8 +700,25 @@ def verify_source_access(
         result_timeout_seconds * 1000
     )
 
-    print("EBAY_SOURCE_VERIFICATION_MODE=existing_operator_page", flush=True)
-    response = None
+    print(
+        "EBAY_SOURCE_VERIFICATION_MODE=configured_source_navigation",
+        flush=True,
+    )
+
+    try:
+        response = page.goto(
+            requested_url,
+            wait_until="domcontentloaded",
+            timeout=navigation_timeout_ms,
+        )
+    except PlaywrightTimeoutError as exc:
+        assert_page_not_blocked(
+            page,
+            http_status=None,
+        )
+        raise EbayStorageStateError(
+            "Timed out navigating to the configured eBay source."
+        ) from exc
 
     http_status = page_http_status(
         response
@@ -591,6 +727,11 @@ def verify_source_access(
     assert_page_not_blocked(
         page,
         http_status=http_status,
+    )
+
+    require_source_page(
+        requested_url=requested_url,
+        final_url=page.url,
     )
 
     locator = page.locator(
@@ -607,7 +748,6 @@ def verify_source_access(
             page,
             http_status=http_status,
         )
-
         raise EbayStorageStateError(
             "The verified eBay source produced no real item links."
         ) from exc
@@ -619,21 +759,10 @@ def verify_source_access(
 
     final_url = page.url
 
-    try:
-        parsed_final = urlsplit(
-            final_url
-        )
-    except ValueError as exc:
-        raise EbayStorageStateError(
-            "eBay finished on a malformed URL."
-        ) from exc
-
-    if not is_ebay_host(
-        parsed_final.hostname
-    ):
-        raise EbayAccessBlockedError(
-            "eBay verification redirected outside ebay.com."
-        )
+    require_source_page(
+        requested_url=requested_url,
+        final_url=final_url,
+    )
 
     item_link_count = locator.count()
 

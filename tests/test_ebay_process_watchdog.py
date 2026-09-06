@@ -161,7 +161,7 @@ def test_production_ebay_crawl_uses_outer_watchdog() -> None:
         "<sys.executable>",
         "scripts/run_with_process_watchdog.py",
         "--timeout-seconds",
-        "600",
+        "90",
         "--kill-grace-seconds",
         "10",
         "--",
