@@ -351,6 +351,36 @@ def has_next_page(html: str) -> bool:
     return False
 
 
+def navigate_for_results(
+    page: Page,
+    url: str,
+    *,
+    page_number: int,
+) -> Any | None:
+    """Start eBay navigation while tolerating only navigation timeouts."""
+    try:
+        response = page.goto(
+            url,
+            wait_until="commit",
+            timeout=EBAY_NAVIGATION_TIMEOUT_MS,
+        )
+    except PlaywrightTimeoutError:
+        print(
+            "EBAY_CRAWL_PHASE=navigation_timeout_nonfatal "
+            f"page={page_number}",
+            flush=True,
+        )
+        return None
+
+    print(
+        "EBAY_CRAWL_PHASE=navigation_ready "
+        f"page={page_number}",
+        flush=True,
+    )
+
+    return response
+
+
 def wait_for_results(
     page: Page,
     seconds: float,
@@ -777,16 +807,10 @@ def crawl_source(
                         flush=True,
                     )
 
-                    response = page.goto(
+                    response = navigate_for_results(
+                        page,
                         url,
-                        wait_until="domcontentloaded",
-                        timeout=EBAY_NAVIGATION_TIMEOUT_MS,
-                    )
-
-                    print(
-                        "EBAY_CRAWL_PHASE=navigation_ready "
-                        f"page={page_number}",
-                        flush=True,
+                        page_number=page_number,
                     )
 
                     stats.pages_loaded += 1
