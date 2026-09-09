@@ -1699,6 +1699,27 @@ def _gripsweat_new_detail_item_ids(
     )
 
 
+def build_child_environment(
+    *,
+    database_url: str,
+    expected_database_name: str,
+    expected_database_user: str,
+) -> dict[str, str]:
+    """Build the environment shared by refresh child processes."""
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = database_url
+    environment["AUCTION_EXPECTED_DATABASE_NAME"] = (
+        expected_database_name
+    )
+    environment["AUCTION_EXPECTED_DATABASE_USER"] = (
+        expected_database_user
+    )
+    environment.pop("DOCKER_HOST", None)
+    environment.pop("DOCKER_CONTEXT", None)
+    environment.pop("PGOPTIONS", None)
+    return environment
+
+
 def main() -> int:
     """Run a complete safe all-source refresh."""
     from auction_etl.services.artist_tracking import prepare_runtime_marketplace_configs
@@ -1820,13 +1841,15 @@ def main() -> int:
         write_json_atomic(status_file, status)
         return 1
 
-    environment = os.environ.copy()
-    environment["DATABASE_URL"] = (
-        sqlalchemy_database_url
+    environment = build_child_environment(
+        database_url=sqlalchemy_database_url,
+        expected_database_name=(
+            arguments.expected_database_name
+        ),
+        expected_database_user=(
+            arguments.expected_database_user
+        ),
     )
-    environment.pop("DOCKER_HOST", None)
-    environment.pop("DOCKER_CONTEXT", None)
-    environment.pop("PGOPTIONS", None)
 
     required_paths = (
         root / "scripts" / "verify_buyee_session.py",
