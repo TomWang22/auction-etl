@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from auction_etl.browser.buyee_owner import (
     OWNER_PROTOCOL_VERSION,
@@ -22,6 +22,34 @@ from auction_etl.browser.buyee_owner import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 OWNER_SCRIPT = REPOSITORY_ROOT / "scripts" / "run_buyee_owner.py"
+
+
+
+def owner_process_environment(
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return the persistent browser owner's DB-free startup environment."""
+
+    source = (
+        os.environ
+        if environment is None
+        else environment
+    )
+
+    return {
+        key: value
+        for key, value in source.items()
+        if (
+            key != "DATABASE_URL"
+            and key
+            not in {
+                "AUCTION_EXPECTED_DATABASE_NAME",
+                "AUCTION_EXPECTED_DATABASE_USER",
+                "AUCTION_BUYEE_CDP_URL",
+            }
+            and not key.startswith("PG")
+        )
+    }
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -268,11 +296,7 @@ def _main_once() -> int:
                 f"Could not remove stale owner socket: {socket_path}"
             ) from error
 
-        environment = os.environ.copy()
-        environment.pop(
-            "AUCTION_BUYEE_CDP_URL",
-            None,
-        )
+        environment = owner_process_environment()
         environment[
             "AUCTION_BUYEE_OWNER_SOCKET"
         ] = str(

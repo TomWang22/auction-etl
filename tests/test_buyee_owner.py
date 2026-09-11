@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from auction_etl.browser.buyee_owner import forwarded_environment
+from scripts.ensure_buyee_owner import owner_process_environment
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,3 +86,49 @@ def test_owner_protocol_is_high_level_only() -> None:
 
     assert "remote_locator" not in source
     assert "remote_page" not in source
+
+
+def test_owner_process_environment_drops_ambient_database_configuration() -> None:
+    """Keep DB credentials request-scoped instead of owner-process-scoped."""
+
+    environment = {
+        "DATABASE_URL": "postgresql://auction:secret@127.0.0.1/db",
+        "AUCTION_EXPECTED_DATABASE_NAME": "auction_warehouse",
+        "AUCTION_EXPECTED_DATABASE_USER": "auction",
+        "PGHOST": "127.0.0.1",
+        "PGPORT": "5544",
+        "PGUSER": "auction",
+        "PGPASSWORD": "secret",
+        "PGOPTIONS": "-c statement_timeout=5000",
+        "AUCTION_BUYEE_CDP_URL": "http://127.0.0.1:9334",
+        "AUCTION_BUYEE_PROFILE": "buyee",
+        "BUYEE_STORAGE_STATE_FILE": "/tmp/buyee-state.json",
+        "PLAYWRIGHT_BROWSERS_PATH": "/tmp/playwright",
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/Users/example",
+    }
+
+    assert owner_process_environment(
+        environment
+    ) == {
+        "AUCTION_BUYEE_PROFILE": "buyee",
+        "BUYEE_STORAGE_STATE_FILE": "/tmp/buyee-state.json",
+        "PLAYWRIGHT_BROWSERS_PATH": "/tmp/playwright",
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/Users/example",
+    }
+
+
+def test_owner_job_environment_remains_request_scoped() -> None:
+    """Owner-executed jobs may still receive the DB URL explicitly."""
+
+    environment = {
+        "DATABASE_URL": "postgresql://example",
+        "AUCTION_EXPECTED_DATABASE_NAME": "auction_warehouse",
+        "AUCTION_EXPECTED_DATABASE_USER": "auction",
+        "AUCTION_BUYEE_PROFILE": "buyee",
+    }
+
+    assert forwarded_environment(
+        environment
+    ) == environment
