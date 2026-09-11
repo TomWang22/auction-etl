@@ -725,6 +725,7 @@ def load_auctions(
         LEFT JOIN warehouse.auction_collector AS c
           ON c.marketplace = a.marketplace
          AND c.listing_id = a.listing_id
+         AND c.account_id IS NULL
         {where_clause}
         ORDER BY
             a.ended_at DESC NULLS LAST,
@@ -852,6 +853,7 @@ def build_features(
             NOW()
         )
         ON CONFLICT (marketplace, listing_id)
+        WHERE account_id IS NULL
         DO UPDATE SET
             source_fingerprint =
                 EXCLUDED.source_fingerprint,
