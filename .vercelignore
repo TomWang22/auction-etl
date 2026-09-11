@@ -2,3 +2,19 @@
 # The local ETL/worker retains the complete uv dependency graph.
 pyproject.toml
 uv.lock
+
+# BEGIN auction-etl private deployment exclusions
+backups
+logs
+profiles
+.auction-etl
+.ssh
+.env
+.env.*
+*storage-state*.json
+*.dump
+*.pem
+*.key
+*.p12
+*.pfx
+# END auction-etl private deployment exclusions
