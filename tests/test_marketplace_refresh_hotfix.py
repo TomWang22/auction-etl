@@ -50,8 +50,8 @@ def test_buyee_one_off_search_url_is_valid() -> None:
     ]
 
 
-def test_production_ebay_uses_anonymous_browser() -> None:
-    """Production eBay must run through the anonymous browser path."""
+def test_production_ebay_uses_external_handoff() -> None:
+    """Production eBay must use the external acquisition handoff."""
     import json
 
     config = json.loads(
@@ -70,7 +70,7 @@ def test_production_ebay_uses_anonymous_browser() -> None:
 
     assert source[
         "acquisition_mode"
-    ] == "browser"
+    ] == "external"
 
     assert source[
         "profile"

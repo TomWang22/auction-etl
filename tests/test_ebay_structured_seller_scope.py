@@ -117,7 +117,7 @@ def test_production_config_uses_public_all_sellers_scope() -> None:
 
     assert source[
         "acquisition_mode"
-    ] == "browser"
+    ] == "external"
 
     query = parse_qs(
         urlsplit(

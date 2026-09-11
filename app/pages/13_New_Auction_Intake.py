@@ -21,6 +21,12 @@ from auction_etl.services.auction_intake import (
 )
 from app.navigation import render_navigation
 
+from auction_etl.auth.streamlit_auth import (
+    render_account_menu,
+    require_authenticated_account,
+    require_system_admin,
+)
+
 
 def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     """Return a display-safe dataframe."""
@@ -79,6 +85,13 @@ def main() -> None:
     )
 
     engine = engine_from_environment()
+
+    page_account_context = require_authenticated_account(
+        engine
+    )
+    render_account_menu(
+        page_account_context
+    )
 
     queue_tab, alerts_tab, cohorts_tab, audit_tab = st.tabs(
         (

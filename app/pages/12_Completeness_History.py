@@ -17,6 +17,12 @@ from auction_etl.services.completeness_history import (
 )
 from app.navigation import render_navigation
 
+from auction_etl.auth.streamlit_auth import (
+    render_account_menu,
+    require_authenticated_account,
+    require_system_admin,
+)
+
 
 st.set_page_config(
     page_title="Completeness History",
@@ -72,6 +78,13 @@ def main() -> None:
     )
 
     engine = _engine()
+
+    page_account_context = require_authenticated_account(
+        engine
+    )
+    render_account_menu(
+        page_account_context
+    )
     coverage = snapshot_coverage(
         engine
     )

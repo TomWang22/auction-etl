@@ -53,6 +53,12 @@ from auction_etl.services.media_aware_reference import (
 )
 from app.navigation import render_navigation
 
+from auction_etl.auth.streamlit_auth import (
+    render_account_menu,
+    require_authenticated_account,
+    require_system_admin,
+)
+
 
 st.set_page_config(
     page_title="Pressing Reference Workbench",
@@ -1996,6 +2002,16 @@ def main() -> None:
         st.success(message)
 
     engine = _engine()
+
+    page_account_context = require_authenticated_account(
+        engine
+    )
+    require_system_admin(
+        page_account_context
+    )
+    render_account_menu(
+        page_account_context
+    )
 
     search = st.text_input(
         "Search pressing library",

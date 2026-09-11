@@ -33,6 +33,12 @@ from auction_etl.services.reference_record_admin import (
 )
 from app.navigation import render_navigation
 
+from auction_etl.auth.streamlit_auth import (
+    render_account_menu,
+    require_authenticated_account,
+    require_system_admin,
+)
+
 
 st.set_page_config(
     page_title="Reference Record Admin",
@@ -979,6 +985,16 @@ def main() -> None:
         st.success(message)
 
     engine = _engine()
+
+    page_account_context = require_authenticated_account(
+        engine
+    )
+    require_system_admin(
+        page_account_context
+    )
+    render_account_menu(
+        page_account_context
+    )
 
     pressings = list_pressings(
         engine

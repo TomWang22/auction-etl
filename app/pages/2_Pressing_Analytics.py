@@ -14,6 +14,12 @@ from sqlalchemy import text
 from auction_etl.database.session import engine
 from app.navigation import render_navigation
 
+from auction_etl.auth.streamlit_auth import (
+    render_account_menu,
+    require_authenticated_account,
+    require_system_admin,
+)
+
 
 st.set_page_config(
     page_title="Pressing Analytics",
@@ -1021,6 +1027,13 @@ def normalize_date_selection(
 
 def main() -> None:
     """Render pressing analytics."""
+
+    page_account_context = require_authenticated_account(
+        engine
+    )
+    render_account_menu(
+        page_account_context
+    )
     st.title("📈 Pressing Analytics")
     st.caption(
         "Discogs-style completed-sale history using actual "
