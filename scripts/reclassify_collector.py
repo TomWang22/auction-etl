@@ -793,6 +793,7 @@ def main() -> int:
     required_columns = {
         "marketplace",
         "listing_id",
+        "account_id",
         "auto_catalog_number",
         "auto_region",
         "auto_media_type",
@@ -894,6 +895,7 @@ def main() -> int:
         LEFT JOIN warehouse.auction_collector AS c
           ON c.marketplace = a.marketplace
          AND c.listing_id = a.listing_id
+         AND c.account_id IS NULL
         {where_clause}
         ORDER BY
             a.marketplace,
@@ -939,6 +941,7 @@ def main() -> int:
             updated_at = NOW()
         WHERE marketplace = :marketplace
           AND listing_id = :listing_id
+          AND account_id IS NULL
         """
     )
 

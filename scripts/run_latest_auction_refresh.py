@@ -559,7 +559,11 @@ def database_state(
     )
     collectors = scalar(
         connection,
-        "SELECT COUNT(*) FROM warehouse.auction_collector",
+        """
+        SELECT COUNT(*)
+        FROM warehouse.auction_collector
+        WHERE account_id IS NULL
+        """,
     )
     effective = scalar(
         connection,

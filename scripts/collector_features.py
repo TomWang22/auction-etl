@@ -1585,6 +1585,7 @@ def import_review(
                     updated_at = NOW()
                 WHERE marketplace = :marketplace
                   AND listing_id = :listing_id
+                  AND account_id IS NULL
                 """
             )
 
@@ -1659,6 +1660,7 @@ def print_status() -> None:
                 marketplace,
                 listing_id
             FROM warehouse.auction_collector
+            WHERE account_id IS NULL
             GROUP BY
                 marketplace,
                 listing_id

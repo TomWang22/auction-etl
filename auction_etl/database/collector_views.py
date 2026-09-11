@@ -295,7 +295,7 @@ SELECT a.id,
     COALESCE(c.manual_condition_cover, a.condition_cover) AS effective_condition_cover,
     c.updated_at AS collector_updated_at
    FROM warehouse.auction a
-     LEFT JOIN warehouse.auction_collector c ON c.marketplace::text = a.marketplace::text AND c.listing_id::text = a.listing_id::text;
+     LEFT JOIN warehouse.auction_collector c ON c.marketplace::text = a.marketplace::text AND c.listing_id::text = a.listing_id::text AND c.account_id IS NULL;
 """
 
 REVIEW_VIEW_SELECT_SQL = r"""
@@ -402,7 +402,7 @@ SELECT effective.id,
     detail.error_message AS live_detail_error_message,
     detail.fetched_at AS live_detail_fetched_at
    FROM warehouse.auction_collector_effective effective
-     LEFT JOIN warehouse.auction_collector collector ON collector.marketplace::text = effective.marketplace::text AND collector.listing_id::text = effective.listing_id::text
+     LEFT JOIN warehouse.auction_collector collector ON collector.marketplace::text = effective.marketplace::text AND collector.listing_id::text = effective.listing_id::text AND collector.account_id IS NULL
      LEFT JOIN warehouse.auction_detail detail ON detail.marketplace::text = effective.marketplace::text AND detail.listing_id::text = effective.listing_id::text;
 """
 
@@ -462,6 +462,7 @@ _REQUIRED_COLUMNS = {
     ("warehouse", "auction_collector"): {
         "marketplace",
         "listing_id",
+        "account_id",
         "auto_catalog_number",
         "manual_catalog_number",
         "auto_region",
@@ -715,6 +716,7 @@ def verify_collector_views(
                 (
                     SELECT COUNT(*)
                     FROM warehouse.auction_collector
+                    WHERE account_id IS NULL
                 ),
                 (
                     SELECT COUNT(
@@ -724,6 +726,7 @@ def verify_collector_views(
                         )
                     )
                     FROM warehouse.auction_collector
+                    WHERE account_id IS NULL
                 ),
                 (
                     SELECT COUNT(*)
