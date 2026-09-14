@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
+import psycopg
+from psycopg.rows import dict_row
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,6 +27,11 @@ if str(ROOT) not in sys.path:
         0,
         str(ROOT),
     )
+
+from scripts.run_latest_auction_refresh import (  # noqa: E402
+    create_backup,
+    normalize_psycopg_url,
+)
 
 DEFAULT_CONFIG = ROOT / "config" / "ebay_sources.json"
 DEFAULT_STORAGE_STATE = (
@@ -67,6 +75,16 @@ EBAY_BROWSER_COMMAND_MARKER = (
 )
 EBAY_BROWSER_PROFILE_MARKER = (
     "profile=ebay-public"
+)
+ITEM_ID_PATTERN = re.compile(
+    r"^[0-9]{9,15}$"
+)
+RAILWAY_OPERATOR_ENVIRONMENT_KEYS = (
+    "RAILWAY_ENVIRONMENT",
+    "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_SERVICE_ID",
+    "RAILWAY_REPLICA_ID",
 )
 
 
@@ -636,6 +654,40 @@ def validate_artifact(
             "Structured eBay artifact contains an invalid listing count."
         )
 
+    seen_item_ids: set[str] = set()
+
+    for listing in listings:
+        if not isinstance(
+            listing,
+            dict,
+        ):
+            raise OperatorError(
+                "Structured eBay artifact listings are invalid."
+            )
+
+        item_id = str(
+            listing.get(
+                "item_id",
+                "",
+            )
+        ).strip()
+
+        if ITEM_ID_PATTERN.fullmatch(
+            item_id
+        ) is None:
+            raise OperatorError(
+                "Structured eBay artifact contains an invalid item ID."
+            )
+
+        if item_id in seen_item_ids:
+            raise OperatorError(
+                "Structured eBay artifact contains duplicate item IDs."
+            )
+
+        seen_item_ids.add(
+            item_id
+        )
+
     page = payload.get(
         "page"
     )
@@ -835,14 +887,114 @@ def validate_write_request(
         )
 
 
+def reject_railway_operator_environment() -> None:
+    """Refuse headed eBay acquisition on Railway workers."""
+
+    present = [
+        key
+        for key in RAILWAY_OPERATOR_ENVIRONMENT_KEYS
+        if os.environ.get(
+            key,
+            "",
+        ).strip()
+    ]
+
+    if present:
+        raise OperatorError(
+            "Refusing eBay operator handoff on Railway. "
+            "Headed structured acquisition must run locally."
+        )
+
+
+def require_artifact_sha(
+    *,
+    artifact: Path,
+    expected_sha256: str,
+) -> None:
+    """Fail closed if the validated artifact bytes changed."""
+
+    actual = sha256_file(
+        artifact
+    )
+
+    if actual != expected_sha256:
+        raise OperatorError(
+            "Structured artifact changed after validation."
+        )
+
+
+def emit_operator_contract(
+    *,
+    apply: bool,
+    raw_page_id: int | None = None,
+) -> None:
+    """Emit the machine-readable operator terminal contract."""
+
+    print(
+        "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS"
+    )
+    print(
+        "ACQUISITION_MODE=external"
+    )
+    print(
+        "ACQUISITION_HEADLESS=false"
+    )
+    print(
+        "STRUCTURED_ARTIFACT_VALIDATION=PASS"
+    )
+    print(
+        "STRUCTURED_IMPORT_PLAN=PASS"
+    )
+    print(
+        "STRUCTURED_EBAY_APPLY_RUN="
+        + str(
+            apply
+        ).lower()
+    )
+
+    if apply:
+        if raw_page_id is None:
+            raise OperatorError(
+                "Apply mode requires an exact structured raw-page ID."
+            )
+
+        print(
+            f"STRUCTURED_EBAY_RAW_PAGE_ID={raw_page_id}"
+        )
+        print(
+            "EXACT_STRUCTURED_RAW_PAGE_PARSED=true"
+        )
+        print(
+            "REFRESH_EBAY_MARKETPLACE_STATE=done"
+        )
+        print(
+            "REFRESH_EBAY_RUNTIME_SEMANTICS=EBAY_SOURCE_AVAILABLE"
+        )
+
+    print(
+        "EBAY_BROWSER_ACQUISITION_EXECUTED=false"
+    )
+    print(
+        "EBAY_BROWSER_FALLBACK_PROHIBITED=true"
+    )
+    print(
+        "DATABASE_WRITE="
+        + str(
+            apply
+        ).lower()
+    )
+    print(
+        "REAL_REFRESH_RUN="
+        + str(
+            apply
+        ).lower()
+    )
+
+
 def normalize_database_url(
     database_url: str,
 ) -> str:
     """Normalize SQLAlchemy-style PostgreSQL URLs for Psycopg."""
-
-    from scripts.run_latest_auction_refresh import (
-        normalize_psycopg_url,
-    )
 
     return normalize_psycopg_url(
         database_url
@@ -857,9 +1009,6 @@ def database_snapshot(
     raw_page_id: int | None = None,
 ) -> DatabaseSnapshot:
     """Verify database identity and return eBay state."""
-
-    import psycopg
-    from psycopg.rows import dict_row
 
     psql_url = normalize_database_url(
         database_url
@@ -997,10 +1146,6 @@ def backup_database(
     expected_database_name: str,
 ) -> Path:
     """Create the repository-standard verified PostgreSQL backup."""
-
-    from scripts.run_latest_auction_refresh import (
-        create_backup,
-    )
 
     logger = logging.getLogger(
         "ebay-external-handoff-backup"
@@ -1264,406 +1409,406 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def run_operator(
+    arguments: argparse.Namespace,
+) -> int:
+    """Run the fail-closed headed eBay operator workflow."""
+
+    reject_railway_operator_environment()
+    validate_write_request(
+        apply=arguments.apply,
+        confirm_write=arguments.confirm_write,
+        database_url=arguments.database_url,
+    )
+
+    source = load_external_source(
+        arguments.config
+    )
+
+    storage_state = require_file(
+        arguments.storage_state,
+        label="eBay storage state",
+    )
+
+    artifact = (
+        arguments.artifact
+        if arguments.artifact
+        is not None
+        else default_artifact_path()
+    ).expanduser().resolve()
+
+    artifact.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if artifact.exists():
+        raise OperatorError(
+            "Refusing to overwrite existing artifact: "
+            f"{artifact}"
+        )
+
+    settle_seconds = (
+        source.wait_seconds
+        if arguments.settle_seconds
+        is None
+        else arguments.settle_seconds
+    )
+
+    state_sha_before = sha256_file(
+        storage_state
+    )
+
+    environment = os.environ.copy()
+
+    acquisition_output = run_child(
+        label="HEADED STRUCTURED EBAY ACQUISITION",
+        command=build_acquisition_command(
+            source=source,
+            storage_state=storage_state,
+            artifact=artifact,
+            timeout_seconds=arguments.timeout_seconds,
+            settle_seconds=settle_seconds,
+        ),
+        environment=environment,
+    )
+
+    require_sentinel(
+        acquisition_output,
+        "EBAY_STRUCTURED_ACQUISITION=PASS",
+    )
+
+    require_sentinel(
+        acquisition_output,
+        "DATABASE_REQUEST_EXECUTED=false",
+    )
+
+    listing_count, artifact_sha256 = validate_artifact(
+        artifact=artifact,
+        source=source,
+    )
+
+    state_sha_after = sha256_file(
+        storage_state
+    )
+
+    if (
+        state_sha_after
+        != state_sha_before
+    ):
+        raise OperatorError(
+            "eBay storage-state file changed during acquisition."
+        )
+
+    dry_run_output = run_child(
+        label="STRUCTURED IMPORTER DRY RUN",
+        command=build_import_command(
+            artifact=artifact,
+            source_name=source.name,
+            apply=False,
+        ),
+        environment=environment,
+    )
+
+    require_sentinel(
+        dry_run_output,
+        "MODE=DRY_RUN",
+    )
+
+    require_sentinel(
+        dry_run_output,
+        "DATABASE_SESSION_OPENED=false",
+    )
+
+    require_sentinel(
+        dry_run_output,
+        "DATABASE_WRITE_EXECUTED=false",
+    )
+
+    require_sentinel(
+        dry_run_output,
+        "STRUCTURED_EBAY_IMPORT_DRY_RUN=PASS",
+    )
+
+    plan_sha256, plan_listing_count = (
+        parse_import_plan_summary(
+            dry_run_output
+        )
+    )
+
+    if (
+        plan_listing_count
+        != listing_count
+    ):
+        raise OperatorError(
+            "Importer plan listing count differs "
+            "from acquired artifact."
+        )
+
+    require_artifact_sha(
+        artifact=artifact,
+        expected_sha256=artifact_sha256,
+    )
+
+    print()
+    print(
+        "================ VALIDATED HANDOFF ================"
+    )
+    print()
+    print(
+        f"EBAY_SOURCE_NAME={source.name}"
+    )
+    print(
+        "EBAY_ACQUISITION_MODE=external"
+    )
+    print(
+        "EBAY_STRUCTURED_ACQUISITION_HEADLESS=false"
+    )
+    print(
+        f"STRUCTURED_ARTIFACT={artifact}"
+    )
+    print(
+        f"STRUCTURED_ARTIFACT_SHA256={artifact_sha256}"
+    )
+    print(
+        f"STRUCTURED_ARTIFACT_LISTING_COUNT={listing_count}"
+    )
+    print(
+        f"IMPORT_PLAN_SHA256={plan_sha256}"
+    )
+    print(
+        "EBAY_STORAGE_STATE_MODIFIED=false"
+    )
+
+    if not arguments.apply:
+        print(
+            "READY_FOR_STRUCTURED_EBAY_APPLY=true"
+        )
+        print(
+            "EBAY_EXTERNAL_HANDOFF_DRY_RUN=PASS"
+        )
+        emit_operator_contract(
+            apply=False
+        )
+        return 0
+
+    database_url = str(
+        arguments.database_url
+    )
+
+    expected_database_name = str(
+        arguments.expected_database_name
+    ).strip()
+
+    expected_database_user = str(
+        arguments.expected_database_user
+    ).strip()
+
+    if not expected_database_name:
+        raise OperatorError(
+            "Expected database name cannot be empty."
+        )
+
+    if not expected_database_user:
+        raise OperatorError(
+            "Expected database user cannot be empty."
+        )
+
+    pre_snapshot = database_snapshot(
+        database_url=database_url,
+        expected_database_name=expected_database_name,
+        expected_database_user=expected_database_user,
+    )
+
+    print()
+    print(
+        "DATABASE_TARGET_IDENTITY=PASS"
+    )
+    print(
+        f"DATABASE_NAME={pre_snapshot.database_name}"
+    )
+    print(
+        f"DATABASE_USER={pre_snapshot.database_user}"
+    )
+    print(
+        f"BASELINE_EBAY_WAREHOUSE_ROWS={pre_snapshot.ebay_rows}"
+    )
+    print(
+        "DATABASE_PASSWORD_PRINTED=false"
+    )
+
+    backup = backup_database(
+        database_url=database_url,
+        expected_database_name=expected_database_name,
+    )
+
+    environment[
+        "DATABASE_URL"
+    ] = database_url
+
+    apply_output = run_child(
+        label="APPLY EXACT STRUCTURED ARTIFACT",
+        command=build_import_command(
+            artifact=artifact,
+            source_name=source.name,
+            apply=True,
+        ),
+        environment=environment,
+    )
+
+    require_sentinel(
+        apply_output,
+        "STRUCTURED_EBAY_RAWPAGE_IMPORT=PASS",
+    )
+
+    raw_page_id = parse_raw_page_id(
+        apply_output
+    )
+
+    idempotent_reuse = (
+        parse_idempotent_reuse(
+            apply_output
+        )
+    )
+
+    database_snapshot(
+        database_url=database_url,
+        expected_database_name=expected_database_name,
+        expected_database_user=expected_database_user,
+        raw_page_id=raw_page_id,
+    )
+
+    refresh_command = build_refresh_command(
+        database_url=database_url,
+        expected_database_name=expected_database_name,
+        expected_database_user=expected_database_user,
+        raw_page_id=raw_page_id,
+    )
+
+    if "--ebay-structured-raw-page-id" not in refresh_command:
+        raise OperatorError(
+            "Refresh command omitted the exact structured raw-page ID."
+        )
+
+    refresh_output = run_child(
+        label="EXACT-ID REAL REFRESH",
+        command=refresh_command,
+        environment=environment,
+    )
+
+    verify_no_ebay_browser_fallback(
+        refresh_output
+    )
+
+    status_file = resolve_status_file()
+
+    status_ebay_rows = verify_refresh_status(
+        status_file
+    )
+
+    final_snapshot = database_snapshot(
+        database_url=database_url,
+        expected_database_name=expected_database_name,
+        expected_database_user=expected_database_user,
+        raw_page_id=raw_page_id,
+    )
+
+    if (
+        final_snapshot.raw_page_parsed
+        is not True
+    ):
+        raise OperatorError(
+            "Exact structured eBay raw page was not marked parsed."
+        )
+
+    if (
+        final_snapshot.ebay_rows
+        < pre_snapshot.ebay_rows
+    ):
+        raise OperatorError(
+            "eBay warehouse row count decreased."
+        )
+
+    if (
+        final_snapshot.ebay_rows
+        != status_ebay_rows
+    ):
+        raise OperatorError(
+            "Refresh status eBay row count differs from database."
+        )
+
+    final_state_sha = sha256_file(
+        storage_state
+    )
+
+    if (
+        final_state_sha
+        != state_sha_before
+    ):
+        raise OperatorError(
+            "eBay storage-state file changed during workflow."
+        )
+
+    require_artifact_sha(
+        artifact=artifact,
+        expected_sha256=artifact_sha256,
+    )
+
+    print()
+    print(
+        "================ RESULT ================"
+    )
+    print()
+    print(
+        "EBAY_EXTERNAL_HANDOFF_OPERATOR_GATE=PASS"
+    )
+    print(
+        f"STRUCTURED_ARTIFACT={artifact}"
+    )
+    print(
+        f"STRUCTURED_ARTIFACT_SHA256={artifact_sha256}"
+    )
+    print(
+        f"STRUCTURED_ARTIFACT_LISTING_COUNT={listing_count}"
+    )
+    print(
+        f"IMPORT_PLAN_SHA256={plan_sha256}"
+    )
+    print(
+        "IDEMPOTENT_REUSE="
+        + str(
+            idempotent_reuse
+        ).lower()
+    )
+    print(
+        f"PREWRITE_BACKUP={backup}"
+    )
+    print(
+        f"FINAL_EBAY_WAREHOUSE_ROWS={final_snapshot.ebay_rows}"
+    )
+    print(
+        "EBAY_STORAGE_STATE_MODIFIED=false"
+    )
+    print(
+        "STRUCTURED_ARTIFACT_IMMUTABILITY=PASS"
+    )
+    emit_operator_contract(
+        apply=True,
+        raw_page_id=raw_page_id,
+    )
+
+    return 0
+
+
 def main() -> int:
-    """Run the fail-closed operator workflow."""
+    """Parse CLI arguments and run the fail-closed operator."""
 
     arguments = parse_arguments()
 
     try:
-        validate_write_request(
-            apply=arguments.apply,
-            confirm_write=arguments.confirm_write,
-            database_url=arguments.database_url,
+        return run_operator(
+            arguments
         )
-
-        source = load_external_source(
-            arguments.config
-        )
-
-        storage_state = require_file(
-            arguments.storage_state,
-            label="eBay storage state",
-        )
-
-        artifact = (
-            arguments.artifact
-            if arguments.artifact
-            is not None
-            else default_artifact_path()
-        ).expanduser().resolve()
-
-        artifact.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        if artifact.exists():
-            raise OperatorError(
-                "Refusing to overwrite existing artifact: "
-                f"{artifact}"
-            )
-
-        settle_seconds = (
-            source.wait_seconds
-            if arguments.settle_seconds
-            is None
-            else arguments.settle_seconds
-        )
-
-        state_sha_before = sha256_file(
-            storage_state
-        )
-
-        environment = os.environ.copy()
-
-        acquisition_output = run_child(
-            label="HEADED STRUCTURED EBAY ACQUISITION",
-            command=build_acquisition_command(
-                source=source,
-                storage_state=storage_state,
-                artifact=artifact,
-                timeout_seconds=arguments.timeout_seconds,
-                settle_seconds=settle_seconds,
-            ),
-            environment=environment,
-        )
-
-        require_sentinel(
-            acquisition_output,
-            "EBAY_STRUCTURED_ACQUISITION=PASS",
-        )
-
-        require_sentinel(
-            acquisition_output,
-            "DATABASE_REQUEST_EXECUTED=false",
-        )
-
-        listing_count, artifact_sha256 = validate_artifact(
-            artifact=artifact,
-            source=source,
-        )
-
-        state_sha_after = sha256_file(
-            storage_state
-        )
-
-        if (
-            state_sha_after
-            != state_sha_before
-        ):
-            raise OperatorError(
-                "eBay storage-state file changed during acquisition."
-            )
-
-        dry_run_output = run_child(
-            label="STRUCTURED IMPORTER DRY RUN",
-            command=build_import_command(
-                artifact=artifact,
-                source_name=source.name,
-                apply=False,
-            ),
-            environment=environment,
-        )
-
-        require_sentinel(
-            dry_run_output,
-            "MODE=DRY_RUN",
-        )
-
-        require_sentinel(
-            dry_run_output,
-            "DATABASE_SESSION_OPENED=false",
-        )
-
-        require_sentinel(
-            dry_run_output,
-            "DATABASE_WRITE_EXECUTED=false",
-        )
-
-        require_sentinel(
-            dry_run_output,
-            "STRUCTURED_EBAY_IMPORT_DRY_RUN=PASS",
-        )
-
-        plan_sha256, plan_listing_count = (
-            parse_import_plan_summary(
-                dry_run_output
-            )
-        )
-
-        if (
-            plan_listing_count
-            != listing_count
-        ):
-            raise OperatorError(
-                "Importer plan listing count differs "
-                "from acquired artifact."
-            )
-
-        print()
-        print(
-            "================ VALIDATED HANDOFF ================"
-        )
-        print()
-        print(
-            f"EBAY_SOURCE_NAME={source.name}"
-        )
-        print(
-            "EBAY_ACQUISITION_MODE=external"
-        )
-        print(
-            "EBAY_STRUCTURED_ACQUISITION_HEADLESS=false"
-        )
-        print(
-            f"STRUCTURED_ARTIFACT={artifact}"
-        )
-        print(
-            f"STRUCTURED_ARTIFACT_SHA256={artifact_sha256}"
-        )
-        print(
-            f"STRUCTURED_ARTIFACT_LISTING_COUNT={listing_count}"
-        )
-        print(
-            f"IMPORT_PLAN_SHA256={plan_sha256}"
-        )
-        print(
-            "EBAY_STORAGE_STATE_MODIFIED=false"
-        )
-
-        if not arguments.apply:
-            print(
-                "DATABASE_WRITE=false"
-            )
-            print(
-                "REAL_REFRESH_RUN=false"
-            )
-            print(
-                "READY_FOR_STRUCTURED_EBAY_APPLY=true"
-            )
-            print(
-                "EBAY_EXTERNAL_HANDOFF_DRY_RUN=PASS"
-            )
-            return 0
-
-        database_url = str(
-            arguments.database_url
-        )
-
-        expected_database_name = str(
-            arguments.expected_database_name
-        ).strip()
-
-        expected_database_user = str(
-            arguments.expected_database_user
-        ).strip()
-
-        if not expected_database_name:
-            raise OperatorError(
-                "Expected database name cannot be empty."
-            )
-
-        if not expected_database_user:
-            raise OperatorError(
-                "Expected database user cannot be empty."
-            )
-
-        pre_snapshot = database_snapshot(
-            database_url=database_url,
-            expected_database_name=expected_database_name,
-            expected_database_user=expected_database_user,
-        )
-
-        print()
-        print(
-            "DATABASE_TARGET_IDENTITY=PASS"
-        )
-        print(
-            f"DATABASE_NAME={pre_snapshot.database_name}"
-        )
-        print(
-            f"DATABASE_USER={pre_snapshot.database_user}"
-        )
-        print(
-            f"BASELINE_EBAY_WAREHOUSE_ROWS={pre_snapshot.ebay_rows}"
-        )
-        print(
-            "DATABASE_PASSWORD_PRINTED=false"
-        )
-
-        backup = backup_database(
-            database_url=database_url,
-            expected_database_name=expected_database_name,
-        )
-
-        environment[
-            "DATABASE_URL"
-        ] = database_url
-
-        apply_output = run_child(
-            label="APPLY EXACT STRUCTURED ARTIFACT",
-            command=build_import_command(
-                artifact=artifact,
-                source_name=source.name,
-                apply=True,
-            ),
-            environment=environment,
-        )
-
-        require_sentinel(
-            apply_output,
-            "STRUCTURED_EBAY_RAWPAGE_IMPORT=PASS",
-        )
-
-        raw_page_id = parse_raw_page_id(
-            apply_output
-        )
-
-        idempotent_reuse = (
-            parse_idempotent_reuse(
-                apply_output
-            )
-        )
-
-        database_snapshot(
-            database_url=database_url,
-            expected_database_name=expected_database_name,
-            expected_database_user=expected_database_user,
-            raw_page_id=raw_page_id,
-        )
-
-        refresh_output = run_child(
-            label="EXACT-ID REAL REFRESH",
-            command=build_refresh_command(
-                database_url=database_url,
-                expected_database_name=expected_database_name,
-                expected_database_user=expected_database_user,
-                raw_page_id=raw_page_id,
-            ),
-            environment=environment,
-        )
-
-        verify_no_ebay_browser_fallback(
-            refresh_output
-        )
-
-        status_file = resolve_status_file()
-
-        status_ebay_rows = verify_refresh_status(
-            status_file
-        )
-
-        final_snapshot = database_snapshot(
-            database_url=database_url,
-            expected_database_name=expected_database_name,
-            expected_database_user=expected_database_user,
-            raw_page_id=raw_page_id,
-        )
-
-        if (
-            final_snapshot.raw_page_parsed
-            is not True
-        ):
-            raise OperatorError(
-                "Exact structured eBay raw page was not marked parsed."
-            )
-
-        if (
-            final_snapshot.ebay_rows
-            < pre_snapshot.ebay_rows
-        ):
-            raise OperatorError(
-                "eBay warehouse row count decreased."
-            )
-
-        if (
-            final_snapshot.ebay_rows
-            != status_ebay_rows
-        ):
-            raise OperatorError(
-                "Refresh status eBay row count differs from database."
-            )
-
-        final_state_sha = sha256_file(
-            storage_state
-        )
-
-        if (
-            final_state_sha
-            != state_sha_before
-        ):
-            raise OperatorError(
-                "eBay storage-state file changed during workflow."
-            )
-
-        if (
-            sha256_file(
-                artifact
-            )
-            != artifact_sha256
-        ):
-            raise OperatorError(
-                "Structured artifact changed during workflow."
-            )
-
-        print()
-        print(
-            "================ RESULT ================"
-        )
-        print()
-        print(
-            "EBAY_EXTERNAL_HANDOFF_OPERATOR_GATE=PASS"
-        )
-        print(
-            f"STRUCTURED_ARTIFACT={artifact}"
-        )
-        print(
-            f"STRUCTURED_ARTIFACT_SHA256={artifact_sha256}"
-        )
-        print(
-            f"STRUCTURED_ARTIFACT_LISTING_COUNT={listing_count}"
-        )
-        print(
-            f"IMPORT_PLAN_SHA256={plan_sha256}"
-        )
-        print(
-            f"STRUCTURED_EBAY_RAW_PAGE_ID={raw_page_id}"
-        )
-        print(
-            "IDEMPOTENT_REUSE="
-            + str(
-                idempotent_reuse
-            ).lower()
-        )
-        print(
-            f"PREWRITE_BACKUP={backup}"
-        )
-        print(
-            "DATABASE_WRITE=true"
-        )
-        print(
-            "REAL_REFRESH_RUN=true"
-        )
-        print(
-            "EXACT_STRUCTURED_RAW_PAGE_PARSED=true"
-        )
-        print(
-            "EBAY_BROWSER_FALLBACK_PROHIBITED=true"
-        )
-        print(
-            "EBAY_BROWSER_ACQUISITION_EXECUTED=false"
-        )
-        print(
-            f"FINAL_EBAY_WAREHOUSE_ROWS={final_snapshot.ebay_rows}"
-        )
-        print(
-            "EBAY_STORAGE_STATE_MODIFIED=false"
-        )
-        print(
-            "STRUCTURED_ARTIFACT_IMMUTABILITY=PASS"
-        )
-
-        return 0
-
     except (
         OperatorError,
         OSError,
@@ -1672,6 +1817,10 @@ def main() -> int:
     ) as exc:
         print(
             f"ERROR: {exc}",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_EXTERNAL_HANDOFF_OPERATOR=FAIL",
             file=sys.stderr,
         )
         print(

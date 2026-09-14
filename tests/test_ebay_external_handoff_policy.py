@@ -222,8 +222,8 @@ def test_external_gate_occurs_after_structured_handoff_priority() -> None:
     )
 
 
-def test_external_idle_is_unavailable_and_degraded() -> None:
-    """No external handoff must not report a successful eBay check."""
+def test_external_idle_is_awaiting_handoff_and_not_unavailable() -> None:
+    """No external handoff must not report a successful or unavailable eBay check."""
 
     source = inspect.getsource(
         refresh.main
@@ -243,7 +243,9 @@ def test_external_idle_is_unavailable_and_degraded() -> None:
     ]
 
     assert '"eBay",' in branch
-    assert '"unavailable",' in branch
+    assert '"awaiting_handoff",' in branch
+    assert '"unavailable",' not in branch
+    assert '"failed",' not in branch
     assert '"done",' not in branch
 
     assert (
