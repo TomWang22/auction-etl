@@ -357,6 +357,14 @@ def parse_arguments() -> argparse.Namespace:
         "--headless",
         action="store_true",
     )
+    parser.add_argument(
+        "--skip-http-preflight",
+        action="store_true",
+        help=(
+            "Open the headed profile even when saved HTTPS state exists. "
+            "Cannot be combined with --headless."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -642,14 +650,25 @@ def main() -> int:
         arguments.storage_state.expanduser().resolve()
     )
 
-    http_verification = verify_saved_http_session(
-        storage_state_path=storage_state_path,
-        status_file=status_file,
-        evidence_dir=evidence_dir,
-    )
+    if (
+        arguments.skip_http_preflight
+        and arguments.headless
+    ):
+        print(
+            "ERROR: --skip-http-preflight cannot be combined "
+            "with --headless."
+        )
+        return 1
 
-    if http_verification is not None:
-        return http_verification
+    if not arguments.skip_http_preflight:
+        http_verification = verify_saved_http_session(
+            storage_state_path=storage_state_path,
+            status_file=status_file,
+            evidence_dir=evidence_dir,
+        )
+
+        if http_verification is not None:
+            return http_verification
 
     if not profile_dir.is_dir():
         write_json_atomic(
