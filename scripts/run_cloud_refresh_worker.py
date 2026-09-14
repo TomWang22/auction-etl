@@ -116,6 +116,10 @@ SOURCE_STATE_MAP = {
         "skipped",
     "skipped":
         "skipped",
+    "awaiting_handoff":
+        "awaiting_handoff",
+    "authentication_required":
+        "authentication_required",
 }
 
 _STOP_EVENT = threading.Event()
@@ -1029,6 +1033,8 @@ class DurableProgress:
                 in {
                     "failed",
                     "skipped",
+                    "authentication_required",
+                    "awaiting_handoff",
                 }
                 or bool(
                     diagnostic.get(
@@ -1098,6 +1104,8 @@ class DurableProgress:
                 "done",
                 "failed",
                 "skipped",
+                "awaiting_handoff",
+                "authentication_required",
             }:
                 current_state = "running"
 
@@ -1148,6 +1156,8 @@ class DurableProgress:
             "done",
             "failed",
             "skipped",
+            "awaiting_handoff",
+            "authentication_required",
         }:
             current_state = "running"
 

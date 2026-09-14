@@ -321,6 +321,8 @@ def marketplace_progress_states(
                 "done",
                 "failed",
                 "unavailable",
+                "awaiting_handoff",
+                "authentication_required",
             }:
                 defaults[
                     key
@@ -374,6 +376,14 @@ def render_marketplace_progress(
         "unavailable": (
             "⚠️",
             "Unavailable",
+        ),
+        "awaiting_handoff": (
+            "📦",
+            "Awaiting external handoff",
+        ),
+        "authentication_required": (
+            "🔐",
+            "Authentication required",
         ),
     }
 

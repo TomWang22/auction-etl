@@ -175,6 +175,14 @@ def refresh_state_view(
             "⚠️",
             "Unavailable",
         ),
+        "awaiting_handoff": (
+            "📦",
+            "Awaiting external handoff",
+        ),
+        "authentication_required": (
+            "🔐",
+            "Authentication required",
+        ),
         "failed": (
             "🔴",
             "Failed",

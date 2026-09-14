@@ -269,6 +269,8 @@ def emit_source_state(
         "done",
         "unavailable",
         "failed",
+        "awaiting_handoff",
+        "authentication_required",
     }
 
     if source not in source_keys:
@@ -2194,9 +2196,16 @@ def main() -> int:
             )
 
             status["degraded"] = True
-            status["message"] = (
+            auth_message = (
                 "Buyee authentication is required; "
                 "continuing eBay and Gripsweat."
+            )
+            status["message"] = auth_message
+            set_marketplace_diagnostic(
+                status,
+                "buyee",
+                message=auth_message,
+                return_code=auth_status,
             )
             status["updated_at"] = datetime.now(
                 timezone.utc
@@ -2208,7 +2217,7 @@ def main() -> int:
             emit_source_state(
                 logger,
                 "Buyee",
-                "failed",
+                "authentication_required",
                 status_file=status_file,
                 status=status,
             )
@@ -2448,7 +2457,7 @@ def main() -> int:
                 status["buyee_runtime_semantics"] = (
                     "BUYEE_PUBLIC_AUTHENTICATION_REDIRECT"
                 )
-                source_state = "failed"
+                source_state = "authentication_required"
             elif (
                 "BUYEE_PUBLIC_RESULT=ACCESS_BLOCKED"
                 in normalized_buyee_output
@@ -3164,7 +3173,7 @@ def main() -> int:
             emit_source_state(
                 logger,
                 "eBay",
-                "unavailable",
+                "awaiting_handoff",
                 status_file=status_file,
                 status=status,
             )

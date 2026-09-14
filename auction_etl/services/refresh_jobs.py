@@ -2285,6 +2285,8 @@ def refresh_job_to_ui_status(
         "done",
         "failed",
         "unavailable",
+        "awaiting_handoff",
+        "authentication_required",
         "not_run",
         "interrupted",
     }

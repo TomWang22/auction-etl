@@ -76,6 +76,8 @@ SOURCE_ICONS = {
     "running": "🔵",
     "observed": "🟡",
     "unavailable": "⚠️",
+    "awaiting_handoff": "📦",
+    "authentication_required": "🔐",
     "done": "✅",
     "failed": "❌",
     "not_run": "⚪",
@@ -203,6 +205,12 @@ def source_state_label(
     if source_state == "unavailable":
         return "Unavailable"
 
+    if source_state == "awaiting_handoff":
+        return "Awaiting external handoff"
+
+    if source_state == "authentication_required":
+        return "Authentication required"
+
     if source_state == "not_run":
         return "Not run"
 
@@ -242,6 +250,8 @@ def durable_source_states(
         "running",
         "observed",
         "unavailable",
+        "awaiting_handoff",
+        "authentication_required",
         "done",
         "failed",
         "not_run",
@@ -732,6 +742,8 @@ def render_source_progress(
                     "failed",
                     "unavailable",
                     "interrupted",
+                    "awaiting_handoff",
+                    "authentication_required",
                 }
                 and reason
             ):
@@ -773,6 +785,42 @@ def unavailable_sources(
         if source_states.get(
             source
         ) == "unavailable"
+    ]
+
+
+def awaiting_handoff_sources(
+    status: dict[str, Any],
+) -> list[str]:
+    """Return marketplaces idle pending an external handoff."""
+
+    source_states = durable_source_states(
+        status
+    )
+
+    return [
+        source
+        for source in PLANNED_SOURCES
+        if source_states.get(
+            source
+        ) == "awaiting_handoff"
+    ]
+
+
+def authentication_required_sources(
+    status: dict[str, Any],
+) -> list[str]:
+    """Return marketplaces that need operator authentication."""
+
+    source_states = durable_source_states(
+        status
+    )
+
+    return [
+        source
+        for source in PLANNED_SOURCES
+        if source_states.get(
+            source
+        ) == "authentication_required"
     ]
 
 
@@ -1250,6 +1298,36 @@ def render_status(
                 f"{source_text} was unavailable. "
                 "Only completed marketplaces are up to date.",
                 icon="⚠️",
+            )
+
+        elif authentication_required_sources(
+            status
+        ):
+            source_text = ", ".join(
+                authentication_required_sources(
+                    status
+                )
+            )
+
+            st.warning(
+                "Refresh finished, but "
+                f"{source_text} requires authentication.",
+                icon="🔐",
+            )
+
+        elif awaiting_handoff_sources(
+            status
+        ):
+            source_text = ", ".join(
+                awaiting_handoff_sources(
+                    status
+                )
+            )
+
+            st.info(
+                "Refresh finished. "
+                f"{source_text} is awaiting an external handoff.",
+                icon="📦",
             )
 
         else:
