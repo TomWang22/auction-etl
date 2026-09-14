@@ -21,6 +21,24 @@ from scripts.accept_collector_hover_click import (
 
 
 DEFAULT_BASE_URL = "https://auction-scout-main-test.streamlit.app/"
+STREAMLIT_APP_FRAME_SELECTOR = 'iframe[title="streamlitApp"]'
+LOGIN_SCREEN_HEADING = "Collector Ledger"
+LOGIN_BUTTON_NAME = "Sign in or create account"
+AUTHENTICATED_APPLICATION_HEADING = "Review marketplace sales"
+AUTHENTICATED_RESULTS_HEADING = "Search results"
+SIGNED_IN_MARKER = "Signed in as"
+LOG_OUT_BUTTON = "Log out"
+FORBIDDEN_DIAGNOSTIC_KEYS = frozenset(
+    {
+        "cookie",
+        "cookies",
+        "localstorage",
+        "storage_state",
+        "authorization",
+        "access_token",
+        "password",
+    }
+)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -72,32 +90,573 @@ def normalized_base_url(value: str) -> str:
     return value.rstrip("/")
 
 
+def _locator_is_visible(
+    locator: Any,
+) -> bool:
+    """Return whether one Playwright locator currently shows a node."""
+    try:
+        if locator.count() < 1:
+            return False
+
+        return bool(
+            locator.first.is_visible()
+        )
+    except Exception:
+        return False
+
+
+def application_scopes(
+    page: Page,
+) -> list[Any]:
+    """Return Streamlit app iframe scopes, then pages, including popups."""
+    pages: list[Any] = [
+        page
+    ]
+
+    try:
+        pages = list(
+            page.context.pages
+        )
+
+        if page not in pages:
+            pages.insert(
+                0,
+                page,
+            )
+    except Exception:
+        pages = [
+            page
+        ]
+
+    scopes: list[Any] = []
+    seen: set[int] = set()
+
+    for candidate in pages:
+        marker = id(
+            candidate
+        )
+
+        if marker in seen:
+            continue
+
+        seen.add(
+            marker
+        )
+
+        try:
+            scopes.append(
+                candidate.frame_locator(
+                    STREAMLIT_APP_FRAME_SELECTOR
+                )
+            )
+        except Exception:
+            pass
+
+        scopes.append(
+            candidate
+        )
+
+    return scopes
+
+
+def scope_shows_login_screen(
+    scope: Any,
+) -> bool:
+    """Return whether one browsing scope is the unauthenticated login shell."""
+    heading = scope.get_by_role(
+        "heading",
+        name=LOGIN_SCREEN_HEADING,
+        exact=False,
+    )
+    button = scope.get_by_role(
+        "button",
+        name=LOGIN_BUTTON_NAME,
+        exact=False,
+    )
+
+    return (
+        _locator_is_visible(
+            heading
+        )
+        or _locator_is_visible(
+            button
+        )
+    )
+
+
+def scope_shows_authenticated_application(
+    scope: Any,
+) -> bool:
+    """Return whether one browsing scope shows authenticated Collector Review."""
+    if scope_shows_login_screen(
+        scope
+    ):
+        return False
+
+    logout = scope.get_by_role(
+        "button",
+        name=LOG_OUT_BUTTON,
+        exact=False,
+    )
+    signed_in = scope.get_by_text(
+        SIGNED_IN_MARKER,
+        exact=False,
+    )
+    heading = scope.get_by_role(
+        "heading",
+        name=AUTHENTICATED_APPLICATION_HEADING,
+        exact=False,
+    )
+    results_heading = scope.get_by_role(
+        "heading",
+        name=AUTHENTICATED_RESULTS_HEADING,
+        exact=False,
+    )
+    results_text = scope.get_by_text(
+        AUTHENTICATED_RESULTS_HEADING,
+        exact=True,
+    )
+
+    has_results = (
+        _locator_is_visible(
+            results_heading
+        )
+        or _locator_is_visible(
+            results_text
+        )
+    )
+
+    return (
+        _locator_is_visible(
+            logout
+        )
+        or _locator_is_visible(
+            signed_in
+        )
+        or (
+            _locator_is_visible(
+                heading
+            )
+            and has_results
+        )
+    )
+
+
+def application_is_authenticated(
+    page: Page,
+) -> bool:
+    """Return whether any app iframe or page is authenticated Collector Review."""
+    return any(
+        scope_shows_authenticated_application(
+            scope
+        )
+        for scope in application_scopes(
+            page
+        )
+    )
+
+
 def wait_for_authenticated_application(
     page: Page,
     *,
     timeout_seconds: float,
 ) -> None:
-    """Wait until Collector Review is visible after authentication."""
+    """Wait until authenticated Collector Review is visible in the app frame."""
     deadline = time.monotonic() + timeout_seconds
 
     while time.monotonic() < deadline:
-        title = page.get_by_text(
-            "Auction Collector Review",
-            exact=False,
+        if application_is_authenticated(
+            page
+        ):
+            return
+
+        page.wait_for_timeout(
+            500
         )
-
-        if title.count():
-            try:
-                if title.first.is_visible():
-                    return
-            except Exception:
-                pass
-
-        page.wait_for_timeout(500)
 
     raise AcceptanceError(
         "Authenticated Collector Review did not become visible."
     )
+
+
+def wait_for_search_results(
+    page: Page,
+    *,
+    timeout_seconds: float,
+) -> None:
+    """Wait until the authenticated Search results section is visible."""
+    deadline = time.monotonic() + timeout_seconds
+
+    while time.monotonic() < deadline:
+        for scope in application_scopes(
+            page
+        ):
+            heading = scope.get_by_role(
+                "heading",
+                name=AUTHENTICATED_RESULTS_HEADING,
+                exact=False,
+            )
+            text = scope.get_by_text(
+                AUTHENTICATED_RESULTS_HEADING,
+                exact=True,
+            )
+
+            if (
+                _locator_is_visible(
+                    heading
+                )
+                or _locator_is_visible(
+                    text
+                )
+            ):
+                return
+
+        page.wait_for_timeout(
+            500
+        )
+
+    raise AcceptanceError(
+        "Authenticated Search results did not become visible."
+    )
+
+
+def first_visible_save_button(
+    page: Page,
+) -> Any:
+    """Return the Save control from the app iframe or page without clicking it."""
+    for scope in application_scopes(
+        page
+    ):
+        button = scope.get_by_role(
+            "button",
+            name="Save collector record",
+            exact=False,
+        )
+
+        if _locator_is_visible(
+            button
+        ):
+            return button
+
+    return page.get_by_role(
+        "button",
+        name="Save collector record",
+    )
+
+
+def _safe_title(
+    target: Any,
+) -> str:
+    """Return a page or frame title without raising."""
+    try:
+        title = target.title()
+    except Exception:
+        title = getattr(
+            target,
+            "_title",
+            "",
+        )
+
+    return str(
+        title or ""
+    )
+
+
+def _visible_heading_names(
+    scope: Any,
+) -> list[str]:
+    """Return visible heading names from one page, frame, or test double."""
+    raw_headings = getattr(
+        scope,
+        "headings",
+        None,
+    )
+
+    if raw_headings is not None:
+        return [
+            str(item)
+            for item in raw_headings
+            if str(item).strip()
+        ]
+
+    names: list[str] = []
+
+    try:
+        locator = scope.get_by_role(
+            "heading"
+        )
+        count = locator.count()
+    except Exception:
+        return names
+
+    for index in range(
+        count
+    ):
+        item = locator.nth(
+            index
+        )
+
+        try:
+            if not item.is_visible():
+                continue
+
+            text = item.inner_text().strip()
+        except Exception:
+            continue
+
+        if text:
+            names.append(
+                text
+            )
+
+    return names
+
+
+def _sanitize_diagnostics(
+    value: Any,
+) -> Any:
+    """Drop secret-bearing keys from diagnostic payloads."""
+    if isinstance(
+        value,
+        dict,
+    ):
+        sanitized: dict[str, Any] = {}
+
+        for key, item in value.items():
+            if str(key).casefold() in FORBIDDEN_DIAGNOSTIC_KEYS:
+                continue
+
+            sanitized[str(key)] = _sanitize_diagnostics(
+                item
+            )
+
+        return sanitized
+
+    if isinstance(
+        value,
+        list,
+    ):
+        return [
+            _sanitize_diagnostics(
+                item
+            )
+            for item in value
+        ]
+
+    return value
+
+
+def authentication_diagnostics_payload(
+    page: Page,
+    error: Exception,
+    console_errors: list[str],
+    page_errors: list[str],
+) -> dict[str, Any]:
+    """Create sanitized capture diagnostics including frames and popups."""
+    try:
+        payload = diagnostics_payload(
+            page,
+            error,
+            console_errors,
+            page_errors,
+        )
+    except Exception:
+        payload = {
+            "error": str(error),
+            "url": str(
+                getattr(
+                    page,
+                    "url",
+                    "",
+                )
+                or ""
+            ),
+            "title": _safe_title(
+                page
+            ),
+            "body_preview": "",
+            "console_errors": console_errors,
+            "page_errors": page_errors,
+            "visible_application_errors": [],
+            "frames": [],
+        }
+
+    pages_payload: list[dict[str, Any]] = []
+    context_pages = [
+        page
+    ]
+
+    try:
+        context_pages = list(
+            page.context.pages
+        )
+    except Exception:
+        context_pages = [
+            page
+        ]
+
+    for candidate in context_pages:
+        pages_payload.append(
+            {
+                "url": str(
+                    getattr(
+                        candidate,
+                        "url",
+                        "",
+                    )
+                    or ""
+                ),
+                "title": _safe_title(
+                    candidate
+                ),
+                "closed": bool(
+                    getattr(
+                        candidate,
+                        "is_closed",
+                        lambda: False,
+                    )()
+                ),
+            }
+        )
+
+    frame_payload: list[dict[str, Any]] = []
+    frames = list(
+        getattr(
+            page,
+            "frames",
+            [],
+        )
+    )
+    iframe = None
+
+    try:
+        iframe = page.frame_locator(
+            STREAMLIT_APP_FRAME_SELECTOR
+        )
+    except Exception:
+        iframe = None
+
+    diagnostic_scopes = [
+        *frames,
+    ]
+
+    if iframe is not None:
+        diagnostic_scopes.append(
+            iframe
+        )
+
+    seen_urls: set[str] = set()
+
+    for scope in diagnostic_scopes:
+        url = str(
+            getattr(
+                scope,
+                "url",
+                "",
+            )
+            or ""
+        )
+        headings = _visible_heading_names(
+            scope
+        )
+        marker = url + "|" + "|".join(
+            headings
+        )
+
+        if marker in seen_urls:
+            continue
+
+        seen_urls.add(
+            marker
+        )
+        frame_payload.append(
+            {
+                "url": url,
+                "title": _safe_title(
+                    scope
+                ),
+                "headings": headings,
+            }
+        )
+
+    payload["pages"] = pages_payload
+    payload["frames"] = frame_payload
+    payload["login_screen_visible"] = any(
+        scope_shows_login_screen(
+            scope
+        )
+        for scope in application_scopes(
+            page
+        )
+    )
+    payload["authenticated"] = application_is_authenticated(
+        page
+    )
+
+    return _sanitize_diagnostics(
+        payload
+    )
+
+
+def write_authentication_failure_evidence(
+    *,
+    page: Page,
+    error: Exception,
+    evidence_dir: Path,
+    console_errors: list[str],
+    page_errors: list[str],
+) -> Path:
+    """Persist a screenshot and sanitized diagnostics for an auth timeout."""
+    failure_directory = (
+        evidence_dir
+        / "failure"
+    )
+    failure_directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    screenshot_path = (
+        failure_directory
+        / "failure.png"
+    )
+
+    try:
+        if not page.is_closed():
+            page.screenshot(
+                path=str(
+                    screenshot_path
+                ),
+                full_page=True,
+            )
+    except Exception:
+        pass
+
+    diagnostics = authentication_diagnostics_payload(
+        page,
+        error,
+        console_errors,
+        page_errors,
+    )
+    diagnostics["screenshot"] = str(
+        screenshot_path
+    )
+
+    diagnostics_path = (
+        failure_directory
+        / "diagnostics.json"
+    )
+    diagnostics_path.write_text(
+        json.dumps(
+            diagnostics,
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    return diagnostics_path
 
 
 def capture_authentication_state(
@@ -105,12 +664,24 @@ def capture_authentication_state(
     base_url: str,
     storage_state: Path,
     timeout_seconds: float,
+    evidence_dir: Path | None = None,
 ) -> int:
     """Capture a private browser state after interactive OIDC login."""
     storage_state.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
+    capture_evidence = evidence_dir or (
+        storage_state.parent
+        / "streamlit-auth-capture-evidence"
+    )
+    capture_evidence.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    console_errors: list[str] = []
+    page_errors: list[str] = []
 
     with sync_playwright() as playwright:
         browser = launch_browser(
@@ -123,6 +694,34 @@ def capture_authentication_state(
         )
 
         page = context.new_page()
+
+        def attach_page_diagnostics(
+            target: Page,
+        ) -> None:
+            target.on(
+                "console",
+                lambda message: (
+                    console_errors.append(
+                        message.text
+                    )
+                    if message.type == "error"
+                    else None
+                ),
+            )
+            target.on(
+                "pageerror",
+                lambda error: page_errors.append(
+                    str(error)
+                ),
+            )
+
+        attach_page_diagnostics(
+            page
+        )
+        context.on(
+            "page",
+            attach_page_diagnostics,
+        )
 
         try:
             page.goto(
@@ -144,6 +743,22 @@ def capture_authentication_state(
             context.storage_state(
                 path=str(storage_state),
             )
+
+        except Exception as error:
+            diagnostics_path = (
+                write_authentication_failure_evidence(
+                    page=page,
+                    error=error,
+                    evidence_dir=capture_evidence,
+                    console_errors=console_errors,
+                    page_errors=page_errors,
+                )
+            )
+
+            raise AcceptanceError(
+                f"{error}\n"
+                f"Diagnostics: {diagnostics_path}"
+            ) from error
 
         finally:
             context.close()
@@ -248,12 +863,9 @@ def run_acceptance(
                 timeout_seconds=120.0,
             )
 
-            page.get_by_text(
-                "Search results",
-                exact=True,
-            ).wait_for(
-                state="visible",
-                timeout=120_000,
+            wait_for_search_results(
+                page,
+                timeout_seconds=120.0,
             )
 
             application_errors = visible_application_errors(
@@ -316,9 +928,8 @@ def run_acceptance(
 
             click_target.click()
 
-            save_button = page.get_by_role(
-                "button",
-                name="Save collector record",
+            save_button = first_visible_save_button(
+                page
             )
 
             save_button.wait_for(
@@ -408,7 +1019,7 @@ def run_acceptance(
             except Exception:
                 pass
 
-            diagnostics = diagnostics_payload(
+            diagnostics = authentication_diagnostics_payload(
                 page,
                 error,
                 console_errors,
@@ -455,6 +1066,7 @@ def main() -> int:
             base_url=base_url,
             storage_state=arguments.storage_state,
             timeout_seconds=arguments.login_timeout_seconds,
+            evidence_dir=arguments.evidence_dir,
         )
 
     if arguments.evidence_dir is None:
