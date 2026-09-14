@@ -136,7 +136,7 @@ def test_explicit_production_overrides_local_redirect_escape_hatch() -> None:
     )
     with pytest.raises(
         OidcRedirectConfigurationError,
-        match="localhost",
+        match="loopback|localhost",
     ):
         resolve_oidc_redirect_uri(
             environ={
@@ -148,6 +148,42 @@ def test_explicit_production_overrides_local_redirect_escape_hatch() -> None:
                 redirect_uri=LOCAL_CALLBACK,
             ),
         )
+
+
+def test_conflicting_oidc_and_auction_env_fails_closed() -> None:
+    """Explicit OIDC_ENV and AUCTION_ENV must not silently pick one runtime."""
+    with pytest.raises(
+        OidcRedirectConfigurationError,
+        match="OIDC_ENV conflicts with AUCTION_ENV",
+    ):
+        classify_oidc_runtime(
+            {
+                "OIDC_ENV": "development",
+                "AUCTION_ENV": "production",
+            }
+        )
+
+
+def test_matching_oidc_and_auction_env_aliases_agree() -> None:
+    """Equivalent production and development aliases may be set together."""
+    assert (
+        classify_oidc_runtime(
+            {
+                "OIDC_ENV": "prod",
+                "AUCTION_ENV": "production",
+            }
+        )
+        == "production"
+    )
+    assert (
+        classify_oidc_runtime(
+            {
+                "OIDC_ENV": "dev",
+                "AUCTION_ENV": "development",
+            }
+        )
+        == "development"
+    )
 
 
 def test_production_redirect_uri_equals_canonical_callback() -> None:
@@ -230,7 +266,7 @@ def test_production_localhost_redirect_is_rejected() -> None:
     """Production must never select a localhost callback."""
     with pytest.raises(
         OidcRedirectConfigurationError,
-        match="localhost",
+        match="loopback|localhost",
     ):
         resolve_oidc_redirect_uri(
             environ=production_environ(
@@ -247,7 +283,7 @@ def test_production_loopback_redirect_is_rejected() -> None:
     loopback = "http://127.0.0.1:8501/oauth2callback"
     with pytest.raises(
         OidcRedirectConfigurationError,
-        match="127.0.0.1",
+        match="loopback|127",
     ):
         resolve_oidc_redirect_uri(
             environ=production_environ(
@@ -255,6 +291,34 @@ def test_production_loopback_redirect_is_rejected() -> None:
             ),
             secrets_auth=production_secrets(
                 redirect_uri=loopback,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "loopback_uri",
+    [
+        "https://2130706433/oauth2callback",
+        "https://0x7f000001/oauth2callback",
+        "https://0177.0.0.1/oauth2callback",
+        "https://[::1]/oauth2callback",
+        "https://[::ffff:127.0.0.1]/oauth2callback",
+    ],
+)
+def test_production_rejects_equivalent_loopback_encodings(
+    loopback_uri: str,
+) -> None:
+    """Production must reject numeric and IPv6-mapped loopback callbacks."""
+    with pytest.raises(
+        OidcRedirectConfigurationError,
+        match="loopback|localhost|127",
+    ):
+        resolve_oidc_redirect_uri(
+            environ=production_environ(
+                OIDC_REDIRECT_URI=loopback_uri,
+            ),
+            secrets_auth=production_secrets(
+                redirect_uri=loopback_uri,
             ),
         )
 
@@ -418,8 +482,8 @@ def test_authlib_state_and_nonce_are_fresh_not_pinned() -> None:
     assert first["nonce"]
     assert first["state"] != second["state"]
     assert first["nonce"] != second["nonce"]
-    assert config.state_generated_and_validated is True
-    assert config.nonce_generated_and_validated is True
+    assert config.state_handling == "delegated_to_streamlit_authlib"
+    assert config.nonce_handling == "delegated_to_streamlit_authlib"
     assert not hasattr(config, "state") or not isinstance(
         getattr(config, "state", None),
         str,
@@ -454,9 +518,11 @@ def test_diagnostic_token_exchange_match_uses_value_equality() -> None:
         response_type="code",
         scope="openid email profile",
         prompt="consent",
-        state_generated_and_validated=True,
-        nonce_generated_and_validated=True,
-        pkce_follows_provider_metadata=True,
+        state_handling="delegated_to_streamlit_authlib",
+        nonce_handling="delegated_to_streamlit_authlib",
+        pkce_status="not_asserted",
+        redirect_uri_status="accepted",
+        runtime="production",
         yahoo_prompt_is_compatibility_override=True,
         authorization_endpoint="https://api.login.yahoo.com/oauth2/request_auth",
         token_endpoint="https://api.login.yahoo.com/oauth2/get_token",
@@ -481,7 +547,10 @@ def test_yahoo_keeps_openid_scope_and_documents_consent_override() -> None:
     assert "openid" in config.scope.split()
     assert config.prompt == "consent"
     assert config.yahoo_prompt_is_compatibility_override is True
-    assert config.pkce_follows_provider_metadata is True
+    assert config.pkce_status == "not_asserted"
+    assert config.state_handling == "delegated_to_streamlit_authlib"
+    assert config.nonce_handling == "delegated_to_streamlit_authlib"
+    assert config.redirect_uri_status == "accepted"
 
 
 def test_authlib_callback_rejects_invalid_state() -> None:
@@ -555,11 +624,16 @@ def test_diagnostics_omit_secrets_and_tokens() -> None:
 
     assert diagnostic["authorization_endpoint_host"] == "api.login.yahoo.com"
     assert diagnostic["redirect_uri"] == PRODUCTION_CALLBACK
+    assert diagnostic["redirect_uri_status"] == "accepted"
+    assert diagnostic["runtime"] == "production"
     assert diagnostic["response_type"] == "code"
     assert "openid" in str(diagnostic["scope"])
-    assert diagnostic["STATE_GENERATED_AND_VALIDATED"] == "true"
-    assert diagnostic["NONCE_GENERATED_AND_VALIDATED"] == "true"
-    assert diagnostic["PKCE_follows_provider_metadata"] == "true"
+    assert diagnostic["STATE_HANDLING"] == "delegated_to_streamlit_authlib"
+    assert diagnostic["NONCE_HANDLING"] == "delegated_to_streamlit_authlib"
+    assert diagnostic["PKCE_status"] == "not_asserted"
+    assert "STATE_GENERATED_AND_VALIDATED" not in diagnostic
+    assert "NONCE_GENERATED_AND_VALIDATED" not in diagnostic
+    assert "PKCE_follows_provider_metadata" not in diagnostic
     assert diagnostic["client_id_fingerprint"]
     assert FAKE_CLIENT_ID not in rendered
     assert "super-secret-client-value" not in rendered
@@ -593,6 +667,8 @@ def test_example_secrets_document_yahoo_consent_override() -> None:
     assert "localhost" not in example
     assert "127.0.0.1" not in example
     assert "OIDC_REDIRECT_URI" in example
+    assert "OIDC_ENV" in example
+    assert "Conflicting" in example
     assert "api.login.yahoo.com" in example
     assert "response_type" in example
     assert "openid" in example

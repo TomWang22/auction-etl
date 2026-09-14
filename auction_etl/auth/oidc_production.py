@@ -6,12 +6,16 @@ OIDC_REDIRECT_URI. Those values must match. This module never derives the
 callback from localhost, loopback, Vercel hosts, or request headers, and
 it never mutates Streamlit secrets at runtime.
 
-Authlib/Streamlit generate and validate per-request state and nonce.
+OIDC_ENV and AUCTION_ENV are classified independently. If both are set to
+different runtimes, configuration fails closed. Authlib/Streamlit generate
+and validate per-request state and nonce; this module does not claim that
+those checks already succeeded.
 """
 
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -31,9 +35,16 @@ CALLBACK_PATH = "/oauth2callback"
 YAHOO_COMPATIBILITY_PROMPT = "consent"
 RESPONSE_TYPE = "code"
 GRANT_TYPE = "authorization_code"
+STATE_HANDLING_DELEGATED = "delegated_to_streamlit_authlib"
+NONCE_HANDLING_DELEGATED = "delegated_to_streamlit_authlib"
+PKCE_STATUS_NOT_ASSERTED = "not_asserted"
+REDIRECT_URI_STATUS_ACCEPTED = "accepted"
 
 _DEVELOPMENT_ENVIRONMENTS = frozenset(
     {"development", "dev", "local"}
+)
+_PRODUCTION_ENVIRONMENTS = frozenset(
+    {"production", "prod"}
 )
 _LOCAL_HOSTS = frozenset(
     {"localhost", "127.0.0.1", "::1", "[::1]"}
@@ -54,9 +65,11 @@ class OidcAuthorizationConfig:
     response_type: str
     scope: str
     prompt: str
-    state_generated_and_validated: bool
-    nonce_generated_and_validated: bool
-    pkce_follows_provider_metadata: bool
+    state_handling: str
+    nonce_handling: str
+    pkce_status: str
+    redirect_uri_status: str
+    runtime: OidcRuntime
     yahoo_prompt_is_compatibility_override: bool
     authorization_endpoint: str
     token_endpoint: str
@@ -67,19 +80,24 @@ class OidcAuthorizationConfig:
 def classify_oidc_runtime(
     environ: Mapping[str, str] | None = None,
 ) -> OidcRuntime:
-    """Return the OIDC runtime. Local callbacks require an explicit opt-in."""
+    """Return the OIDC runtime. Conflicting explicit envs fail closed."""
     values = _environ(environ)
-    explicit = (
-        values.get("OIDC_ENV")
-        or values.get("AUCTION_ENV")
-        or ""
-    ).strip().casefold()
+    oidc_runtime = _explicit_runtime(values.get("OIDC_ENV"))
+    auction_runtime = _explicit_runtime(values.get("AUCTION_ENV"))
 
-    if explicit in _DEVELOPMENT_ENVIRONMENTS:
-        return "development"
+    if (
+        oidc_runtime is not None
+        and auction_runtime is not None
+        and oidc_runtime != auction_runtime
+    ):
+        raise OidcRedirectConfigurationError(
+            "OIDC_ENV conflicts with AUCTION_ENV. "
+            "Set both to the same runtime or omit one of them."
+        )
 
-    if explicit in {"production", "prod"}:
-        return "production"
+    explicit = oidc_runtime or auction_runtime
+    if explicit is not None:
+        return explicit
 
     if _truthy(values.get("OIDC_ALLOW_LOCAL_REDIRECT")):
         return "development"
@@ -238,9 +256,11 @@ def validate_streamlit_oidc_configuration(
         response_type=RESPONSE_TYPE if yahoo else response_type,
         scope=scope,
         prompt=prompt,
-        state_generated_and_validated=True,
-        nonce_generated_and_validated=True,
-        pkce_follows_provider_metadata=True,
+        state_handling=STATE_HANDLING_DELEGATED,
+        nonce_handling=NONCE_HANDLING_DELEGATED,
+        pkce_status=PKCE_STATUS_NOT_ASSERTED,
+        redirect_uri_status=REDIRECT_URI_STATUS_ACCEPTED,
+        runtime=runtime,
         yahoo_prompt_is_compatibility_override=yahoo
         and prompt == YAHOO_COMPATIBILITY_PROMPT,
         authorization_endpoint=(
@@ -260,17 +280,13 @@ def oidc_authorization_diagnostic(
     return {
         "authorization_endpoint_host": host,
         "redirect_uri": config.redirect_uri,
+        "redirect_uri_status": config.redirect_uri_status,
+        "runtime": config.runtime,
         "response_type": config.response_type,
         "scope": config.scope,
-        "STATE_GENERATED_AND_VALIDATED": (
-            "true" if config.state_generated_and_validated else "false"
-        ),
-        "NONCE_GENERATED_AND_VALIDATED": (
-            "true" if config.nonce_generated_and_validated else "false"
-        ),
-        "PKCE_follows_provider_metadata": (
-            "true" if config.pkce_follows_provider_metadata else "false"
-        ),
+        "STATE_HANDLING": config.state_handling,
+        "NONCE_HANDLING": config.nonce_handling,
+        "PKCE_status": config.pkce_status,
         "client_id_fingerprint": config.client_id_fingerprint,
         "prompt": config.prompt,
         "token_exchange_grant_type": config.token_exchange["grant_type"],
@@ -297,6 +313,20 @@ def _environ(
 def _truthy(value: str | None) -> bool:
     """Return whether a configuration flag is enabled."""
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _explicit_runtime(value: str | None) -> OidcRuntime | None:
+    """Classify one explicit environment value, or None if unset."""
+    text = str(value or "").strip().casefold()
+    if not text:
+        return None
+    if text in _DEVELOPMENT_ENVIRONMENTS:
+        return "development"
+    if text in _PRODUCTION_ENVIRONMENTS:
+        return "production"
+    raise OidcRedirectConfigurationError(
+        "OIDC environment must be production or development."
+    )
 
 
 def _secret_text(
@@ -372,15 +402,10 @@ def _validate_redirect_uri(value: str, runtime: OidcRuntime) -> str:
         raise OidcRedirectConfigurationError(
             f"OIDC redirect_uri path must be {CALLBACK_PATH}."
         )
-    if host == "127.0.0.1" or host.startswith("127."):
+    if _host_is_loopback(host) or host.startswith("127."):
         if not local_ok:
             raise OidcRedirectConfigurationError(
-                "Production Yahoo OAuth cannot use a 127.0.0.1 callback."
-            )
-    if host in _LOCAL_HOSTS or host.endswith(".localhost"):
-        if not local_ok:
-            raise OidcRedirectConfigurationError(
-                "Production Yahoo OAuth cannot use a localhost callback."
+                "Production Yahoo OAuth cannot use a loopback callback."
             )
     if host == "vercel.app" or host.endswith(".vercel.app"):
         raise OidcRedirectConfigurationError(
@@ -410,3 +435,69 @@ def _local_redirect_allowed(runtime: OidcRuntime) -> bool:
     raise OidcRedirectConfigurationError(
         f"Unhandled OIDC runtime: {unreachable}."
     )
+
+
+def _host_is_loopback(host: str) -> bool:
+    """Return whether a hostname is localhost or an equivalent loopback IP."""
+    folded = host.casefold().rstrip(".")
+    if folded in _LOCAL_HOSTS or folded.endswith(".localhost"):
+        return True
+    address = _parse_ip_literal(folded)
+    if address is None:
+        return False
+    if address.is_loopback:
+        return True
+    mapped = getattr(address, "ipv4_mapped", None)
+    return mapped is not None and mapped.is_loopback
+
+
+def _parse_ip_literal(
+    host: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse a hostname as an IP, including alternate IPv4 encodings."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return _parse_alternate_ipv4(host)
+
+
+def _parse_alternate_ipv4(host: str) -> ipaddress.IPv4Address | None:
+    """Parse decimal, hex, or dotted-octal IPv4 loopback encodings."""
+    if host.startswith("0x"):
+        try:
+            value = int(host, 16)
+        except ValueError:
+            return None
+        if 0 <= value <= 0xFFFFFFFF:
+            return ipaddress.IPv4Address(value)
+        return None
+    if host.isdigit():
+        value = int(host, 10)
+        if 0 <= value <= 0xFFFFFFFF:
+            return ipaddress.IPv4Address(value)
+        return None
+    parts = host.split(".")
+    if len(parts) != 4:
+        return None
+    try:
+        octets = [_parse_ipv4_component(part) for part in parts]
+    except ValueError:
+        return None
+    if any(octet > 255 for octet in octets):
+        return None
+    return ipaddress.IPv4Address(bytes(octets))
+
+
+def _parse_ipv4_component(part: str) -> int:
+    """Parse one IPv4 dotted component as decimal, octal, or hex."""
+    if not part:
+        raise ValueError("empty IPv4 component")
+    if part.startswith("0x"):
+        return int(part, 16)
+    if (
+        len(part) > 1
+        and part.startswith("0")
+        and all(character in "01234567" for character in part)
+    ):
+        return int(part, 8)
+    return int(part, 10)
