@@ -14,7 +14,7 @@ export default defineRailway(() => {
       dockerfilePath: "Dockerfile.auction-etl.refresh",
     },
     deploy: {
-      startCommand: "python scripts/run_cloud_refresh_worker.py",
+      startCommand: "python scripts/run_cloud_compatibility_shell.py",
       restartPolicyType: "ALWAYS",
     },
   });
