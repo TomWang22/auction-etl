@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from typing import Any
 
 import streamlit as st
@@ -10,6 +12,11 @@ from sqlalchemy.engine import Engine
 from auction_etl.auth.context import (
     AccountContext,
     AuthenticatedPrincipal,
+)
+from auction_etl.auth.oidc_production import (
+    OidcRedirectConfigurationError,
+    oidc_authorization_diagnostic,
+    validate_streamlit_oidc_configuration,
 )
 from auction_etl.services.account_access import (
     resolve_or_create_personal_account,
@@ -59,6 +66,33 @@ def current_principal() -> AuthenticatedPrincipal | None:
     )
 
 
+def _streamlit_auth_section() -> dict[str, Any]:
+    """Return a copy of Streamlit's [auth] secrets section."""
+    try:
+        raw_auth = st.secrets.get("auth", {})
+    except Exception:
+        return {}
+    if not isinstance(raw_auth, Mapping):
+        return {}
+    copied: dict[str, Any] = {}
+    for key, value in raw_auth.items():
+        if isinstance(value, Mapping):
+            copied[str(key)] = dict(value)
+        else:
+            copied[str(key)] = value
+    return copied
+
+
+def validate_streamlit_oidc_login() -> None:
+    """Fail closed when Streamlit secrets are not the canonical callback."""
+    config = validate_streamlit_oidc_configuration(
+        environ=os.environ,
+        secrets_auth=_streamlit_auth_section(),
+    )
+    diagnostic = oidc_authorization_diagnostic(config)
+    st.session_state["_oidc_authorization_diagnostic"] = diagnostic
+
+
 def render_login_screen() -> None:
     """Render the unauthenticated landing screen."""
     st.title("Collector Ledger")
@@ -70,14 +104,27 @@ def render_login_screen() -> None:
     if st.button(
         "Sign in or create account",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
+        try:
+            validate_streamlit_oidc_login()
+        except OidcRedirectConfigurationError as exc:
+            st.error(str(exc))
+            st.stop()
+            raise
         st.login()
     st.stop()
 
 
 def require_authenticated_account(engine: Engine) -> AccountContext:
     """Require OIDC login and resolve/create the personal account."""
+    try:
+        validate_streamlit_oidc_login()
+    except OidcRedirectConfigurationError as exc:
+        st.error(str(exc))
+        st.stop()
+        raise
+
     principal = current_principal()
     if principal is None:
         render_login_screen()
@@ -91,7 +138,7 @@ def render_account_menu(context: AccountContext) -> None:
     with st.sidebar:
         st.caption(f"Signed in as {context.display_name}")
         st.caption(context.email)
-        if st.button("Log out", use_container_width=True):
+        if st.button("Log out", width="stretch"):
             st.logout()
 
 
