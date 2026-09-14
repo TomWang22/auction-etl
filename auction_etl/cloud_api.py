@@ -12,6 +12,9 @@ from typing import Any
 
 from sqlalchemy import Engine, text
 
+from auction_etl.runtime_authority import (
+    require_database_access_allowed_here,
+)
 from auction_etl.auth.context import AccountContext
 from auction_etl.auth.internal_request import verify_account_request_signature
 from auction_etl.services.refresh_job_inputs import (
@@ -49,6 +52,13 @@ def _environment() -> str:
 
 def _database_url() -> str:
     """Return the configured control-plane database URL."""
+    try:
+        require_database_access_allowed_here()
+    except RuntimeError as exc:
+        raise RefreshCoordinationUnavailable(
+            str(exc)
+        ) from exc
+
     value = os.environ.get(
         "DATABASE_URL",
         "",

@@ -31,6 +31,7 @@ from auction_etl.auth.streamlit_auth import (
     require_authenticated_account,
 )
 from auction_etl.services.account_scope import account_transaction
+from auction_etl.runtime_authority import cloud_runtime_detected
 
 from app.collector_analytics_editor import (
     render_collector_analytics_editor,
@@ -154,6 +155,18 @@ st.set_page_config(
     page_icon="🔎",
     layout="wide",
 )
+
+if cloud_runtime_detected():
+    st.error(
+        "Collector Ledger's authoritative database is local. "
+        "The hosted database-backed UI is disabled."
+    )
+    st.caption(
+        "Run Collector Review locally against "
+        "127.0.0.1:5544/auction_warehouse."
+    )
+    st.stop()
+
 render_navigation(current_page="collector_review.py")
 
 st.markdown(

@@ -1,6 +1,6 @@
-"""Vercel ASGI entrypoint for the Auction ETL control plane."""
+"""Compatibility ASGI entrypoint for the database-free cloud shell."""
 
-from auction_etl.cloud_api import app
+from api.index import app
 
 
 __all__ = [

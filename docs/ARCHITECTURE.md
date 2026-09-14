@@ -1,12 +1,16 @@
 # Collector Ledger Architecture
 
-> **Architecture status:** Vercel + Neon staging acceptance closed on 2026-08-19; the accepted Phase-C source has since been merged into `main`.
+> **Current authority:** local PostgreSQL at `127.0.0.1:5544/auction_warehouse` is the authoritative operational data plane.
+>
+> **Cutover record:** see [LOCAL_AUTHORITY_CUTOVER.md](LOCAL_AUTHORITY_CUTOVER.md).
+>
+> **Historical cloud sections:** the Vercel + Neon material below is retained as acceptance and migration history. It no longer defines current data authority.
+>
+> **Cloud boundary:** Vercel and Railway must not connect to the local loopback database. Cloud database access and the legacy cloud refresh worker are disabled by the current source policy.
+>
+> **Neon:** retained pending a separate explicit deletion gate.
 >
 > **Product/documentation name:** Collector Ledger.
->
-> **Compatibility names remain unchanged for now:** `auction_etl`, `~/auction-etl`, and the Vercel project `auction-etl-staging`.
->
-> **Important distinction:** the worker is a required logical execution role, but no persistent cloud worker host is currently part of the accepted Vercel + Neon staging milestone.
 
 ## 1. System purpose
 

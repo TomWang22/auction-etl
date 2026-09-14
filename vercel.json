@@ -3,7 +3,7 @@
   "redirects": [
     {
       "source": "/",
-      "destination": "https://auction-scout-main-test.streamlit.app/",
+      "destination": "/api/health",
       "permanent": false
     }
   ],

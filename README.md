@@ -2,7 +2,7 @@
 
 > **Compatibility name:** the repository, Python package, and existing infrastructure still use `auction-etl` / `auction_etl`.
 >
-> **Current cloud milestone:** Vercel + Neon staging acceptance and the Phase-D auth/account-tenancy closeout are complete. The long-running refresh worker remains a required execution role, but its permanent cloud host is deferred.
+> **Current runtime authority:** local PostgreSQL at 127.0.0.1:5544/auction_warehouse. Vercel and Railway are non-data cloud shells and must not be pointed at the local database. Neon is retained only until a separate deletion gate. See [docs/LOCAL_AUTHORITY_CUTOVER.md](docs/LOCAL_AUTHORITY_CUTOVER.md).
 
 Collector Ledger is a collector-focused auction intelligence and ETL system for discovering marketplace sales, preserving source evidence, normalizing auction records, identifying pressings and completeness, reviewing uncertain records, coordinating durable refresh jobs, and exporting collector-ready research.
 

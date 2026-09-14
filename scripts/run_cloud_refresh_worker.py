@@ -27,6 +27,9 @@ if str(ROOT) not in sys.path:
         str(ROOT),
     )
 
+from auction_etl.runtime_authority import (  # noqa: E402
+    cloud_worker_execution_allowed_here,
+)
 from auction_etl.services.refresh_job_inputs import (  # noqa: E402
     get_refresh_job_input,
 )
@@ -1705,6 +1708,26 @@ def main(
     argv: Sequence[str] | None = None,
 ) -> int:
     """Run the persistent cloud worker."""
+    if not cloud_worker_execution_allowed_here():
+        print(
+            "ERROR: Cloud refresh-worker execution is disabled; "
+            "local PostgreSQL is authoritative.",
+            file=sys.stderr,
+        )
+        print(
+            "DATA_AUTHORITY=local",
+            file=sys.stderr,
+        )
+        print(
+            "CLOUD_DATABASE_ACCESS=false",
+            file=sys.stderr,
+        )
+        print(
+            "CLOUD_REFRESH_WORKER_EXECUTED=false",
+            file=sys.stderr,
+        )
+        return 3
+
     install_signal_handlers()
 
     try:
