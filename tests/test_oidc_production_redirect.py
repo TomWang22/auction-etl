@@ -34,6 +34,7 @@ PRODUCTION_CALLBACK = (
     "https://collector-ledger.example.test/oauth2callback"
 )
 LOCAL_CALLBACK = "http://localhost:8501/oauth2callback"
+LOCAL_HTTPS_CALLBACK = "https://localhost:8501/oauth2callback"
 YAHOO_METADATA = (
     "https://api.login.yahoo.com/.well-known/openid-configuration"
 )
@@ -419,6 +420,43 @@ def test_development_may_use_explicit_localhost() -> None:
     assert uri == LOCAL_CALLBACK
 
 
+def test_development_may_use_explicit_https_localhost() -> None:
+    """Development accepts HTTPS loopback; production still rejects it."""
+    uri = resolve_oidc_redirect_uri(
+        environ={"AUCTION_ENV": "development"},
+        secrets_auth=production_secrets(
+            redirect_uri=LOCAL_HTTPS_CALLBACK,
+        ),
+    )
+    assert uri == LOCAL_HTTPS_CALLBACK
+
+    config = validate_streamlit_oidc_configuration(
+        environ={
+            "AUCTION_ENV": "development",
+            "OIDC_ENV": "development",
+            "OIDC_REDIRECT_URI": LOCAL_HTTPS_CALLBACK,
+        },
+        secrets_auth=production_secrets(
+            redirect_uri=LOCAL_HTTPS_CALLBACK,
+        ),
+    )
+    assert config.runtime == "development"
+    assert config.redirect_uri == LOCAL_HTTPS_CALLBACK
+
+    with pytest.raises(
+        OidcRedirectConfigurationError,
+        match="loopback",
+    ):
+        resolve_oidc_redirect_uri(
+            environ=production_environ(
+                OIDC_REDIRECT_URI=LOCAL_HTTPS_CALLBACK,
+            ),
+            secrets_auth=production_secrets(
+                redirect_uri=LOCAL_HTTPS_CALLBACK,
+            ),
+        )
+
+
 def test_yahoo_production_requires_consent_prompt_in_secrets() -> None:
     """prompt=consent is a Yahoo compatibility override, not a runtime patch."""
     with pytest.raises(
@@ -662,10 +700,19 @@ def test_example_secrets_document_yahoo_consent_override() -> None:
     example = (
         ROOT / ".streamlit" / "secrets.toml.example"
     ).read_text(encoding="utf-8")
+    section_marker = "\n[auth]\n"
+    assert section_marker in example
+    auth_section = example.split(section_marker, 1)[1]
+    redirect_lines = [
+        line.strip()
+        for line in auth_section.splitlines()
+        if line.strip().startswith("redirect_uri")
+    ]
+    assert redirect_lines == [
+        'redirect_uri = "https://YOUR-STREAMLIT-HOST/oauth2callback"'
+    ]
     assert "https://" in example
     assert "oauth2callback" in example
-    assert "localhost" not in example
-    assert "127.0.0.1" not in example
     assert "OIDC_REDIRECT_URI" in example
     assert "OIDC_ENV" in example
     assert "Conflicting" in example
@@ -674,6 +721,20 @@ def test_example_secrets_document_yahoo_consent_override() -> None:
     assert "openid" in example
     assert 'prompt = "consent"' in example
     assert "Yahoo compatibility" in example
+
+
+def test_example_secrets_document_local_http_or_https_callbacks() -> None:
+    """Local guidance must match the validator: HTTP or HTTPS on loopback."""
+    example = (
+        ROOT / ".streamlit" / "secrets.toml.example"
+    ).read_text(encoding="utf-8")
+    comments = example.split("\n[auth]\n", 1)[0]
+    assert "Use an explicit local HTTP callback" not in example
+    assert "HTTP or HTTPS" in comments
+    assert LOCAL_HTTPS_CALLBACK in comments
+    assert "sslCertFile" in comments
+    assert "sslKeyFile" in comments
+    assert "rejects loopback" in comments
 
 
 @pytest.mark.parametrize(
