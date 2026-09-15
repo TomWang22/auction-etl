@@ -665,6 +665,34 @@ def verify_state(
         )
 
 
+WAREHOUSE_COUNT_KEYS = (
+    "total_rows",
+    "buyee_rows",
+    "ebay_rows",
+    "gripsweat_rows",
+)
+
+_WAREHOUSE_DECREASE_MESSAGES = {
+    "total_rows": "Warehouse row count decreased.",
+    "buyee_rows": "Buyee warehouse rows decreased.",
+    "ebay_rows": "eBay warehouse rows decreased.",
+    "gripsweat_rows": "Gripsweat warehouse rows decreased.",
+}
+
+
+def reject_decreased_warehouse_counts(
+    initial_state: Mapping[str, int | str],
+    final_state: Mapping[str, int | str],
+) -> None:
+    """Fail closed when any protected warehouse count falls."""
+
+    for key in WAREHOUSE_COUNT_KEYS:
+        if int(final_state[key]) < int(initial_state[key]):
+            raise RuntimeError(
+                _WAREHOUSE_DECREASE_MESSAGES[key]
+            )
+
+
 def snapshot_auction_keys(
     connection: psycopg.Connection,
     path: Path,
@@ -4622,29 +4650,10 @@ def main() -> int:
             ),
         )
 
-        if (
-            int(final_state["total_rows"])
-            < int(initial_state["total_rows"])
-        ):
-            raise RuntimeError(
-                "Warehouse row count decreased."
-            )
-
-        if (
-            int(final_state["buyee_rows"])
-            < int(initial_state["buyee_rows"])
-        ):
-            raise RuntimeError(
-                "Buyee warehouse rows decreased."
-            )
-
-        if (
-            int(final_state["ebay_rows"])
-            < int(initial_state["ebay_rows"])
-        ):
-            raise RuntimeError(
-                "eBay warehouse rows decreased."
-            )
+        reject_decreased_warehouse_counts(
+            initial_state,
+            final_state,
+        )
 
         create_backup(
             psql_url=psql_url,
