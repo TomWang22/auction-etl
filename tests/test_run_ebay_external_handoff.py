@@ -16,9 +16,11 @@ from scripts.run_ebay_external_handoff import (
     BROWSER_SKIP_SENTINEL,
     EbaySource,
     OperatorError,
+    artifact_listing_ids,
     build_acquisition_command,
     build_refresh_command,
     load_external_source,
+    new_identity_count,
     parse_import_plan_summary,
     parse_raw_page_id,
     reject_railway_operator_environment,
@@ -151,9 +153,20 @@ def test_acquisition_command_is_always_headed(
         artifact=artifact,
         timeout_seconds=45.0,
         settle_seconds=4.0,
+        max_pages=2,
     )
 
     assert "--headless" not in command
+    assert "_ipg" not in command
+    assert (
+        command[
+            command.index(
+                "--max-pages"
+            )
+            + 1
+        ]
+        == "2"
+    )
 
     assert (
         command[
@@ -178,6 +191,113 @@ def test_acquisition_command_is_always_headed(
             artifact
         )
     )
+
+
+def test_acquisition_command_rejects_page_one_only_window(
+    tmp_path: Path,
+) -> None:
+    """The operator must not recreate the shallow page-1 acquisition."""
+
+    source = EbaySource(
+        name="facerecords",
+        url=SOURCE_URL,
+        wait_seconds=4.0,
+    )
+
+    with pytest.raises(
+        OperatorError,
+        match="at least 2",
+    ):
+        build_acquisition_command(
+            source=source,
+            storage_state=tmp_path / "state.json",
+            artifact=tmp_path / "artifact.json",
+            timeout_seconds=45.0,
+            settle_seconds=4.0,
+            max_pages=1,
+        )
+
+
+def test_public_source_rejects_ipg(
+    tmp_path: Path,
+) -> None:
+    """Configured sold search must not set an _ipg result-size override."""
+
+    config = tmp_path / "ebay.json"
+    write_source_config(
+        config,
+        mode="external",
+    )
+    payload = json.loads(
+        config.read_text(encoding="utf-8")
+    )
+    payload[0]["url"] += "&_ipg=240"
+    config.write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        OperatorError,
+        match="_ipg",
+    ):
+        load_external_source(
+            config
+        )
+
+
+def test_configured_max_pages_one_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """A configured cap of 1 must not silently override the minimum-2 window."""
+
+    config = tmp_path / "ebay.json"
+    write_source_config(
+        config,
+        mode="external",
+    )
+    payload = json.loads(
+        config.read_text(encoding="utf-8")
+    )
+    payload[0]["max_pages"] = 1
+    config.write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        OperatorError,
+        match="Configured max_pages must be at least 2",
+    ):
+        load_external_source(
+            config
+        )
+
+
+def test_acquisition_command_rejects_configured_cap_below_minimum(
+    tmp_path: Path,
+) -> None:
+    """Do not treat max_pages=1 as a cap that wins over minimum 2."""
+
+    source = EbaySource(
+        name="facerecords",
+        url=SOURCE_URL,
+        wait_seconds=4.0,
+        max_pages=1,
+    )
+
+    with pytest.raises(
+        OperatorError,
+        match="Configured max_pages must be at least 2",
+    ):
+        build_acquisition_command(
+            source=source,
+            storage_state=tmp_path / "state.json",
+            artifact=tmp_path / "artifact.json",
+            timeout_seconds=45.0,
+            settle_seconds=4.0,
+            max_pages=2,
+        )
 
 
 def test_write_mode_requires_two_explicit_gates() -> None:
@@ -450,6 +570,7 @@ def operator_args(
         expected_database_user="auction",
         apply=apply,
         confirm_write=confirm_write,
+        max_pages=2,
     )
 
 
@@ -535,6 +656,42 @@ def test_artifact_requires_unique_valid_item_ids(
             artifact=artifact,
             source=source,
         )
+
+
+def test_artifact_listing_ids_preserve_validated_order(
+    tmp_path: Path,
+) -> None:
+    """Novelty comparison uses the artifact's listing IDs, not warehouse rows."""
+
+    artifact = tmp_path / "artifact.json"
+    write_valid_artifact(
+        artifact
+    )
+
+    assert artifact_listing_ids(
+        artifact
+    ) == [
+        "123456789012",
+        "123456789013",
+    ]
+
+
+def test_new_identity_count_is_zero_when_all_ids_exist() -> None:
+    """Known marketplace/listing keys must not arm apply/refresh."""
+
+    assert new_identity_count(
+        ["123456789012", "123456789013"],
+        ["123456789012", "123456789013"],
+    ) == 0
+
+
+def test_new_identity_count_counts_only_unseen_ids() -> None:
+    """Only listing IDs absent from the warehouse are novel."""
+
+    assert new_identity_count(
+        ["123456789012"],
+        ["123456789012", "123456789013"],
+    ) == 1
 
 
 def test_valid_artifact_returns_listing_count_and_sha(
@@ -692,6 +849,106 @@ def test_operator_dry_run_stops_before_database_write(
     assert "REAL_REFRESH_RUN=false" in output
     assert "EBAY_BROWSER_ACQUISITION_EXECUTED=false" in output
     assert "EBAY_BROWSER_FALLBACK_PROHIBITED=true" in output
+
+
+def test_operator_skips_apply_when_artifact_has_no_new_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Zero-novelty artifacts must not backup, import, or refresh."""
+
+    args = operator_args(
+        tmp_path,
+        apply=True,
+        confirm_write=True,
+        database_url=(
+            "postgresql://auction@127.0.0.1:5544/"
+            "auction_warehouse"
+        ),
+    )
+    calls: list[str] = []
+    backup_calls = 0
+
+    def fake_run_child(
+        *,
+        label: str,
+        command: list[str],
+        environment: object,
+    ) -> str:
+        del command, environment
+        calls.append(
+            label
+        )
+
+        if label == "HEADED STRUCTURED EBAY ACQUISITION":
+            write_valid_artifact(
+                args.artifact
+            )
+            return (
+                "EBAY_STRUCTURED_ACQUISITION=PASS\n"
+                "DATABASE_REQUEST_EXECUTED=false\n"
+            )
+
+        if label == "STRUCTURED IMPORTER DRY RUN":
+            return dry_run_output(
+                2,
+                "e" * 64,
+            )
+
+        raise AssertionError(
+            f"zero-novelty apply started a write child: {label}"
+        )
+
+    def fake_backup(
+        **kwargs: object,
+    ) -> Path:
+        del kwargs
+        nonlocal backup_calls
+        backup_calls += 1
+        raise AssertionError(
+            "zero-novelty apply created a database backup."
+        )
+
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.run_child",
+        fake_run_child,
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.load_ebay_warehouse_identities",
+        lambda **kwargs: frozenset(
+            {
+                "123456789012",
+                "123456789013",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.backup_database",
+        fake_backup,
+    )
+
+    assert run_operator(
+        args
+    ) == 0
+
+    output = capsys.readouterr().out
+
+    assert calls == [
+        "HEADED STRUCTURED EBAY ACQUISITION",
+        "STRUCTURED IMPORTER DRY RUN",
+    ]
+    assert backup_calls == 0
+    assert "NEW_IDENTITY_COUNT=0" in output
+    assert "READY_FOR_STRUCTURED_EBAY_APPLY=false" in output
+    assert (
+        "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=true"
+        in output
+    )
+    assert "STRUCTURED_EBAY_APPLY_RUN=false" in output
+    assert "DATABASE_WRITE=false" in output
+    assert "REAL_REFRESH_RUN=false" in output
+    assert "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS" in output
 
 
 def test_operator_rejects_confirmation_failure(
@@ -913,6 +1170,10 @@ def test_operator_fails_closed_on_database_mismatch(
         fake_run_child,
     )
     monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.load_ebay_warehouse_identities",
+        lambda **kwargs: frozenset(),
+    )
+    monkeypatch.setattr(
         "scripts.run_ebay_external_handoff.database_snapshot",
         fake_snapshot,
     )
@@ -993,6 +1254,10 @@ def test_operator_apply_uses_exact_raw_page_and_emits_contract(
         fake_run_child,
     )
     monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.load_ebay_warehouse_identities",
+        lambda **kwargs: frozenset(),
+    )
+    monkeypatch.setattr(
         "scripts.run_ebay_external_handoff.database_snapshot",
         lambda **kwargs: SimpleNamespace(
             database_name="auction_warehouse",
@@ -1039,6 +1304,12 @@ def test_operator_apply_uses_exact_raw_page_and_emits_contract(
     )
     assert "DATABASE_WRITE=true" in output
     assert "REAL_REFRESH_RUN=true" in output
+    assert "NEW_IDENTITY_COUNT=2" in output
+    assert "READY_FOR_STRUCTURED_EBAY_APPLY=true" in output
+    assert (
+        "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=false"
+        in output
+    )
 
 
 def test_operator_source_never_retries_or_enables_headless() -> None:
@@ -1057,3 +1328,11 @@ def test_operator_source_never_retries_or_enables_headless() -> None:
     assert "--headless" not in source
     assert "crawl_ebay_sources.py" not in source
     assert "--ebay-structured-raw-page-id" in source
+    assert "NEW_IDENTITY_COUNT" in source
+    assert "load_ebay_warehouse_identities(" in source
+    assert "new_identity_count(" in source
+    assert "max_pages" in source
+    assert "backup_database(" in source
+    novelty = source.index("new_identity_count(")
+    backup = source.index("backup_database(")
+    assert novelty < backup

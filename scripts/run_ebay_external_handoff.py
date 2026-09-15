@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,9 @@ if str(ROOT) not in sys.path:
 from scripts.run_latest_auction_refresh import (  # noqa: E402
     create_backup,
     normalize_psycopg_url,
+)
+from auction_etl.services.warehouse import (  # noqa: E402
+    new_warehouse_identities,
 )
 
 DEFAULT_CONFIG = ROOT / "config" / "ebay_sources.json"
@@ -99,6 +103,7 @@ class EbaySource:
     name: str
     url: str
     wait_seconds: float
+    max_pages: int = 25
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,6 +368,11 @@ def load_external_source(
             "Configured eBay source is not newest-first."
         )
 
+    if "_ipg" in query:
+        raise OperatorError(
+            "Configured eBay source must not set _ipg."
+        )
+
     if "_ssn" in query:
         raise OperatorError(
             "Configured public eBay source is unexpectedly seller-scoped."
@@ -380,10 +390,31 @@ def load_external_source(
             "eBay source wait_seconds cannot be negative."
         )
 
+    try:
+        max_pages = int(
+            source.get(
+                "max_pages",
+                25,
+            )
+        )
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise OperatorError(
+            "Configured max_pages is invalid."
+        ) from exc
+
+    if max_pages < 2:
+        raise OperatorError(
+            "Configured max_pages must be at least 2."
+        )
+
     return EbaySource(
         name=name,
         url=url,
         wait_seconds=wait_seconds,
+        max_pages=max_pages,
     )
 
 
@@ -412,6 +443,7 @@ def build_acquisition_command(
     artifact: Path,
     timeout_seconds: float,
     settle_seconds: float,
+    max_pages: int,
 ) -> list[str]:
     """Build the headed structured-acquisition command."""
 
@@ -423,6 +455,21 @@ def build_acquisition_command(
     if settle_seconds < 0:
         raise OperatorError(
             "Acquisition settle time cannot be negative."
+        )
+
+    if source.max_pages < 2:
+        raise OperatorError(
+            "Configured max_pages must be at least 2."
+        )
+
+    if max_pages < 2:
+        raise OperatorError(
+            "Acquisition --max-pages must be at least 2."
+        )
+
+    if max_pages > source.max_pages:
+        raise OperatorError(
+            "Acquisition --max-pages may not exceed configured max_pages."
         )
 
     command = [
@@ -450,11 +497,24 @@ def build_acquisition_command(
         str(
             settle_seconds
         ),
+        "--max-pages",
+        str(
+            max_pages
+        ),
+        "--configured-max-pages",
+        str(
+            source.max_pages
+        ),
     ]
 
     if "--headless" in command:
         raise OperatorError(
             "Operator acquisition unexpectedly became headless."
+        )
+
+    if "_ipg" in command:
+        raise OperatorError(
+            "Operator acquisition unexpectedly set _ipg."
         )
 
     return command
@@ -748,6 +808,115 @@ def validate_artifact(
         sha256_file(
             resolved
         ),
+    )
+
+
+def artifact_listing_ids(
+    artifact: Path,
+) -> list[str]:
+    """Return validated eBay listing IDs from one structured artifact."""
+
+    payload = json.loads(
+        artifact.read_text(
+            encoding="utf-8",
+        )
+    )
+
+    listings = payload.get(
+        "listings"
+    )
+
+    if not isinstance(
+        listings,
+        list,
+    ):
+        raise OperatorError(
+            "Structured eBay artifact listings are invalid."
+        )
+
+    item_ids: list[str] = []
+
+    for listing in listings:
+        if not isinstance(
+            listing,
+            dict,
+        ):
+            raise OperatorError(
+                "Structured eBay artifact listings are invalid."
+            )
+
+        item_id = str(
+            listing.get(
+                "item_id",
+                "",
+            )
+        ).strip()
+
+        if not item_id:
+            raise OperatorError(
+                "Structured eBay artifact contains an empty item ID."
+            )
+
+        item_ids.append(
+            item_id
+        )
+
+    return item_ids
+
+
+def new_identity_count(
+    existing_listing_ids: Iterable[str],
+    parsed_listing_ids: Iterable[str],
+) -> int:
+    """Return how many artifact IDs would insert new warehouse identities."""
+
+    return len(
+        new_warehouse_identities(
+            existing_listing_ids,
+            parsed_listing_ids,
+        )
+    )
+
+
+def load_ebay_warehouse_identities(
+    *,
+    database_url: str,
+) -> frozenset[str]:
+    """Read current eBay warehouse listing IDs without writing."""
+
+    if not database_url.strip():
+        raise OperatorError(
+            "Novelty gate requires an explicit database URL."
+        )
+
+    psql_url = normalize_database_url(
+        database_url
+    )
+
+    with psycopg.connect(
+        psql_url,
+        row_factory=dict_row,
+    ) as connection:
+        rows = connection.execute(
+            """
+            SELECT listing_id
+            FROM warehouse.auction
+            WHERE marketplace = 'ebay'
+            """
+        ).fetchall()
+
+    return frozenset(
+        str(
+            row[
+                "listing_id"
+            ]
+        ).strip()
+        for row in rows
+        if str(
+            row[
+                "listing_id"
+            ]
+        ).strip()
     )
 
 
@@ -1368,6 +1537,16 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=2,
+        help=(
+            "Bounded newest-first result pages to acquire. "
+            "Minimum 2."
+        ),
+    )
+
+    parser.add_argument(
         "--database-url",
         default=os.environ.get(
             "DATABASE_URL"
@@ -1469,6 +1648,7 @@ def run_operator(
             artifact=artifact,
             timeout_seconds=arguments.timeout_seconds,
             settle_seconds=settle_seconds,
+            max_pages=arguments.max_pages,
         ),
         environment=environment,
     )
@@ -1580,7 +1760,63 @@ def run_operator(
         "EBAY_STORAGE_STATE_MODIFIED=false"
     )
 
-    if not arguments.apply:
+    database_url_value = str(
+        arguments.database_url or ""
+    ).strip()
+
+    if (
+        arguments.apply
+        or database_url_value
+    ):
+        existing_ids = (
+            load_ebay_warehouse_identities(
+                database_url=database_url_value,
+            )
+        )
+        novelty = new_identity_count(
+            existing_ids,
+            artifact_listing_ids(
+                artifact
+            ),
+        )
+        print(
+            f"NEW_IDENTITY_COUNT={novelty}"
+        )
+
+        if novelty < 1:
+            print(
+                "READY_FOR_STRUCTURED_EBAY_APPLY=false"
+            )
+            print(
+                "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=true"
+            )
+
+            if not arguments.apply:
+                print(
+                    "EBAY_EXTERNAL_HANDOFF_DRY_RUN=PASS"
+                )
+
+            emit_operator_contract(
+                apply=False
+            )
+            return 0
+
+        print(
+            "READY_FOR_STRUCTURED_EBAY_APPLY=true"
+        )
+        print(
+            "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=false"
+        )
+
+        if not arguments.apply:
+            print(
+                "EBAY_EXTERNAL_HANDOFF_DRY_RUN=PASS"
+            )
+            emit_operator_contract(
+                apply=False
+            )
+            return 0
+    else:
         print(
             "READY_FOR_STRUCTURED_EBAY_APPLY=true"
         )

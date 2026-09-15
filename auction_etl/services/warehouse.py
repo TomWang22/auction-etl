@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -403,6 +404,30 @@ def sync_staging_to_warehouse(
 
     session.commit()
     return stats
+
+
+def new_warehouse_identities(
+    existing_listing_ids: Iterable[str],
+    parsed_listing_ids: Iterable[str],
+) -> frozenset[str]:
+    """Return listing IDs that would insert new warehouse identities.
+
+    Warehouse sync upserts on uq_auction_marketplace_listing. Existing
+    (marketplace, listing_id) keys do not inflate warehouse identity
+    counts. --no-prune keeps unmatched warehouse rows.
+    """
+
+    existing = {
+        str(value).strip()
+        for value in existing_listing_ids
+        if str(value).strip()
+    }
+    parsed = {
+        str(value).strip()
+        for value in parsed_listing_ids
+        if str(value).strip()
+    }
+    return frozenset(parsed - existing)
 
 
 def warehouse_counts(

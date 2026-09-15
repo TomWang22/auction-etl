@@ -13,11 +13,23 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-from urllib.parse import quote, urljoin, urlparse
+from typing import Any
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    quote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
+
+from bs4 import BeautifulSoup
 
 from auction_etl.browser.defaults import (
     CHANNEL,
@@ -64,6 +76,13 @@ ACCESS_CONTROL_TEXT_MARKERS = (
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_SETTLE_SECONDS = 2.0
+DEFAULT_MAX_PAGES = 2
+ABSOLUTE_MAX_PAGES = 25
+NEXT_SELECTORS = (
+    "a.pagination__next[href]",
+    "a[aria-label='Next page'][href]",
+    "a[rel='next'][href]",
+)
 
 OPTIONAL_LISTING_FIELDS = (
     "price",
@@ -108,6 +127,29 @@ class AcquiredPage:
     http_status: int | None
     item_link_count: int
     html: str
+
+
+@dataclass(frozen=True, slots=True)
+class SearchWindow:
+    """Deduplicated newest-first structured acquisition window."""
+
+    source_url: str
+    listings: tuple[dict[str, str], ...]
+    pages: tuple[dict[str, object], ...]
+    stop_reason: str
+    first_page: AcquiredPage
+
+    @property
+    def page_count(self) -> int:
+        """Return how many result pages were fetched."""
+
+        return len(self.pages)
+
+    @property
+    def unique_identity_count(self) -> int:
+        """Return unique eBay item IDs in newest-first window order."""
+
+        return len(self.listings)
 
 
 def utc_now() -> str:
@@ -431,7 +473,7 @@ def records_for_expected_seller(
 def canonical_listings(
     records: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, str]]:
-    """Canonicalize, validate, deduplicate, and sort parser records."""
+    """Canonicalize, validate, and deduplicate parser records in first-seen order."""
 
     by_item_id: dict[str, dict[str, str]] = {}
 
@@ -460,12 +502,355 @@ def canonical_listings(
             "Acquisition produced zero parser-compatible eBay listings."
         )
 
-    return [
-        by_item_id[item_id]
-        for item_id in sorted(
-            by_item_id
+    return list(
+        by_item_id.values()
+    )
+
+
+def require_max_pages(
+    max_pages: int,
+    *,
+    configured_max_pages: int,
+) -> int:
+    """Require a bounded multi-page window with production minimum 2."""
+
+    if configured_max_pages < DEFAULT_MAX_PAGES:
+        raise EbayAcquisitionError(
+            "Configured max_pages must be at least 2."
         )
+
+    if max_pages < DEFAULT_MAX_PAGES:
+        raise EbayAcquisitionError(
+            "Acquisition --max-pages must be at least 2."
+        )
+
+    if max_pages > configured_max_pages:
+        raise EbayAcquisitionError(
+            "Acquisition --max-pages may not exceed configured max_pages."
+        )
+
+    return max_pages
+
+
+def require_search_constraints(
+    url: str,
+) -> None:
+    """Require sold+completed newest-first search without _ipg."""
+
+    require_ebay_url(
+        url
+    )
+    query = parse_qs(
+        urlsplit(
+            url
+        ).query
+    )
+
+    if "_ipg" in query:
+        raise EbayAcquisitionError(
+            "eBay acquisition must not set _ipg."
+        )
+
+    if query.get("LH_Sold") != ["1"]:
+        raise EbayAcquisitionError(
+            "eBay acquisition requires LH_Sold=1."
+        )
+
+    if query.get("LH_Complete") != ["1"]:
+        raise EbayAcquisitionError(
+            "eBay acquisition requires LH_Complete=1."
+        )
+
+    if query.get("_sop") != ["13"]:
+        raise EbayAcquisitionError(
+            "eBay acquisition requires newest-first _sop=13."
+        )
+
+
+def search_page_url(
+    url: str,
+    page_number: int,
+) -> str:
+    """Return one sold-search URL for a 1-based result page."""
+
+    require_search_constraints(
+        url
+    )
+
+    if page_number < 1:
+        raise EbayAcquisitionError(
+            "page_number must be positive."
+        )
+
+    if page_number == 1:
+        return url
+
+    parts = urlsplit(
+        url
+    )
+    query = [
+        (key, value)
+        for key, value in parse_qsl(
+            parts.query,
+            keep_blank_values=True,
+        )
+        if key != "_pgn"
     ]
+    query.append(
+        (
+            "_pgn",
+            str(
+                page_number
+            ),
+        )
+    )
+
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(
+                query,
+                doseq=True,
+            ),
+            parts.fragment,
+        )
+    )
+
+
+def has_next_page(
+    html: str,
+) -> bool:
+    """Return whether the captured result page exposes a usable next link."""
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    for selector in NEXT_SELECTORS:
+        link = soup.select_one(
+            selector
+        )
+
+        if link is None:
+            continue
+
+        href = str(
+            link.get(
+                "href",
+                "",
+            )
+        ).strip()
+        disabled = str(
+            link.get(
+                "aria-disabled",
+                "",
+            )
+        ).strip().casefold()
+
+        if href and disabled != "true":
+            return True
+
+    return False
+
+
+def merge_window_listings(
+    destination: dict[str, dict[str, str]],
+    listings: Sequence[Mapping[str, str]],
+) -> int:
+    """Merge one page into the window, keeping first-seen item IDs."""
+
+    added = 0
+
+    for listing in listings:
+        item_id = str(
+            listing.get(
+                "item_id",
+                "",
+            )
+        ).strip()
+
+        if not item_id:
+            raise EbayAcquisitionError(
+                "Structured listing has no item_id."
+            )
+
+        normalized = {
+            str(key): str(value)
+            for key, value in listing.items()
+        }
+        previous = destination.get(
+            item_id
+        )
+
+        if previous is None:
+            destination[item_id] = normalized
+            added += 1
+            continue
+
+        if previous != normalized:
+            raise EbayAcquisitionError(
+                "Conflicting cross-page eBay identity "
+                f"{item_id}."
+            )
+
+    return added
+
+
+def assemble_search_window(
+    *,
+    source_url: str,
+    source_name: str,
+    max_pages: int,
+    configured_max_pages: int,
+    fetch_page: Callable[[str], AcquiredPage],
+    expected_seller: str | None = None,
+    collected_at_utc: str | None = None,
+) -> SearchWindow:
+    """Acquire pages 1..N, stop safely, and deduplicate newest-first."""
+
+    max_pages = require_max_pages(
+        max_pages,
+        configured_max_pages=configured_max_pages,
+    )
+    require_search_constraints(
+        source_url
+    )
+
+    merged: dict[str, dict[str, str]] = {}
+    pages: list[dict[str, object]] = []
+    first_page: AcquiredPage | None = None
+    stop_reason = "max_pages"
+
+    for page_number in range(1, max_pages + 1):
+        requested_url = search_page_url(
+            source_url,
+            page_number,
+        )
+        acquired = fetch_page(
+            requested_url
+        )
+
+        if first_page is None:
+            first_page = acquired
+
+        payload = build_payload_from_html(
+            html=acquired.html,
+            source_name=source_name,
+            requested_url=requested_url,
+            final_url=acquired.final_url,
+            http_status=acquired.http_status,
+            item_link_count=acquired.item_link_count,
+            expected_seller=expected_seller,
+            collected_at_utc=collected_at_utc,
+        )
+        listings = payload[
+            "listings"
+        ]
+
+        if not isinstance(
+            listings,
+            list,
+        ):
+            raise EbayAcquisitionError(
+                "Structured page listings are malformed."
+            )
+
+        added = merge_window_listings(
+            merged,
+            listings,
+        )
+        next_available = has_next_page(
+            acquired.html
+        )
+        pages.append(
+            {
+                "page_number": page_number,
+                "requested_url": requested_url,
+                "final_url": acquired.final_url,
+                "http_status": acquired.http_status,
+                "item_link_count": acquired.item_link_count,
+                "listing_count": len(
+                    listings
+                ),
+                "new_unique_listings": added,
+                "has_next_page": next_available,
+            }
+        )
+
+        if added == 0:
+            stop_reason = "repeated_page"
+            break
+
+        if not next_available:
+            stop_reason = "no_next_page"
+            break
+    else:
+        stop_reason = "max_pages"
+
+    if first_page is None or not merged:
+        raise EbayAcquisitionError(
+            "Acquisition produced zero parser-compatible eBay listings."
+        )
+
+    return SearchWindow(
+        source_url=source_url,
+        listings=tuple(
+            merged.values()
+        ),
+        pages=tuple(
+            pages
+        ),
+        stop_reason=stop_reason,
+        first_page=first_page,
+    )
+
+
+def build_window_payload(
+    window: SearchWindow,
+    *,
+    source_name: str,
+    expected_seller: str | None = None,
+    collected_at_utc: str | None = None,
+) -> dict[str, object]:
+    """Build one importer-compatible artifact for the acquired window."""
+
+    result: dict[str, object] = {
+        "schema": "auction-etl/ebay-structured-acquisition/v1",
+        "source_name": source_name.strip(),
+        "source_url": window.source_url,
+        "collector_url": collector_url_for_source(
+            source_name
+        ),
+        "collected_at_utc": collected_at_utc or utc_now(),
+        "page": {
+            "final_url": window.first_page.final_url,
+            "http_status": window.first_page.http_status,
+            "item_link_count": window.first_page.item_link_count,
+            "page_count": window.page_count,
+            "pages": list(
+                window.pages
+            ),
+            "stop_reason": window.stop_reason,
+        },
+        "listing_count": window.unique_identity_count,
+        "listings": list(
+            window.listings
+        ),
+    }
+
+    seller_filter = normalized_text(
+        expected_seller
+    )
+
+    if seller_filter is not None:
+        result[
+            "seller_filter"
+        ] = seller_filter
+
+    return result
 
 
 def build_payload_from_html(
@@ -1068,6 +1453,21 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_SETTLE_SECONDS,
         help="Short wait after the first item link appears.",
     )
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=DEFAULT_MAX_PAGES,
+        help=(
+            "Bounded newest-first result pages to acquire. "
+            "Minimum 2."
+        ),
+    )
+    parser.add_argument(
+        "--configured-max-pages",
+        type=int,
+        default=ABSOLUTE_MAX_PAGES,
+        help="Configured upper bound for --max-pages.",
+    )
 
     return parser.parse_args()
 
@@ -1087,25 +1487,35 @@ def main() -> int:
         return 1
 
     try:
-        acquired = acquire_page(
-            url=arguments.url,
-            profile_dir=arguments.profile_dir,
-            storage_state=arguments.storage_state,
-            headless=arguments.headless,
-            timeout_seconds=arguments.timeout_seconds,
-            settle_seconds=arguments.settle_seconds,
-            owner_socket=arguments.owner_socket,
-        )
+        def fetch_page(
+            url: str,
+        ) -> AcquiredPage:
+            """Fetch one headed result page for the search window."""
 
-        payload = build_payload_from_html(
-            html=acquired.html,
+            return acquire_page(
+                url=url,
+                profile_dir=arguments.profile_dir,
+                storage_state=arguments.storage_state,
+                headless=arguments.headless,
+                timeout_seconds=arguments.timeout_seconds,
+                settle_seconds=arguments.settle_seconds,
+                owner_socket=arguments.owner_socket,
+            )
+
+        window = assemble_search_window(
+            source_url=arguments.url,
             source_name=source_name,
-            requested_url=acquired.requested_url,
-            final_url=acquired.final_url,
-            http_status=acquired.http_status,
-            item_link_count=acquired.item_link_count,
+            max_pages=arguments.max_pages,
+            configured_max_pages=arguments.configured_max_pages,
+            fetch_page=fetch_page,
             expected_seller=arguments.expected_seller,
         )
+        payload = build_window_payload(
+            window,
+            source_name=source_name,
+            expected_seller=arguments.expected_seller,
+        )
+        acquired = window.first_page
 
         atomic_write_json(
             arguments.output,
@@ -1180,6 +1590,15 @@ def main() -> int:
     )
     print(
         f"listings={payload['listing_count']}"
+    )
+    print(
+        f"PAGES_ACQUIRED={window.page_count}"
+    )
+    print(
+        f"UNIQUE_IDENTITY_COUNT={window.unique_identity_count}"
+    )
+    print(
+        f"ACQUISITION_STOP_REASON={window.stop_reason}"
     )
     print(
         f"output={arguments.output.expanduser().resolve()}"
