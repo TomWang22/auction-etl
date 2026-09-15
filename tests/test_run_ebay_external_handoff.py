@@ -951,6 +951,185 @@ def test_operator_skips_apply_when_artifact_has_no_new_identities(
     assert "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS" in output
 
 
+def test_second_identical_headed_apply_is_zero_novelty_and_does_not_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A replay of the same headed window must not backup, import, or refresh."""
+
+    listings = [
+        {
+            "item_id": "177308895133",
+            "title": "Teresa Teng LP",
+            "url": "https://www.ebay.com/itm/177308895133",
+        },
+        {
+            "item_id": "297503882046",
+            "title": "Teresa Teng CD",
+            "url": "https://www.ebay.com/itm/297503882046",
+        },
+    ]
+    warehouse_ids: set[str] = set()
+    backup_calls = 0
+    write_labels: list[str] = []
+
+    def fake_run_child(
+        *,
+        label: str,
+        command: list[str],
+        environment: object,
+    ) -> str:
+        del command, environment
+        write_labels.append(
+            label
+        )
+
+        if label == "HEADED STRUCTURED EBAY ACQUISITION":
+            write_valid_artifact(
+                current_artifact,
+                listings=listings,
+            )
+            return (
+                "EBAY_STRUCTURED_ACQUISITION=PASS\n"
+                "DATABASE_REQUEST_EXECUTED=false\n"
+            )
+
+        if label == "STRUCTURED IMPORTER DRY RUN":
+            return dry_run_output(
+                len(listings),
+                "a" * 64,
+            )
+
+        if label == "APPLY EXACT STRUCTURED ARTIFACT":
+            warehouse_ids.update(
+                listing["item_id"]
+                for listing in listings
+                if isinstance(listing["item_id"], str)
+            )
+            return (
+                "✓ Raw Page       : 180\n"
+                "IDEMPOTENT_REUSE=false\n"
+                "STRUCTURED_EBAY_RAWPAGE_IMPORT=PASS\n"
+            )
+
+        if label == "EXACT-ID REAL REFRESH":
+            return (
+                "Using 1 "
+                + BROWSER_SKIP_SENTINEL
+                + "\n"
+            )
+
+        raise AssertionError(
+            f"unexpected child: {label}"
+        )
+
+    current_artifact = tmp_path / "unused.json"
+
+    def fake_backup(
+        **kwargs: object,
+    ) -> Path:
+        del kwargs
+        nonlocal backup_calls
+        backup_calls += 1
+        return tmp_path / "backup.sql"
+
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.run_child",
+        fake_run_child,
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.load_ebay_warehouse_identities",
+        lambda **kwargs: frozenset(warehouse_ids),
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.database_snapshot",
+        lambda **kwargs: SimpleNamespace(
+            database_name="auction_warehouse",
+            database_user="auction",
+            ebay_rows=881,
+            raw_page_parsed=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.backup_database",
+        fake_backup,
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.resolve_status_file",
+        lambda: tmp_path / "status.json",
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.verify_refresh_status",
+        lambda status_file: 881,
+    )
+
+    first = tmp_path / "first"
+    first.mkdir()
+    current_artifact = first / "artifact.json"
+    first_args = operator_args(
+        first,
+        apply=True,
+        confirm_write=True,
+        database_url=(
+            "postgresql://auction@127.0.0.1:5544/"
+            "auction_warehouse"
+        ),
+    )
+    first_args.artifact = current_artifact
+
+    assert run_operator(
+        first_args
+    ) == 0
+    first_output = capsys.readouterr().out
+
+    assert "NEW_IDENTITY_COUNT=2" in first_output
+    assert "DATABASE_WRITE=true" in first_output
+    assert warehouse_ids == {
+        "177308895133",
+        "297503882046",
+    }
+    assert backup_calls == 1
+    assert "APPLY EXACT STRUCTURED ARTIFACT" in write_labels
+    assert "EXACT-ID REAL REFRESH" in write_labels
+
+    second = tmp_path / "second"
+    second.mkdir()
+    current_artifact = second / "artifact.json"
+    write_labels.clear()
+    second_args = operator_args(
+        second,
+        apply=True,
+        confirm_write=True,
+        database_url=(
+            "postgresql://auction@127.0.0.1:5544/"
+            "auction_warehouse"
+        ),
+    )
+    second_args.artifact = current_artifact
+
+    assert run_operator(
+        second_args
+    ) == 0
+    second_output = capsys.readouterr().out
+
+    assert write_labels == [
+        "HEADED STRUCTURED EBAY ACQUISITION",
+        "STRUCTURED IMPORTER DRY RUN",
+    ]
+    assert backup_calls == 1
+    assert "NEW_IDENTITY_COUNT=0" in second_output
+    assert "READY_FOR_STRUCTURED_EBAY_APPLY=false" in second_output
+    assert (
+        "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=true"
+        in second_output
+    )
+    assert "STRUCTURED_EBAY_APPLY_RUN=false" in second_output
+    assert "DATABASE_WRITE=false" in second_output
+    assert "REAL_REFRESH_RUN=false" in second_output
+    assert "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS" in second_output
+
+
 def test_operator_rejects_confirmation_failure(
     tmp_path: Path,
 ) -> None:

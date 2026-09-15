@@ -16,6 +16,9 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PROVEN_PRODUCTION_BASELINE_SHA = (
+    "730f283356d2b1d326ec79fbadf2c2f7e73e8c4c"
+)
 DEFAULT_RAILWAY_SERVICE_ID = (
     "b5346622-7343-4862-bede-edc1d53f1409"
 )
@@ -23,10 +26,20 @@ DEFAULT_RAILWAY_ENVIRONMENT_ID = (
     "11c2d451-4fdb-4547-9b4d-2f57bb2902d0"
 )
 SHA_PATTERN = re.compile(r"\b[0-9a-f]{40}\b")
+PRODUCTION_SMOKE_TESTS = (
+    "tests/test_verify_release_alignment.py",
+    "tests/test_run_ebay_external_handoff.py",
+    "tests/test_acquire_ebay_structured.py",
+    "tests/test_existing_ebay_identities_no_new_warehouse_rows.py",
+)
 
 
 class AlignmentError(RuntimeError):
     """Raised when read-only release alignment cannot be proven."""
+
+
+class SmokeError(AlignmentError):
+    """Raised when the production pytest smoke gate fails after alignment."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +81,8 @@ def parse_arguments(
     parser = argparse.ArgumentParser(
         description=(
             "Prove GitHub, Railway, Vercel, and worktree alignment "
-            "without deploying."
+            "against the proven production baseline, then run the "
+            "production smoke gate."
         )
     )
     parser.add_argument(
@@ -78,10 +92,24 @@ def parse_arguments(
     )
     parser.add_argument(
         "--expected-sha",
-        default="",
+        default=PROVEN_PRODUCTION_BASELINE_SHA,
         help=(
-            "Require this 40-character commit. Defaults to local HEAD."
+            "Require this 40-character commit. Defaults to proven "
+            f"production baseline {PROVEN_PRODUCTION_BASELINE_SHA}."
         ),
+    )
+    parser.set_defaults(smoke=True)
+    parser.add_argument(
+        "--smoke",
+        dest="smoke",
+        action="store_true",
+        help="After alignment, run the production pytest smoke gate.",
+    )
+    parser.add_argument(
+        "--no-smoke",
+        dest="smoke",
+        action="store_false",
+        help="Prove alignment only; skip the production pytest smoke gate.",
     )
     parser.add_argument(
         "--railway-service-id",
@@ -407,6 +435,36 @@ def vercel_identity(
     )
 
 
+def production_smoke_command(
+    root: Path,
+) -> list[str]:
+    """Return the production pytest command for this repository."""
+
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        *[str(root / path) for path in PRODUCTION_SMOKE_TESTS],
+    ]
+
+
+def run_production_smoke(
+    root: Path,
+) -> None:
+    """Run the production pytest smoke gate without deploying."""
+
+    try:
+        run_command(
+            production_smoke_command(root),
+            cwd=root,
+        )
+    except AlignmentError as exc:
+        raise SmokeError(
+            str(exc)
+        ) from exc
+
+
 def emit(
     name: str,
     value: object,
@@ -427,13 +485,17 @@ def main(
     git = git_identity(root)
     expected_sha = (
         arguments.expected_sha.strip()
-        or git.local_head
+        or PROVEN_PRODUCTION_BASELINE_SHA
     )
     if not SHA_PATTERN.fullmatch(expected_sha):
         raise AlignmentError(
             "--expected-sha must be a 40-character commit."
         )
 
+    emit(
+        "PROVEN_PRODUCTION_BASELINE_SHA",
+        PROVEN_PRODUCTION_BASELINE_SHA,
+    )
     emit("RELEASE_HEAD", expected_sha)
     emit("LOCAL_HEAD", git.local_head)
     emit("ORIGIN_MAIN", git.origin_main)
@@ -511,12 +573,21 @@ def main(
 
     emit("SOURCE_MODIFIED", "false")
     emit("RELEASE_ALIGNMENT", "PASS")
+
+    if arguments.smoke:
+        run_production_smoke(root)
+        emit("PRODUCTION_SMOKE", "PASS")
+
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except SmokeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print("PRODUCTION_SMOKE=FAIL")
+        raise SystemExit(1) from exc
     except AlignmentError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         print("RELEASE_ALIGNMENT=FAIL")
