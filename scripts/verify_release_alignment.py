@@ -163,8 +163,14 @@ def parse_railway_payload(
     ).strip().upper()
     meta = row.get("meta")
     message = ""
+    commit_hash = ""
     if isinstance(meta, dict):
         message = str(meta.get("cliMessage") or "")
+        commit_hash = str(
+            meta.get("commitHash")
+            or meta.get("commitSha")
+            or ""
+        ).strip()
 
     if not deployment_id:
         raise AlignmentError(
@@ -175,10 +181,16 @@ def parse_railway_payload(
             "Railway deployment status is missing."
         )
 
+    release_sha = None
+    if SHA_PATTERN.fullmatch(commit_hash):
+        release_sha = commit_hash
+    else:
+        release_sha = first_sha(message)
+
     return RailwayIdentity(
         deployment_id=deployment_id,
         status=status,
-        release_sha=first_sha(message),
+        release_sha=release_sha,
     )
 
 

@@ -41,6 +41,33 @@ def test_parse_railway_payload_reads_release_sha() -> None:
     )
 
 
+def test_parse_railway_payload_reads_github_commit_hash() -> None:
+    """GitHub-triggered Railway deploys expose commitHash, not cliMessage."""
+
+    identity = parse_railway_payload(
+        [
+            {
+                "id": "fe0497cb-8693-4ec3-8f88-8e4c254ee44a",
+                "status": "SUCCESS",
+                "meta": {
+                    "branch": "main",
+                    "commitHash": (
+                        "548f54cf100316215b9d27ea9e13daa98d33b29e"
+                    ),
+                    "commitMessage": (
+                        "Expand headed eBay acquisition "
+                        "to a bounded two-page window."
+                    ),
+                },
+            }
+        ]
+    )
+
+    assert identity.release_sha == (
+        "548f54cf100316215b9d27ea9e13daa98d33b29e"
+    )
+
+
 def test_parse_railway_payload_rejects_empty_list() -> None:
     """No deployment is not alignment."""
 
