@@ -103,14 +103,18 @@ def run_request(
 
 
 def test_asgi_entrypoint_exports_control_plane() -> None:
-    """Vercel discovers one supported ASGI entrypoint."""
+    """Vercel discovers the database-free cloud-shell ASGI entrypoint."""
     source = ASGI.read_text(
         encoding="utf-8"
     )
 
     assert (
-        "from auction_etl.cloud_api import app"
+        "from api.index import app"
         in source
+    )
+    assert (
+        "from auction_etl.cloud_api import app"
+        not in source
     )
 
 

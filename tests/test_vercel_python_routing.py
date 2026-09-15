@@ -99,10 +99,11 @@ def test_vercel_health_rewrite_reaches_control_plane() -> None:
     )
 
     assert status == 200
-    assert payload == {
-        "service": "auction-etl-control-plane",
-        "status": "ok",
-    }
+    assert payload["status"] == "ok"
+    assert payload["service"] == "collector-ledger-cloud-shell"
+    assert payload["data_authority"] == "local"
+    assert payload["cloud_database_access"] is False
+    assert payload["refresh_dispatch"] is False
 
 
 def test_vercel_configuration_routes_api_to_python_function() -> None:

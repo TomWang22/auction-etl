@@ -27,7 +27,12 @@ from auction_etl.browser.defaults import (
     USER_AGENT,
     VIEWPORT,
 )
+from auction_etl.browser.ebay_owner import (
+    EbayOwnerError,
+    request as ebay_owner_request,
+)
 from auction_etl.parsers.ebay import parse_search
+from auction_etl.runtime_authority import cloud_runtime_detected
 
 
 BLOCKED_HTTP_STATUSES = frozenset({401, 403, 429})
@@ -608,6 +613,60 @@ def persistent_profile_context_options(
     return options
 
 
+def acquire_page_via_owner(
+    *,
+    url: str,
+    owner_socket: Path,
+    timeout_seconds: float,
+    settle_seconds: float,
+    storage_state: Path | None = None,
+) -> AcquiredPage:
+    """Acquire one eBay page through the local headed owner process."""
+
+    if cloud_runtime_detected():
+        raise EbayAcquisitionError(
+            "eBay owner acquisition is not allowed on Vercel or Railway."
+        )
+
+    payload: dict[str, object] = {
+        "url": url,
+        "timeout_seconds": timeout_seconds,
+        "settle_seconds": settle_seconds,
+    }
+
+    if storage_state is not None:
+        payload["storage_state"] = str(
+            storage_state.expanduser().resolve()
+        )
+
+    try:
+        response = ebay_owner_request(
+            "acquire_structured",
+            payload=payload,
+            socket_path=owner_socket,
+            timeout_seconds=max(
+                timeout_seconds + 60.0,
+                90.0,
+            ),
+        )
+    except EbayOwnerError as exc:
+        raise EbayAcquisitionError(
+            f"eBay owner acquisition failed: {exc}"
+        ) from exc
+
+    return AcquiredPage(
+        requested_url=str(response.get("requested_url") or url),
+        final_url=str(response.get("final_url") or url),
+        http_status=(
+            int(response["http_status"])
+            if response.get("http_status") is not None
+            else None
+        ),
+        item_link_count=int(response.get("item_link_count") or 0),
+        html=str(response.get("html") or ""),
+    )
+
+
 def acquire_page(
     *,
     url: str,
@@ -616,6 +675,8 @@ def acquire_page(
     headless: bool,
     timeout_seconds: float,
     settle_seconds: float,
+    browser: Any | None = None,
+    owner_socket: Path | None = None,
 ) -> AcquiredPage:
     """Acquire one eBay page through ordinary Playwright navigation."""
 
@@ -631,6 +692,37 @@ def acquire_page(
     if settle_seconds < 0:
         raise EbayAcquisitionError(
             "Settle time must not be negative."
+        )
+
+    if owner_socket is not None:
+        if headless:
+            raise EbayAcquisitionError(
+                "Owner acquisition must remain headed."
+            )
+
+        if profile_dir is not None:
+            raise EbayAcquisitionError(
+                "Owner acquisition cannot use a persistent profile directory."
+            )
+
+        if browser is not None:
+            raise EbayAcquisitionError(
+                "Owner acquisition cannot also receive a local browser."
+            )
+
+        return acquire_page_via_owner(
+            url=requested_url,
+            owner_socket=owner_socket,
+            timeout_seconds=timeout_seconds,
+            settle_seconds=settle_seconds,
+            storage_state=storage_state,
+        )
+
+    existing_browser = browser
+
+    if headless and existing_browser is not None:
+        raise EbayAcquisitionError(
+            "Reused eBay owner Chromium must remain headed."
         )
 
     resolved_profile: Path | None = None
@@ -811,6 +903,30 @@ def acquire_page(
         )
 
     try:
+        if existing_browser is not None:
+            if resolved_profile is not None:
+                raise EbayAcquisitionError(
+                    "Reused eBay Chromium cannot use a persistent profile."
+                )
+
+            if resolved_storage is None:
+                raise EbayAcquisitionError(
+                    "Storage-state is required for reused eBay Chromium."
+                )
+
+            context_options: dict[str, object] = {
+                "storage_state": str(resolved_storage),
+            }
+            context = existing_browser.new_context(
+                **context_options
+            )
+
+            try:
+                page = context.new_page()
+                return collect(page)
+            finally:
+                context.close()
+
         with sync_playwright() as playwright:
             if resolved_profile is not None:
                 context = (
@@ -836,19 +952,19 @@ def acquire_page(
                 finally:
                     context.close()
 
-            browser = playwright.chromium.launch(
+            launched_browser = playwright.chromium.launch(
                 headless=headless,
             )
 
             try:
-                context_options: dict[str, object] = {}
+                context_options = {}
 
                 if resolved_storage is not None:
                     context_options["storage_state"] = str(
                         resolved_storage
                     )
 
-                context = browser.new_context(
+                context = launched_browser.new_context(
                     **context_options
                 )
 
@@ -861,7 +977,7 @@ def acquire_page(
                 finally:
                     context.close()
             finally:
-                browser.close()
+                launched_browser.close()
     except (
         EbayAcquisitionError,
         EbayAccessBlockedError,
@@ -932,6 +1048,15 @@ def parse_arguments() -> argparse.Namespace:
         help="Run Chromium headlessly.",
     )
     parser.add_argument(
+        "--owner-socket",
+        type=Path,
+        default=None,
+        help=(
+            "Acquire through the local headed eBay owner instead of "
+            "launching a new Chromium process."
+        ),
+    )
+    parser.add_argument(
         "--timeout-seconds",
         type=float,
         default=DEFAULT_TIMEOUT_SECONDS,
@@ -969,6 +1094,7 @@ def main() -> int:
             headless=arguments.headless,
             timeout_seconds=arguments.timeout_seconds,
             settle_seconds=arguments.settle_seconds,
+            owner_socket=arguments.owner_socket,
         )
 
         payload = build_payload_from_html(

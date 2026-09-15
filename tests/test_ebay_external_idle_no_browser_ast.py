@@ -153,8 +153,20 @@ def test_external_idle_structurally_cannot_execute_browser_crawler() -> None:
         handoff_if.body
     )
 
+    idle_function = function_named(
+        tree,
+        "emit_ebay_external_handoff_idle",
+    )
+    auto_function = function_named(
+        tree,
+        "run_ebay_local_auto_handoff",
+    )
+
     external_idle_strings = string_constants(
-        external_if.body
+        [idle_function]
+    )
+    auto_handoff_strings = string_constants(
+        [auto_function]
     )
 
     browser_fallback_strings = string_constants(
@@ -169,6 +181,11 @@ def test_external_idle_structurally_cannot_execute_browser_crawler() -> None:
     assert (
         CRAWLER
         not in external_idle_strings
+    )
+
+    assert (
+        CRAWLER
+        not in auto_handoff_strings
     )
 
     assert (
@@ -224,8 +241,13 @@ def test_structured_handoff_precedes_external_idle_and_browser_fallback() -> Non
         handoff_if.body
     )
 
+    idle_function = function_named(
+        tree,
+        "emit_ebay_external_handoff_idle",
+    )
+
     external_strings = string_constants(
-        external_if.body
+        [idle_function]
     )
 
     fallback_strings = string_constants(

@@ -201,8 +201,7 @@ def test_access_control_precedes_signin_interpretation() -> None:
     )
 
     collect_end = source.index(
-        "try:\n"
-        "        with sync_playwright()",
+        "if existing_browser is not None:",
         collect_start,
     )
 

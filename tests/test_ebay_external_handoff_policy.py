@@ -225,22 +225,9 @@ def test_external_gate_occurs_after_structured_handoff_priority() -> None:
 def test_external_idle_is_awaiting_handoff_and_not_unavailable() -> None:
     """No external handoff must not report a successful or unavailable eBay check."""
 
-    source = inspect.getsource(
-        refresh.main
+    branch = inspect.getsource(
+        refresh.emit_ebay_external_handoff_idle
     )
-
-    start = source.index(
-        "elif ebay_external_handoff_only("
-    )
-    end = source.index(
-        "else:\n"
-        "            for source_name in enabled_ebay_sources(",
-        start,
-    )
-
-    branch = source[
-        start:end
-    ]
 
     assert '"eBay",' in branch
     assert '"awaiting_handoff",' in branch

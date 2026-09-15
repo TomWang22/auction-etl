@@ -36,8 +36,8 @@ from auction_etl.reporting.recent_ingestion import (  # noqa: E402
     get_report_rows,
     write_formatted_csv,
 )
-from auction_etl.services.control_plane_refresh import (  # noqa: E402
-    enqueue_refresh_via_control_plane,
+from auction_etl.services.local_refresh_dispatch import (  # noqa: E402
+    enqueue_refresh_via_local_worker,
 )
 from auction_etl.services.refresh_jobs import (  # noqa: E402
     build_refresh_engine,
@@ -57,15 +57,6 @@ DATABASE_URL = os.environ.get(
         "127.0.0.1:5544/auction_warehouse"
     ),
 )
-CONTROL_PLANE_URL = os.environ.get(
-    "AUCTION_CONTROL_PLANE_URL",
-    "",
-).strip()
-REFRESH_SIGNING_SECRET = os.environ.get(
-    "AUCTION_REFRESH_SIGNING_SECRET",
-    "",
-).strip()
-
 MEDIA_CONFIG_PATH = (
     ROOT / "config/report_media_types.json"
 )
@@ -272,10 +263,9 @@ def load_refresh_status(
 def enqueue_refresh_job(
     account_context: AccountContext,
 ) -> tuple[dict[str, Any], bool]:
-    """Create or reuse one durable refresh through Vercel."""
-    return enqueue_refresh_via_control_plane(
-        base_url=CONTROL_PLANE_URL,
-        signing_secret=REFRESH_SIGNING_SECRET,
+    """Create or reuse one durable refresh in the local warehouse."""
+    return enqueue_refresh_via_local_worker(
+        database_url=DATABASE_URL,
         account_context=account_context,
     )
 

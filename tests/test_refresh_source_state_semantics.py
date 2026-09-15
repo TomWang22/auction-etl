@@ -26,22 +26,10 @@ WORKER = Path(
 
 
 def ebay_idle_branch() -> str:
-    """Return the external-only idle branch in the refresh runner."""
-    source = inspect.getsource(
-        refresh.main
+    """Return the preserved external-only idle helper."""
+    return inspect.getsource(
+        refresh.emit_ebay_external_handoff_idle
     )
-    start = source.index(
-        "elif ebay_external_handoff_only("
-    )
-    end = source.index(
-        "else:\n"
-        "            for source_name in enabled_ebay_sources(",
-        start,
-    )
-
-    return source[
-        start:end
-    ]
 
 
 def buyee_auth_required_branch() -> str:
@@ -75,7 +63,7 @@ def test_ebay_external_idle_emits_awaiting_handoff() -> None:
     assert "ebay_request_executed=False" in branch
     assert "eBay was not checked." in branch
     assert "Existing eBay warehouse rows are preserved." in inspect.getsource(
-        refresh.main
+        refresh.emit_ebay_external_handoff_idle
     )
 
 

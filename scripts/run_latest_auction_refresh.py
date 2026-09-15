@@ -13,12 +13,16 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+
+from auction_etl.browser.ebay_owner import owner_socket_path
+from auction_etl.runtime_authority import cloud_runtime_detected
 
 
 DEFAULT_PSQL_URL = (
@@ -947,6 +951,318 @@ def ebay_external_handoff_only(
     }
 
 
+def ebay_local_auto_handoff_allowed(
+    environment: Mapping[str, str],
+) -> bool:
+    """Return whether this local machine may auto-acquire external eBay."""
+
+    if cloud_runtime_detected(environment):
+        return False
+
+    flag = str(
+        environment.get(
+            "AUCTION_EBAY_LOCAL_AUTO_HANDOFF",
+            "",
+        )
+    ).strip().casefold()
+
+    return flag in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def first_enabled_ebay_source(
+    path: Path,
+) -> dict[str, Any]:
+    """Return the first enabled eBay source record."""
+
+    payload = json.loads(
+        path.read_text(encoding="utf-8")
+    )
+
+    if isinstance(payload, dict):
+        values = payload.get("sources", payload)
+
+        if isinstance(values, dict):
+            entries = [
+                dict(value, _fallback_name=key)
+                for key, value in values.items()
+                if isinstance(value, dict)
+            ]
+        elif isinstance(values, list):
+            entries = values
+        else:
+            entries = []
+    elif isinstance(payload, list):
+        entries = payload
+    else:
+        entries = []
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        if entry.get("enabled", True) is False:
+            continue
+
+        name = (
+            entry.get("name")
+            or entry.get("source")
+            or entry.get("slug")
+            or entry.get("_fallback_name")
+        )
+        url = entry.get("url")
+
+        if not name or not url:
+            continue
+
+        result = dict(entry)
+        result["name"] = str(name)
+        result["url"] = str(url)
+        return result
+
+    raise RuntimeError(
+        "No enabled eBay source with a URL exists."
+    )
+
+
+def parse_structured_ebay_raw_page_id(
+    output: str,
+) -> int:
+    """Extract the exact raw.page ID emitted by the importer."""
+
+    matches = re.findall(
+        r"^✓ Raw Page\s*:\s*(\d+)\s*$",
+        output,
+        flags=re.MULTILINE,
+    )
+
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Importer did not emit exactly one raw-page ID."
+        )
+
+    raw_page_id = int(matches[0])
+
+    if raw_page_id < 1:
+        raise RuntimeError(
+            "Importer emitted an invalid raw-page ID."
+        )
+
+    return raw_page_id
+
+
+def emit_ebay_external_handoff_idle(
+    *,
+    logger: logging.Logger,
+    status_file: Path,
+    status: dict[str, Any],
+) -> None:
+    """Preserve warehouse rows when no structured eBay raw page is pending."""
+
+    external_message = (
+        "eBay acquisition is external-only; "
+        "no pending structured raw-page handoff exists. "
+        "eBay was not checked."
+    )
+
+    status["ebay_source_state"] = (
+        "external_handoff_idle"
+    )
+    status["ebay_runtime_semantics"] = (
+        "EBAY_EXTERNAL_HANDOFF_IDLE"
+    )
+    status["degraded"] = True
+    status["message"] = external_message
+
+    set_marketplace_diagnostic(
+        status,
+        "ebay",
+        message=external_message,
+        return_code=0,
+        browser_acquisition_executed=False,
+        ebay_request_executed=False,
+        external_handoff_pending=False,
+    )
+
+    logger.info(
+        ""
+    )
+    logger.warning(
+        external_message
+    )
+    logger.info(
+        "Existing eBay warehouse rows are preserved."
+    )
+    logger.info(
+        "A future structured eBay raw page will be "
+        "processed before this policy gate."
+    )
+
+    emit_source_state(
+        logger,
+        "eBay",
+        "awaiting_handoff",
+        status_file=status_file,
+        status=status,
+    )
+
+
+def run_ebay_local_auto_handoff(
+    *,
+    root: Path,
+    environment: dict[str, str],
+    logger: logging.Logger,
+    status_file: Path,
+    status: dict[str, Any],
+    psql_url: str,
+    ebay_config_path: Path,
+) -> None:
+    """Acquire eBay through the local owner, import, then parse one raw page."""
+
+    if cloud_runtime_detected(environment):
+        raise RuntimeError(
+            "Local eBay auto-handoff is not allowed on Vercel or Railway."
+        )
+
+    storage_value = str(
+        environment.get(
+            "AUCTION_LOCAL_EBAY_STATE_FILE",
+            "",
+        )
+    ).strip()
+
+    if not storage_value:
+        raise RuntimeError(
+            "AUCTION_LOCAL_EBAY_STATE_FILE is required for local "
+            "eBay auto-handoff."
+        )
+
+    storage_state = Path(
+        storage_value
+    ).expanduser().resolve()
+
+    if not storage_state.is_file():
+        raise RuntimeError(
+            "eBay storage-state file is missing: "
+            f"{storage_state}"
+        )
+
+    socket_path = owner_socket_path(
+        environment
+    )
+    source = first_enabled_ebay_source(
+        ebay_config_path
+    )
+    settle_seconds = float(
+        source.get(
+            "wait_seconds",
+            2.0,
+        )
+        or 2.0
+    )
+
+    artifact_dir = (
+        root
+        / "logs"
+        / "ebay-structured"
+    )
+    artifact_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    timestamp = datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y%m%dT%H%M%SZ"
+    )
+    artifact = artifact_dir / (
+        "ebay-structured-local-auto-"
+        + timestamp
+        + ".json"
+    )
+
+    run_command(
+        [
+            sys.executable,
+            "scripts/ensure_ebay_owner.py",
+            "--socket-path",
+            str(socket_path),
+            "--storage-state",
+            str(storage_state),
+            "--background",
+        ],
+        root=root,
+        environment=environment,
+        logger=logger,
+        phase="Ensure local eBay owner",
+        status_file=status_file,
+        status=status,
+    )
+
+    run_command(
+        [
+            sys.executable,
+            "scripts/acquire_ebay_structured.py",
+            "--url",
+            str(source["url"]),
+            "--source-name",
+            str(source["name"]),
+            "--owner-socket",
+            str(socket_path),
+            "--storage-state",
+            str(storage_state),
+            "--output",
+            str(artifact),
+            "--timeout-seconds",
+            "30",
+            "--settle-seconds",
+            str(settle_seconds),
+        ],
+        root=root,
+        environment=environment,
+        logger=logger,
+        phase="Acquire structured eBay via local owner",
+        status_file=status_file,
+        status=status,
+    )
+
+    _, import_output = run_command(
+        [
+            sys.executable,
+            "scripts/import_ebay_structured.py",
+            str(artifact),
+            "--source-name",
+            str(source["name"]),
+            "--apply",
+        ],
+        root=root,
+        environment=environment,
+        logger=logger,
+        phase="Import structured eBay raw page",
+        status_file=status_file,
+        status=status,
+    )
+
+    raw_page_id = parse_structured_ebay_raw_page_id(
+        import_output
+    )
+
+    process_ebay_raw_pages(
+        root=root,
+        environment=environment,
+        logger=logger,
+        status_file=status_file,
+        status=status,
+        psql_url=psql_url,
+        phase_label="local auto-handoff",
+        raw_page_id=raw_page_id,
+    )
+
+
 def ebay_access_blocked(
     return_code: int,
     output: str,
@@ -1862,6 +2178,10 @@ def main() -> int:
         root / "scripts" / "ensure_buyee_owner.py",
         root / "scripts" / "run_buyee_owner.py",
         root / "scripts" / "run_buyee_owner_job.py",
+        root / "scripts" / "ensure_ebay_owner.py",
+        root / "scripts" / "run_ebay_owner.py",
+        root / "scripts" / "acquire_ebay_structured.py",
+        root / "scripts" / "import_ebay_structured.py",
         root / "scripts" / "inspect_recent_ingestion.py",
         root / "scripts" / "crawl_buyee_live_details.py",
         root / "scripts" / "crawl_buyee_http_details.py",
@@ -3129,54 +3449,25 @@ def main() -> int:
         elif ebay_external_handoff_only(
             ebay_config_path
         ):
-            ebay_available = False
-
-            external_message = (
-                "eBay acquisition is external-only; "
-                "no pending structured raw-page handoff exists. "
-                "eBay was not checked."
-            )
-
-            status["ebay_source_state"] = (
-                "external_handoff_idle"
-            )
-            status["ebay_runtime_semantics"] = (
-                "EBAY_EXTERNAL_HANDOFF_IDLE"
-            )
-            status["degraded"] = True
-            status["message"] = external_message
-
-            set_marketplace_diagnostic(
-                status,
-                "ebay",
-                message=external_message,
-                return_code=0,
-                browser_acquisition_executed=False,
-                ebay_request_executed=False,
-                external_handoff_pending=False,
-            )
-
-            logger.info(
-                ""
-            )
-            logger.warning(
-                external_message
-            )
-            logger.info(
-                "Existing eBay warehouse rows are preserved."
-            )
-            logger.info(
-                "A future structured eBay raw page will be "
-                "processed before this policy gate."
-            )
-
-            emit_source_state(
-                logger,
-                "eBay",
-                "awaiting_handoff",
-                status_file=status_file,
-                status=status,
-            )
+            if ebay_local_auto_handoff_allowed(
+                environment
+            ):
+                run_ebay_local_auto_handoff(
+                    root=root,
+                    environment=environment,
+                    logger=logger,
+                    status_file=status_file,
+                    status=status,
+                    psql_url=psql_url,
+                    ebay_config_path=ebay_config_path,
+                )
+            else:
+                ebay_available = False
+                emit_ebay_external_handoff_idle(
+                    logger=logger,
+                    status_file=status_file,
+                    status=status,
+                )
 
         else:
             for source_name in enabled_ebay_sources(

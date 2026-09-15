@@ -32,8 +32,8 @@ from auction_etl.auth.streamlit_auth import (  # noqa: E402
     render_account_menu,
     require_authenticated_account,
 )
-from auction_etl.services.control_plane_refresh import (  # noqa: E402
-    enqueue_refresh_via_control_plane,
+from auction_etl.services.local_refresh_dispatch import (  # noqa: E402
+    enqueue_refresh_via_local_worker,
 )
 from auction_etl.services.refresh_jobs import (  # noqa: E402
     build_refresh_engine,
@@ -49,15 +49,6 @@ DATABASE_URL = os.environ.get(
         "127.0.0.1:5544/auction_warehouse"
     ),
 )
-CONTROL_PLANE_URL = os.environ.get(
-    "AUCTION_CONTROL_PLANE_URL",
-    "",
-).strip()
-REFRESH_SIGNING_SECRET = os.environ.get(
-    "AUCTION_REFRESH_SIGNING_SECRET",
-    "",
-).strip()
-
 PLANNED_SOURCES = (
     "buyee",
     "ebay",
@@ -1581,26 +1572,9 @@ def start_refresh(
     account_context: AccountContext,
 ) -> dict[str, Any] | None:
     """Queue or reuse one durable refresh for this account."""
-    if not CONTROL_PLANE_URL:
-        st.error(
-            "Marketplace refresh is not configured: "
-            "AUCTION_CONTROL_PLANE_URL is missing.",
-            icon="❌",
-        )
-        return None
-
-    if not REFRESH_SIGNING_SECRET:
-        st.error(
-            "Marketplace refresh is not configured: "
-            "AUCTION_REFRESH_SIGNING_SECRET is missing.",
-            icon="❌",
-        )
-        return None
-
     try:
-        job, created = enqueue_refresh_via_control_plane(
-            base_url=CONTROL_PLANE_URL,
-            signing_secret=REFRESH_SIGNING_SECRET,
+        job, created = enqueue_refresh_via_local_worker(
+            database_url=DATABASE_URL,
             account_context=account_context,
         )
     except Exception as exc:

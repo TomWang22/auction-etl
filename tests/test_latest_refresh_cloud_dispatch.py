@@ -16,14 +16,14 @@ UI = (
 
 
 def test_latest_refresh_uses_signed_vercel_dispatch() -> None:
-    """Latest Refresh sends mutations through the signed Vercel API."""
+    """Latest Refresh queues durable work in the local warehouse."""
     source = UI.read_text(
         encoding="utf-8"
     )
 
-    assert "enqueue_refresh_via_control_plane" in source
-    assert "AUCTION_CONTROL_PLANE_URL" in source
-    assert "AUCTION_REFRESH_SIGNING_SECRET" in source
+    assert "enqueue_refresh_via_local_worker" in source
+    assert "AUCTION_CONTROL_PLANE_URL" not in source
+    assert "AUCTION_REFRESH_SIGNING_SECRET" not in source
 
     assert "create_refresh_job(" not in source
 
