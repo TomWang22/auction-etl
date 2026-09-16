@@ -325,6 +325,69 @@ def test_rejected_current_release_shas_cover_every_predecessor() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "historical_sha",
+    sorted(REJECTED_AS_CURRENT_RELEASE_SHAS),
+)
+def test_retired_sha_is_rejected_before_deployment_checks(
+    historical_sha: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Retired SHAs must fail before Git, Railway, or Vercel queries."""
+
+    def fail_git(
+        root: Path,
+    ) -> GitIdentity:
+        del root
+        raise AssertionError(
+            "git_identity ran"
+        )
+
+    def fail_railway(
+        **kwargs: object,
+    ) -> RailwayIdentity:
+        del kwargs
+        raise AssertionError(
+            "railway_identity ran"
+        )
+
+    def fail_vercel(
+        **kwargs: object,
+    ) -> VercelIdentity:
+        del kwargs
+        raise AssertionError(
+            "vercel_identity ran"
+        )
+
+    monkeypatch.setattr(
+        "scripts.verify_release_alignment.git_identity",
+        fail_git,
+    )
+    monkeypatch.setattr(
+        "scripts.verify_release_alignment.railway_identity",
+        fail_railway,
+    )
+    monkeypatch.setattr(
+        "scripts.verify_release_alignment.vercel_identity",
+        fail_vercel,
+    )
+
+    with pytest.raises(
+        AlignmentError,
+        match="not a current production release",
+    ):
+        main(
+            [
+                "--root",
+                str(tmp_path),
+                "--no-smoke",
+                "--expected-sha",
+                historical_sha,
+            ]
+        )
+
+
 def test_smoke_runs_only_after_alignment_pass(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

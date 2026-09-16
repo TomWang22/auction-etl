@@ -490,12 +490,19 @@ def main(
 
     arguments = parse_arguments(argv)
     root = arguments.root.expanduser().resolve()
+    explicit_sha = arguments.expected_sha.strip()
+    if explicit_sha:
+        if not SHA_PATTERN.fullmatch(explicit_sha):
+            raise AlignmentError(
+                "--expected-sha must be a 40-character commit."
+            )
+        if explicit_sha in REJECTED_AS_CURRENT_RELEASE_SHAS:
+            raise AlignmentError(
+                f"{explicit_sha} is not a current production release."
+            )
 
     git = git_identity(root)
-    expected_sha = (
-        arguments.expected_sha.strip()
-        or git.local_head
-    )
+    expected_sha = explicit_sha or git.local_head
     if not SHA_PATTERN.fullmatch(expected_sha):
         raise AlignmentError(
             "--expected-sha must be a 40-character commit."
