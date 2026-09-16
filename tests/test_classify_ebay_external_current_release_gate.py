@@ -11,6 +11,7 @@ from scripts.classify_ebay_external_current_release_gate import (
     classify_operator_log,
     emit_gate_result,
     parse_arguments,
+    require_exact,
 )
 
 
@@ -23,6 +24,37 @@ STRUCTURED_EBAY_APPLY_RUN=false
 DATABASE_WRITE=false
 REAL_REFRESH_RUN=false
 """
+
+CONTRADICTORY_SENTINEL_PAIRS = (
+    (
+        "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS",
+        "EBAY_EXTERNAL_HANDOFF_OPERATOR=FAIL",
+    ),
+    (
+        "NEW_IDENTITY_COUNT=0",
+        "NEW_IDENTITY_COUNT=2",
+    ),
+    (
+        "READY_FOR_STRUCTURED_EBAY_APPLY=false",
+        "READY_FOR_STRUCTURED_EBAY_APPLY=true",
+    ),
+    (
+        "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=true",
+        "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=false",
+    ),
+    (
+        "STRUCTURED_EBAY_APPLY_RUN=false",
+        "STRUCTURED_EBAY_APPLY_RUN=true",
+    ),
+    (
+        "DATABASE_WRITE=false",
+        "DATABASE_WRITE=true",
+    ),
+    (
+        "REAL_REFRESH_RUN=false",
+        "REAL_REFRESH_RUN=true",
+    ),
+)
 
 APPLIED_LOG = """\
 EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS
@@ -45,6 +77,42 @@ def test_zero_novelty_log_is_successful_noop() -> None:
     assert result.terminal_state == "NOOP_ZERO_NOVELTY"
     assert result.operator_noop is True
     assert result.new_identity_count == 0
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    CONTRADICTORY_SENTINEL_PAIRS,
+)
+@pytest.mark.parametrize(
+    "line_order",
+    ("first_then_second", "second_then_first"),
+)
+def test_require_exact_fails_on_every_contradictory_sentinel_pair(
+    first: str,
+    second: str,
+    line_order: str,
+) -> None:
+    """Both values of a contradictory pair must fail require_exact."""
+
+    if line_order == "first_then_second":
+        text = f"{first}\n{second}\n"
+    else:
+        text = f"{second}\n{first}\n"
+
+    with pytest.raises(
+        ClassificationError,
+    ):
+        require_exact(
+            text,
+            first,
+        )
+    with pytest.raises(
+        ClassificationError,
+    ):
+        require_exact(
+            text,
+            second,
+        )
 
 
 def test_applied_log_is_successful_write() -> None:

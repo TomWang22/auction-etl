@@ -10,7 +10,7 @@ import pytest
 from scripts.verify_release_alignment import (
     AlignmentError,
     GitIdentity,
-    PROVEN_PRODUCTION_BASELINE_SHA,
+    HISTORICAL_PRODUCTION_BASELINE_SHA,
     RailwayIdentity,
     SmokeError,
     VercelIdentity,
@@ -123,15 +123,16 @@ def test_vercel_github_sha_rejects_missing_metadata() -> None:
         vercel_github_sha({"url": "example.vercel.app", "meta": {}})
 
 
-def test_proven_production_baseline_is_pagination_release() -> None:
-    """Future gates compare GitHub, Railway, Vercel, and worktree to 730f283."""
+def test_historical_baseline_is_not_current_release() -> None:
+    """730f283 is historical metadata, not the current production SHA."""
 
-    assert PROVEN_PRODUCTION_BASELINE_SHA == (
+    assert HISTORICAL_PRODUCTION_BASELINE_SHA == (
         "730f283356d2b1d326ec79fbadf2c2f7e73e8c4c"
     )
     arguments = parse_arguments([])
 
-    assert arguments.expected_sha == PROVEN_PRODUCTION_BASELINE_SHA
+    assert arguments.expected_sha == ""
+    assert arguments.expected_sha != HISTORICAL_PRODUCTION_BASELINE_SHA
     assert arguments.smoke is True
 
 
@@ -141,7 +142,7 @@ def test_no_smoke_disables_production_pytest_gate() -> None:
     arguments = parse_arguments(["--no-smoke"])
 
     assert arguments.smoke is False
-    assert arguments.expected_sha == PROVEN_PRODUCTION_BASELINE_SHA
+    assert arguments.expected_sha == ""
 
 
 def test_production_smoke_command_covers_pagination_and_novelty() -> None:
@@ -166,14 +167,20 @@ def test_production_smoke_command_covers_pagination_and_novelty() -> None:
         "tests/test_existing_ebay_identities_no_new_warehouse_rows.py"
         in joined
     )
+    assert (
+        "tests/test_classify_ebay_external_current_release_gate.py"
+        in joined
+    )
 
 
 def stub_aligned_release(
     monkeypatch: pytest.MonkeyPatch,
 ) -> str:
-    """Stub GitHub, Railway, and Vercel at the proven production baseline."""
+    """Stub GitHub, Railway, and Vercel at the current proven production release."""
 
-    expected = PROVEN_PRODUCTION_BASELINE_SHA
+    expected = (
+        "6ef4c59f4144f115515a021892229890376af3c2"
+    )
     monkeypatch.setattr(
         "scripts.verify_release_alignment.git_identity",
         lambda root: GitIdentity(
@@ -210,7 +217,7 @@ def test_smoke_runs_only_after_alignment_pass(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    """The reusable gate is alignment, then production smoke, around 730f283."""
+    """The reusable gate is alignment, then production smoke, around HEAD."""
 
     expected = stub_aligned_release(
         monkeypatch
@@ -232,7 +239,16 @@ def test_smoke_runs_only_after_alignment_pass(
     output = capsys.readouterr().out
 
     assert smoke_roots == [tmp_path.resolve()]
-    assert f"PROVEN_PRODUCTION_BASELINE_SHA={expected}" in output
+    assert "PROVEN_PRODUCTION_BASELINE_SHA=" not in output
+    assert (
+        "HISTORICAL_PRODUCTION_BASELINE_SHA="
+        f"{HISTORICAL_PRODUCTION_BASELINE_SHA}"
+    ) in output
+    assert (
+        "CURRENT_PROVEN_PRODUCTION_RELEASE_SHA="
+        f"{expected}"
+    ) in output
+    assert f"RELEASE_HEAD={expected}" in output
     assert "RELEASE_ALIGNMENT=PASS" in output
     assert "PRODUCTION_SMOKE=PASS" in output
     assert output.index("RELEASE_ALIGNMENT=PASS") < output.index(

@@ -76,6 +76,41 @@ def sentinel_values(
     ]
 
 
+def require_exact(
+    text: str,
+    expected: str,
+) -> None:
+    """Require one KEY=value line with no contradictory values for KEY."""
+
+    if "=" not in expected:
+        raise ClassificationError(
+            "operator log sentinel is not KEY=value: "
+            f"{expected}"
+        )
+    key, value = expected.split(
+        "=",
+        1,
+    )
+    values = sentinel_values(
+        text,
+        key,
+    )
+    if not values:
+        raise ClassificationError(
+            "operator log missing required sentinel: "
+            f"{expected}"
+        )
+    unique = set(values)
+    if unique != {value}:
+        found = ", ".join(
+            sorted(unique)
+        )
+        raise ClassificationError(
+            "operator log missing required sentinel: "
+            f"{expected} (found {found})"
+        )
+
+
 def require_unique_sentinel(
     text: str,
     key: str,
@@ -83,25 +118,10 @@ def require_unique_sentinel(
 ) -> None:
     """Require KEY to appear and equal expected, with no conflicting values."""
 
-    values = sentinel_values(
+    require_exact(
         text,
-        key,
+        f"{key}={expected}",
     )
-    expected_line = f"{key}={expected}"
-    if not values:
-        raise ClassificationError(
-            "operator log missing required sentinel: "
-            f"{expected_line}"
-        )
-    unique = set(values)
-    if unique != {expected}:
-        found = ", ".join(
-            sorted(unique)
-        )
-        raise ClassificationError(
-            "operator log missing required sentinel: "
-            f"{expected_line} (found {found})"
-        )
 
 
 def classify_operator_log(

@@ -16,7 +16,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVEN_PRODUCTION_BASELINE_SHA = (
+HISTORICAL_PRODUCTION_BASELINE_SHA = (
     "730f283356d2b1d326ec79fbadf2c2f7e73e8c4c"
 )
 DEFAULT_RAILWAY_SERVICE_ID = (
@@ -31,6 +31,7 @@ PRODUCTION_SMOKE_TESTS = (
     "tests/test_run_ebay_external_handoff.py",
     "tests/test_acquire_ebay_structured.py",
     "tests/test_existing_ebay_identities_no_new_warehouse_rows.py",
+    "tests/test_classify_ebay_external_current_release_gate.py",
 )
 
 
@@ -81,8 +82,8 @@ def parse_arguments(
     parser = argparse.ArgumentParser(
         description=(
             "Prove GitHub, Railway, Vercel, and worktree alignment "
-            "against the proven production baseline, then run the "
-            "production smoke gate."
+            "against the current proven production release, then run "
+            "the production smoke gate."
         )
     )
     parser.add_argument(
@@ -92,10 +93,10 @@ def parse_arguments(
     )
     parser.add_argument(
         "--expected-sha",
-        default=PROVEN_PRODUCTION_BASELINE_SHA,
+        default="",
         help=(
-            "Require this 40-character commit. Defaults to proven "
-            f"production baseline {PROVEN_PRODUCTION_BASELINE_SHA}."
+            "Require this 40-character commit. Defaults to local HEAD "
+            "so the current commit is the enforcement SHA."
         ),
     )
     parser.set_defaults(smoke=True)
@@ -485,7 +486,7 @@ def main(
     git = git_identity(root)
     expected_sha = (
         arguments.expected_sha.strip()
-        or PROVEN_PRODUCTION_BASELINE_SHA
+        or git.local_head
     )
     if not SHA_PATTERN.fullmatch(expected_sha):
         raise AlignmentError(
@@ -493,8 +494,12 @@ def main(
         )
 
     emit(
-        "PROVEN_PRODUCTION_BASELINE_SHA",
-        PROVEN_PRODUCTION_BASELINE_SHA,
+        "HISTORICAL_PRODUCTION_BASELINE_SHA",
+        HISTORICAL_PRODUCTION_BASELINE_SHA,
+    )
+    emit(
+        "CURRENT_PROVEN_PRODUCTION_RELEASE_SHA",
+        expected_sha,
     )
     emit("RELEASE_HEAD", expected_sha)
     emit("LOCAL_HEAD", git.local_head)
