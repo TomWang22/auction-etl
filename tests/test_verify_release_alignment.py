@@ -175,6 +175,10 @@ def test_production_smoke_command_covers_pagination_and_novelty() -> None:
         "tests/test_classify_ebay_external_current_release_gate.py"
         in joined
     )
+    assert (
+        "tests/test_pre_ebay_acquisition_alignment_gate.py"
+        in joined
+    )
 
 
 def stub_aligned_release(
