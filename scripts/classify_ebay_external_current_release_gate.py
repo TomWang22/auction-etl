@@ -124,6 +124,33 @@ def require_unique_sentinel(
     )
 
 
+def require_last_sentinel(
+    text: str,
+    key: str,
+    expected: str,
+) -> None:
+    """Require the last KEY= value to equal expected; earlier values may differ."""
+
+    values = sentinel_values(
+        text,
+        key,
+    )
+    expected_line = f"{key}={expected}"
+    if not values:
+        raise ClassificationError(
+            "operator log missing required sentinel: "
+            f"{expected_line}"
+        )
+    if values[-1] != expected:
+        found = ", ".join(
+            values
+        )
+        raise ClassificationError(
+            "operator log missing required sentinel: "
+            f"{expected_line} (found {found})"
+        )
+
+
 def classify_operator_log(
     text: str,
 ) -> GateClassification:
@@ -159,17 +186,17 @@ def classify_operator_log(
     new_identity_count = int(raw_count)
 
     if new_identity_count > 0:
-        require_unique_sentinel(
+        require_last_sentinel(
             text,
             "STRUCTURED_EBAY_APPLY_RUN",
             "true",
         )
-        require_unique_sentinel(
+        require_last_sentinel(
             text,
             "DATABASE_WRITE",
             "true",
         )
-        require_unique_sentinel(
+        require_last_sentinel(
             text,
             "REAL_REFRESH_RUN",
             "true",

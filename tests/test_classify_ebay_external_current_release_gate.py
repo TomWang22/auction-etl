@@ -127,6 +127,29 @@ def test_applied_log_is_successful_write() -> None:
     assert result.new_identity_count == 2
 
 
+def test_applied_log_accepts_dry_run_write_false_then_apply_true() -> None:
+    """Dry-run DATABASE_WRITE=false must not mask a later successful apply."""
+
+    result = classify_operator_log(
+        "\n".join(
+            [
+                "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS",
+                "NEW_IDENTITY_COUNT=2",
+                "READY_FOR_STRUCTURED_EBAY_APPLY=true",
+                "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=false",
+                "STRUCTURED_EBAY_APPLY_RUN=true",
+                "DATABASE_WRITE=false",
+                "DATABASE_WRITE=true",
+                "REAL_REFRESH_RUN=true",
+            ]
+        )
+    )
+
+    assert result.terminal_state == "APPLIED"
+    assert result.operator_noop is False
+    assert result.new_identity_count == 2
+
+
 def test_apply_false_without_zero_novelty_safety_set_fails() -> None:
     """STRUCTURED_EBAY_APPLY_RUN=false alone is not a successful no-op."""
 
