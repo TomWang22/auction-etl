@@ -19,6 +19,14 @@ ROOT = Path(__file__).resolve().parents[1]
 HISTORICAL_PRODUCTION_BASELINE_SHA = (
     "730f283356d2b1d326ec79fbadf2c2f7e73e8c4c"
 )
+REJECTED_AS_CURRENT_RELEASE_SHAS = frozenset(
+    {
+        HISTORICAL_PRODUCTION_BASELINE_SHA,
+        "6ef4c59f4144f115515a021892229890376af3c2",
+        "7818f56d7b690fe1d187d61d44b6de3643ae6825",
+        "0912af08c4ce0de0ff6290b28bbe8d7bddd7576d",
+    }
+)
 DEFAULT_RAILWAY_SERVICE_ID = (
     "b5346622-7343-4862-bede-edc1d53f1409"
 )
@@ -491,6 +499,10 @@ def main(
     if not SHA_PATTERN.fullmatch(expected_sha):
         raise AlignmentError(
             "--expected-sha must be a 40-character commit."
+        )
+    if expected_sha in REJECTED_AS_CURRENT_RELEASE_SHAS:
+        raise AlignmentError(
+            f"{expected_sha} is not a current production release."
         )
 
     emit(

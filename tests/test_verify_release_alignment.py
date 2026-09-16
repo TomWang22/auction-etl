@@ -11,6 +11,7 @@ from scripts.verify_release_alignment import (
     AlignmentError,
     GitIdentity,
     HISTORICAL_PRODUCTION_BASELINE_SHA,
+    REJECTED_AS_CURRENT_RELEASE_SHAS,
     RailwayIdentity,
     SmokeError,
     VercelIdentity,
@@ -178,10 +179,11 @@ def test_production_smoke_command_covers_pagination_and_novelty() -> None:
 
 def stub_aligned_release(
     monkeypatch: pytest.MonkeyPatch,
+    sha: str | None = None,
 ) -> str:
     """Stub GitHub, Railway, and Vercel at one non-predecessor aligned SHA."""
 
-    expected = (
+    expected = sha or (
         "0123456789abcdef0123456789abcdef01234567"
     )
     monkeypatch.setattr(
@@ -228,18 +230,99 @@ def test_stub_aligned_release_does_not_enforce_predecessor_current_sha(
     sha = stub_aligned_release(
         monkeypatch
     )
-    verifier_source = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "verify_release_alignment.py"
-    ).read_text(
-        encoding="utf-8",
-    )
 
     assert sha != PREDECESSOR_CURRENT_SHA
     assert sha != HISTORICAL_PRODUCTION_BASELINE_SHA
-    assert PREDECESSOR_CURRENT_SHA not in verifier_source
+    assert PREDECESSOR_CURRENT_SHA in REJECTED_AS_CURRENT_RELEASE_SHAS
     assert parse_arguments([]).expected_sha != PREDECESSOR_CURRENT_SHA
+
+
+@pytest.mark.parametrize(
+    "historical_sha",
+    (
+        "730f283356d2b1d326ec79fbadf2c2f7e73e8c4c",
+        "6ef4c59f4144f115515a021892229890376af3c2",
+        "7818f56d7b690fe1d187d61d44b6de3643ae6825",
+        "0912af08c4ce0de0ff6290b28bbe8d7bddd7576d",
+    ),
+)
+def test_rejects_historical_sha_when_head_is_current(
+    historical_sha: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A current HEAD cannot accept a predecessor as the current release."""
+
+    stub_aligned_release(
+        monkeypatch
+    )
+
+    with pytest.raises(
+        AlignmentError,
+        match="not a current production release",
+    ):
+        main(
+            [
+                "--root",
+                str(tmp_path),
+                "--no-smoke",
+                "--expected-sha",
+                historical_sha,
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "historical_sha",
+    (
+        "730f283356d2b1d326ec79fbadf2c2f7e73e8c4c",
+        "6ef4c59f4144f115515a021892229890376af3c2",
+        "7818f56d7b690fe1d187d61d44b6de3643ae6825",
+        "0912af08c4ce0de0ff6290b28bbe8d7bddd7576d",
+    ),
+)
+def test_aligned_historical_sha_cannot_pass_as_current(
+    historical_sha: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Even a fully aligned predecessor SHA is not current production."""
+
+    stub_aligned_release(
+        monkeypatch,
+        sha=historical_sha,
+    )
+
+    with pytest.raises(
+        AlignmentError,
+        match="not a current production release",
+    ):
+        main(
+            [
+                "--root",
+                str(tmp_path),
+                "--no-smoke",
+                "--expected-sha",
+                historical_sha,
+            ]
+        )
+
+
+def test_rejected_current_release_shas_cover_every_predecessor() -> None:
+    """The verifier must reject every retired current-release SHA."""
+
+    assert REJECTED_AS_CURRENT_RELEASE_SHAS == frozenset(
+        {
+            "730f283356d2b1d326ec79fbadf2c2f7e73e8c4c",
+            "6ef4c59f4144f115515a021892229890376af3c2",
+            "7818f56d7b690fe1d187d61d44b6de3643ae6825",
+            "0912af08c4ce0de0ff6290b28bbe8d7bddd7576d",
+        }
+    )
+    assert (
+        "0123456789abcdef0123456789abcdef01234567"
+        not in REJECTED_AS_CURRENT_RELEASE_SHAS
+    )
 
 
 def test_smoke_runs_only_after_alignment_pass(
