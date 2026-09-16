@@ -133,6 +133,9 @@ def test_historical_baseline_is_not_current_release() -> None:
 
     assert arguments.expected_sha == ""
     assert arguments.expected_sha != HISTORICAL_PRODUCTION_BASELINE_SHA
+    assert "6ef4c59f4144f115515a021892229890376af3c2" not in (
+        arguments.expected_sha
+    )
     assert arguments.smoke is True
 
 
@@ -176,10 +179,10 @@ def test_production_smoke_command_covers_pagination_and_novelty() -> None:
 def stub_aligned_release(
     monkeypatch: pytest.MonkeyPatch,
 ) -> str:
-    """Stub GitHub, Railway, and Vercel at the current proven production release."""
+    """Stub GitHub, Railway, and Vercel at one non-predecessor aligned SHA."""
 
     expected = (
-        "6ef4c59f4144f115515a021892229890376af3c2"
+        "0123456789abcdef0123456789abcdef01234567"
     )
     monkeypatch.setattr(
         "scripts.verify_release_alignment.git_identity",
@@ -210,6 +213,33 @@ def stub_aligned_release(
         ),
     )
     return expected
+
+
+PREDECESSOR_CURRENT_SHA = (
+    "6ef4c59f4144f115515a021892229890376af3c2"
+)
+
+
+def test_stub_aligned_release_does_not_enforce_predecessor_current_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unit-test alignment must not treat 6ef4c59 as current production."""
+
+    sha = stub_aligned_release(
+        monkeypatch
+    )
+    verifier_source = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "verify_release_alignment.py"
+    ).read_text(
+        encoding="utf-8",
+    )
+
+    assert sha != PREDECESSOR_CURRENT_SHA
+    assert sha != HISTORICAL_PRODUCTION_BASELINE_SHA
+    assert PREDECESSOR_CURRENT_SHA not in verifier_source
+    assert parse_arguments([]).expected_sha != PREDECESSOR_CURRENT_SHA
 
 
 def test_smoke_runs_only_after_alignment_pass(
