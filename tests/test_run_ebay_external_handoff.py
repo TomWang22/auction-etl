@@ -24,6 +24,7 @@ from scripts.run_ebay_external_handoff import (
     parse_import_plan_summary,
     parse_raw_page_id,
     reject_railway_operator_environment,
+    run_child,
     run_operator,
     validate_artifact,
     validate_write_request,
@@ -1483,6 +1484,8 @@ def test_operator_apply_uses_exact_raw_page_and_emits_contract(
     )
     assert "DATABASE_WRITE=true" in output
     assert "REAL_REFRESH_RUN=true" in output
+    assert output.count("DATABASE_WRITE=") == 1
+    assert output.count("REAL_REFRESH_RUN=") == 1
     assert "NEW_IDENTITY_COUNT=2" in output
     assert "READY_FOR_STRUCTURED_EBAY_APPLY=true" in output
     assert (
@@ -1515,3 +1518,43 @@ def test_operator_source_never_retries_or_enables_headless() -> None:
     novelty = source.index("new_identity_count(")
     backup = source.index("backup_database(")
     assert novelty < backup
+
+
+def test_run_child_hides_nested_refresh_write_sentinels(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Operator logs keep one terminal DATABASE_WRITE and REAL_REFRESH_RUN."""
+
+    class Result:
+        stdout = (
+            "BUYEE_PUBLIC_SKIPPED=true\n"
+            "BUYEE_PUBLIC_SOURCES=PASS\n"
+            "DATABASE_WRITE=false\n"
+            "REAL_REFRESH_RUN=false\n"
+            "Using 1 pending external eBay raw page(s); "
+            "browser crawl skipped.\n"
+        )
+        returncode = 0
+
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.subprocess.run",
+        lambda *args, **kwargs: Result(),
+    )
+
+    returned = run_child(
+        label="EXACT-ID REAL REFRESH",
+        command=["true"],
+        environment={},
+    )
+    printed = capsys.readouterr().out
+
+    assert "BUYEE_PUBLIC_SKIPPED=true" in printed
+    assert "DATABASE_WRITE=" not in printed
+    assert "REAL_REFRESH_RUN=" not in printed
+    assert "DATABASE_WRITE=" not in returned
+    assert "REAL_REFRESH_RUN=" not in returned
+    assert BROWSER_SKIP_SENTINEL in returned
+    assert "public_child_output(" in inspect.getsource(
+        run_child
+    )

@@ -77,6 +77,12 @@ BROWSER_SKIP_SENTINEL = (
 EBAY_BROWSER_COMMAND_MARKER = (
     "scripts/crawl_ebay_sources.py"
 )
+OPERATOR_TERMINAL_SENTINEL_KEYS = frozenset(
+    {
+        "DATABASE_WRITE",
+        "REAL_REFRESH_RUN",
+    }
+)
 EBAY_BROWSER_PROFILE_MARKER = (
     "profile=ebay-public"
 )
@@ -580,6 +586,31 @@ def build_refresh_command(
     ]
 
 
+def public_child_output(
+    text: str,
+) -> str:
+    """Drop nested copies of operator-owned terminal sentinels."""
+
+    kept: list[str] = []
+    for line in text.splitlines(
+        keepends=True
+    ):
+        stripped = line.strip()
+        if "=" in stripped:
+            key, _value = stripped.split(
+                "=",
+                1,
+            )
+            if key in OPERATOR_TERMINAL_SENTINEL_KEYS:
+                continue
+        kept.append(
+            line
+        )
+    return "".join(
+        kept
+    )
+
+
 def run_child(
     *,
     label: str,
@@ -606,7 +637,7 @@ def run_child(
         check=False,
     )
 
-    output = (
+    output = public_child_output(
         result.stdout
         or ""
     )
