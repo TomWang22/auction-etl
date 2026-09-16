@@ -62,36 +62,46 @@ def parse_arguments(
     return arguments
 
 
-def require_exact(
-    text: str,
-    expected: str,
-) -> None:
-    """Require one exact sentinel line."""
-
-    for line in text.splitlines():
-        if line == expected:
-            return
-    raise ClassificationError(
-        "operator log missing required sentinel: "
-        f"{expected}"
-    )
-
-
-def value_of(
+def sentinel_values(
     text: str,
     key: str,
-) -> str:
-    """Return the last value for one KEY= sentinel."""
+) -> list[str]:
+    """Return every value for one KEY= sentinel, in log order."""
 
     prefix = f"{key}="
-    matches = [
+    return [
         line[len(prefix):]
         for line in text.splitlines()
         if line.startswith(prefix)
     ]
-    if not matches:
-        return ""
-    return matches[-1]
+
+
+def require_unique_sentinel(
+    text: str,
+    key: str,
+    expected: str,
+) -> None:
+    """Require KEY to appear and equal expected, with no conflicting values."""
+
+    values = sentinel_values(
+        text,
+        key,
+    )
+    expected_line = f"{key}={expected}"
+    if not values:
+        raise ClassificationError(
+            "operator log missing required sentinel: "
+            f"{expected_line}"
+        )
+    unique = set(values)
+    if unique != {expected}:
+        found = ", ".join(
+            sorted(unique)
+        )
+        raise ClassificationError(
+            "operator log missing required sentinel: "
+            f"{expected_line} (found {found})"
+        )
 
 
 def classify_operator_log(
@@ -104,15 +114,23 @@ def classify_operator_log(
             "operator log is missing or empty."
         )
 
-    require_exact(
+    require_unique_sentinel(
         text,
-        "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS",
+        "EBAY_EXTERNAL_HANDOFF_OPERATOR",
+        "PASS",
     )
 
-    raw_count = value_of(
-        text,
-        "NEW_IDENTITY_COUNT",
+    count_values = set(
+        sentinel_values(
+            text,
+            "NEW_IDENTITY_COUNT",
+        )
     )
+    if len(count_values) != 1:
+        raise ClassificationError(
+            "NEW_IDENTITY_COUNT is missing or invalid."
+        )
+    raw_count = next(iter(count_values))
     if not raw_count.isdigit():
         raise ClassificationError(
             "NEW_IDENTITY_COUNT is missing or invalid."
@@ -121,17 +139,30 @@ def classify_operator_log(
     new_identity_count = int(raw_count)
 
     if new_identity_count > 0:
-        require_exact(
+        require_unique_sentinel(
             text,
-            "STRUCTURED_EBAY_APPLY_RUN=true",
+            "STRUCTURED_EBAY_APPLY_RUN",
+            "true",
         )
-        require_exact(
+        require_unique_sentinel(
             text,
-            "DATABASE_WRITE=true",
+            "DATABASE_WRITE",
+            "true",
         )
-        require_exact(
+        require_unique_sentinel(
             text,
-            "REAL_REFRESH_RUN=true",
+            "REAL_REFRESH_RUN",
+            "true",
+        )
+        require_unique_sentinel(
+            text,
+            "READY_FOR_STRUCTURED_EBAY_APPLY",
+            "true",
+        )
+        require_unique_sentinel(
+            text,
+            "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES",
+            "false",
         )
         return GateClassification(
             terminal_state="APPLIED",
@@ -139,29 +170,35 @@ def classify_operator_log(
             new_identity_count=new_identity_count,
         )
 
-    require_exact(
+    require_unique_sentinel(
         text,
-        "NEW_IDENTITY_COUNT=0",
+        "NEW_IDENTITY_COUNT",
+        "0",
     )
-    require_exact(
+    require_unique_sentinel(
         text,
-        "READY_FOR_STRUCTURED_EBAY_APPLY=false",
+        "READY_FOR_STRUCTURED_EBAY_APPLY",
+        "false",
     )
-    require_exact(
+    require_unique_sentinel(
         text,
-        "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=true",
+        "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES",
+        "true",
     )
-    require_exact(
+    require_unique_sentinel(
         text,
-        "STRUCTURED_EBAY_APPLY_RUN=false",
+        "STRUCTURED_EBAY_APPLY_RUN",
+        "false",
     )
-    require_exact(
+    require_unique_sentinel(
         text,
-        "DATABASE_WRITE=false",
+        "DATABASE_WRITE",
+        "false",
     )
-    require_exact(
+    require_unique_sentinel(
         text,
-        "REAL_REFRESH_RUN=false",
+        "REAL_REFRESH_RUN",
+        "false",
     )
     return GateClassification(
         terminal_state="NOOP_ZERO_NOVELTY",

@@ -122,6 +122,58 @@ def test_positive_novelty_without_apply_fails() -> None:
         )
 
 
+def test_conflicting_apply_run_cannot_be_noop() -> None:
+    """NOOP_ZERO_NOVELTY must not mask a log that also ran apply."""
+
+    with pytest.raises(
+        ClassificationError,
+        match="STRUCTURED_EBAY_APPLY_RUN",
+    ):
+        classify_operator_log(
+            NOOP_LOG
+            + "STRUCTURED_EBAY_APPLY_RUN=true\n"
+        )
+
+
+def test_conflicting_database_write_cannot_be_noop() -> None:
+    """A write sentinel must not hide behind a later DATABASE_WRITE=false."""
+
+    with pytest.raises(
+        ClassificationError,
+        match="DATABASE_WRITE",
+    ):
+        classify_operator_log(
+            NOOP_LOG
+            + "DATABASE_WRITE=true\n"
+        )
+
+
+def test_operator_fail_after_pass_is_not_success() -> None:
+    """A later operator FAIL is not a current-release PASS."""
+
+    with pytest.raises(
+        ClassificationError,
+        match="EBAY_EXTERNAL_HANDOFF_OPERATOR",
+    ):
+        classify_operator_log(
+            NOOP_LOG
+            + "EBAY_EXTERNAL_HANDOFF_OPERATOR=FAIL\n"
+        )
+
+
+def test_applied_write_false_conflict_fails() -> None:
+    """APPLIED cannot coexist with a no-write sentinel for the same key."""
+
+    with pytest.raises(
+        ClassificationError,
+        match="DATABASE_WRITE",
+    ):
+        classify_operator_log(
+            APPLIED_LOG
+            + "DATABASE_WRITE=false\n"
+        )
+
+
 def test_missing_operator_pass_fails() -> None:
     """Classification requires the operator's own PASS sentinel."""
 
