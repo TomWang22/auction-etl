@@ -150,6 +150,46 @@ def test_applied_log_accepts_dry_run_write_false_then_apply_true() -> None:
     assert result.new_identity_count == 2
 
 
+def test_write_false_true_false_is_neither_applied_nor_noop() -> None:
+    """A retracted DATABASE_WRITE cannot resolve to APPLIED or NOOP."""
+
+    sandwich = (
+        "DATABASE_WRITE=false\n"
+        "DATABASE_WRITE=true\n"
+        "DATABASE_WRITE=false\n"
+    )
+    applied_shaped = "\n".join(
+        [
+            "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS",
+            "NEW_IDENTITY_COUNT=2",
+            "READY_FOR_STRUCTURED_EBAY_APPLY=true",
+            "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=false",
+            "STRUCTURED_EBAY_APPLY_RUN=true",
+            sandwich.strip(),
+            "REAL_REFRESH_RUN=true",
+        ]
+    )
+    noop_shaped = NOOP_LOG.replace(
+        "DATABASE_WRITE=false\n",
+        sandwich,
+    )
+
+    with pytest.raises(
+        ClassificationError,
+        match="DATABASE_WRITE",
+    ):
+        classify_operator_log(
+            applied_shaped
+        )
+    with pytest.raises(
+        ClassificationError,
+        match="DATABASE_WRITE",
+    ):
+        classify_operator_log(
+            noop_shaped
+        )
+
+
 def test_apply_false_without_zero_novelty_safety_set_fails() -> None:
     """STRUCTURED_EBAY_APPLY_RUN=false alone is not a successful no-op."""
 
