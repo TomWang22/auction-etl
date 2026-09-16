@@ -19,6 +19,7 @@ from scripts.run_ebay_external_handoff import (
     artifact_listing_ids,
     build_acquisition_command,
     build_refresh_command,
+    emit_operator_contract,
     load_external_source,
     new_identity_count,
     parse_import_plan_summary,
@@ -848,8 +849,10 @@ def test_operator_dry_run_stops_before_database_write(
     assert "STRUCTURED_EBAY_APPLY_RUN=false" in output
     assert "DATABASE_WRITE=false" in output
     assert "REAL_REFRESH_RUN=false" in output
-    assert "EBAY_BROWSER_ACQUISITION_EXECUTED=false" in output
+    assert "EBAY_EXTERNAL_HEADED_ACQUISITION_EXECUTED=true" in output
+    assert "EBAY_INTERNAL_BROWSER_FALLBACK_EXECUTED=false" in output
     assert "EBAY_BROWSER_FALLBACK_PROHIBITED=true" in output
+    assert "EBAY_BROWSER_ACQUISITION_EXECUTED=" not in output
 
 
 def test_operator_skips_apply_when_artifact_has_no_new_identities(
@@ -1475,8 +1478,10 @@ def test_operator_apply_uses_exact_raw_page_and_emits_contract(
     assert "STRUCTURED_EBAY_APPLY_RUN=true" in output
     assert "STRUCTURED_EBAY_RAW_PAGE_ID=74" in output
     assert "EXACT_STRUCTURED_RAW_PAGE_PARSED=true" in output
-    assert "EBAY_BROWSER_ACQUISITION_EXECUTED=false" in output
+    assert "EBAY_EXTERNAL_HEADED_ACQUISITION_EXECUTED=true" in output
+    assert "EBAY_INTERNAL_BROWSER_FALLBACK_EXECUTED=false" in output
     assert "EBAY_BROWSER_FALLBACK_PROHIBITED=true" in output
+    assert "EBAY_BROWSER_ACQUISITION_EXECUTED=" not in output
     assert "REFRESH_EBAY_MARKETPLACE_STATE=done" in output
     assert (
         "REFRESH_EBAY_RUNTIME_SEMANTICS=EBAY_SOURCE_AVAILABLE"
@@ -1518,6 +1523,19 @@ def test_operator_source_never_retries_or_enables_headless() -> None:
     novelty = source.index("new_identity_count(")
     backup = source.index("backup_database(")
     assert novelty < backup
+
+
+def test_operator_contract_separates_headed_acquisition_from_fallback() -> None:
+    """Headed external acquisition must not share a name with crawler fallback."""
+
+    source = inspect.getsource(
+        emit_operator_contract
+    )
+
+    assert "EBAY_EXTERNAL_HEADED_ACQUISITION_EXECUTED=true" in source
+    assert "EBAY_INTERNAL_BROWSER_FALLBACK_EXECUTED=false" in source
+    assert "EBAY_BROWSER_FALLBACK_PROHIBITED=true" in source
+    assert "EBAY_BROWSER_ACQUISITION_EXECUTED" not in source
 
 
 def test_run_child_hides_nested_refresh_write_sentinels(

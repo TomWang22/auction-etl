@@ -1172,7 +1172,10 @@ def emit_operator_contract(
         )
 
     print(
-        "EBAY_BROWSER_ACQUISITION_EXECUTED=false"
+        "EBAY_EXTERNAL_HEADED_ACQUISITION_EXECUTED=true"
+    )
+    print(
+        "EBAY_INTERNAL_BROWSER_FALLBACK_EXECUTED=false"
     )
     print(
         "EBAY_BROWSER_FALLBACK_PROHIBITED=true"
