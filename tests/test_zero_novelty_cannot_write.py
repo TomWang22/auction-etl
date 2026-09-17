@@ -131,6 +131,13 @@ def test_zero_new_identity_count_cannot_reach_backup_write_or_refresh(
     assert "STRUCTURED_EBAY_APPLY_RUN=false" in output
     assert "DATABASE_WRITE=false" in output
     assert "REAL_REFRESH_RUN=false" in output
+    assert "NEW_EBAY_ROWS_INSERTED=0" in output
+    assert "NEW_EBAY_LISTING_IDS=" in output
+    assert "NEW_EBAY_LISTING_ID=" not in output.replace(
+        "NEW_EBAY_LISTING_IDS=",
+        "",
+    )
+    assert "POST_RUN_DB_VERIFICATION=PASS" in output
     assert "APPLY EXACT STRUCTURED ARTIFACT" not in output
     assert "EXACT-ID REAL REFRESH" not in output
     assert "Backup:" not in output

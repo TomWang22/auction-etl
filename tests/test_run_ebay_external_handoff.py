@@ -952,6 +952,8 @@ def test_operator_skips_apply_when_artifact_has_no_new_identities(
     assert "STRUCTURED_EBAY_APPLY_RUN=false" in output
     assert "DATABASE_WRITE=false" in output
     assert "REAL_REFRESH_RUN=false" in output
+    assert "NEW_EBAY_ROWS_INSERTED=0" in output
+    assert "POST_RUN_DB_VERIFICATION=PASS" in output
     assert "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS" in output
 
 
@@ -1088,6 +1090,10 @@ def test_second_identical_headed_apply_is_zero_novelty_and_does_not_write(
     first_output = capsys.readouterr().out
 
     assert "NEW_IDENTITY_COUNT=2" in first_output
+    assert "NEW_EBAY_ROWS_INSERTED=2" in first_output
+    assert "NEW_EBAY_LISTING_ID=177308895133" in first_output
+    assert "NEW_EBAY_LISTING_ID=297503882046" in first_output
+    assert "POST_RUN_DB_VERIFICATION=PASS" in first_output
     assert "DATABASE_WRITE=true" in first_output
     assert warehouse_ids == {
         "177308895133",
@@ -1123,6 +1129,8 @@ def test_second_identical_headed_apply_is_zero_novelty_and_does_not_write(
     ]
     assert backup_calls == 1
     assert "NEW_IDENTITY_COUNT=0" in second_output
+    assert "NEW_EBAY_ROWS_INSERTED=0" in second_output
+    assert "POST_RUN_DB_VERIFICATION=PASS" in second_output
     assert "READY_FOR_STRUCTURED_EBAY_APPLY=false" in second_output
     assert (
         "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=true"
@@ -1387,6 +1395,7 @@ def test_operator_apply_uses_exact_raw_page_and_emits_contract(
         ),
     )
     refresh_commands: list[list[str]] = []
+    warehouse_ids: set[str] = set()
 
     def fake_run_child(
         *,
@@ -1412,6 +1421,12 @@ def test_operator_apply_uses_exact_raw_page_and_emits_contract(
             )
 
         if label == "APPLY EXACT STRUCTURED ARTIFACT":
+            warehouse_ids.update(
+                {
+                    "123456789012",
+                    "123456789013",
+                }
+            )
             return (
                 "✓ Raw Page       : 74\n"
                 "IDEMPOTENT_REUSE=false\n"
@@ -1438,7 +1453,7 @@ def test_operator_apply_uses_exact_raw_page_and_emits_contract(
     )
     monkeypatch.setattr(
         "scripts.run_ebay_external_handoff.load_ebay_warehouse_identities",
-        lambda **kwargs: frozenset(),
+        lambda **kwargs: frozenset(warehouse_ids),
     )
     monkeypatch.setattr(
         "scripts.run_ebay_external_handoff.database_snapshot",
@@ -1492,11 +1507,207 @@ def test_operator_apply_uses_exact_raw_page_and_emits_contract(
     assert output.count("DATABASE_WRITE=") == 1
     assert output.count("REAL_REFRESH_RUN=") == 1
     assert "NEW_IDENTITY_COUNT=2" in output
+    assert "NEW_EBAY_ROWS_INSERTED=2" in output
+    assert "NEW_EBAY_LISTING_IDS=123456789012,123456789013" in output
+    assert "NEW_EBAY_LISTING_ID=123456789012" in output
+    assert "NEW_EBAY_LISTING_ID=123456789013" in output
+    assert "POST_RUN_DB_VERIFICATION=PASS" in output
     assert "READY_FOR_STRUCTURED_EBAY_APPLY=true" in output
     assert (
         "STRUCTURED_EBAY_APPLY_SKIPPED_NO_NEW_IDENTITIES=false"
         in output
     )
+
+
+def test_operator_apply_emits_exact_inserted_ebay_listing_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Post-run DB verification must list the exact new eBay listing IDs."""
+
+    args = operator_args(
+        tmp_path,
+        apply=True,
+        confirm_write=True,
+        database_url=(
+            "postgresql://auction@127.0.0.1:5544/"
+            "auction_warehouse"
+        ),
+    )
+    warehouse_ids: set[str] = {
+        "123456789012",
+    }
+
+    def fake_run_child(
+        *,
+        label: str,
+        command: list[str],
+        environment: object,
+    ) -> str:
+        del command, environment
+
+        if label == "HEADED STRUCTURED EBAY ACQUISITION":
+            write_valid_artifact(
+                args.artifact
+            )
+            return (
+                "EBAY_STRUCTURED_ACQUISITION=PASS\n"
+                "DATABASE_REQUEST_EXECUTED=false\n"
+            )
+
+        if label == "STRUCTURED IMPORTER DRY RUN":
+            return dry_run_output(
+                2,
+                "d" * 64,
+            )
+
+        if label == "APPLY EXACT STRUCTURED ARTIFACT":
+            warehouse_ids.add(
+                "123456789013"
+            )
+            return (
+                "✓ Raw Page       : 74\n"
+                "IDEMPOTENT_REUSE=false\n"
+                "STRUCTURED_EBAY_RAWPAGE_IMPORT=PASS\n"
+            )
+
+        if label == "EXACT-ID REAL REFRESH":
+            return (
+                "Using 1 "
+                + BROWSER_SKIP_SENTINEL
+                + "\n"
+            )
+
+        raise AssertionError(
+            f"unexpected child: {label}"
+        )
+
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.run_child",
+        fake_run_child,
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.load_ebay_warehouse_identities",
+        lambda **kwargs: frozenset(warehouse_ids),
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.database_snapshot",
+        lambda **kwargs: SimpleNamespace(
+            database_name="auction_warehouse",
+            database_user="auction",
+            ebay_rows=len(warehouse_ids),
+            raw_page_parsed=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.backup_database",
+        lambda **kwargs: tmp_path / "backup.sql",
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.resolve_status_file",
+        lambda: tmp_path / "status.json",
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.verify_refresh_status",
+        lambda status_file: len(warehouse_ids),
+    )
+
+    assert run_operator(
+        args
+    ) == 0
+
+    output = capsys.readouterr().out
+
+    assert "NEW_IDENTITY_COUNT=1" in output
+    assert "NEW_EBAY_ROWS_INSERTED=1" in output
+    assert "NEW_EBAY_LISTING_IDS=123456789013" in output
+    assert "NEW_EBAY_LISTING_ID=123456789013" in output
+    assert "POST_RUN_DB_VERIFICATION=PASS" in output
+
+
+def test_post_run_verification_rejects_unexpected_ebay_inserts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero-novelty must fail closed if the warehouse gained an eBay row."""
+
+    args = operator_args(
+        tmp_path,
+        apply=True,
+        confirm_write=True,
+        database_url=(
+            "postgresql://auction@127.0.0.1:5544/"
+            "auction_warehouse"
+        ),
+    )
+    loads = [
+        frozenset(
+            {
+                "123456789012",
+                "123456789013",
+            }
+        ),
+        frozenset(
+            {
+                "123456789012",
+                "123456789013",
+                "999999999999",
+            }
+        ),
+    ]
+
+    def fake_run_child(
+        *,
+        label: str,
+        command: list[str],
+        environment: object,
+    ) -> str:
+        del command, environment
+
+        if label == "HEADED STRUCTURED EBAY ACQUISITION":
+            write_valid_artifact(
+                args.artifact
+            )
+            return (
+                "EBAY_STRUCTURED_ACQUISITION=PASS\n"
+                "DATABASE_REQUEST_EXECUTED=false\n"
+            )
+
+        if label == "STRUCTURED IMPORTER DRY RUN":
+            return dry_run_output(
+                2,
+                "e" * 64,
+            )
+
+        raise AssertionError(
+            f"unexpected child: {label}"
+        )
+
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.run_child",
+        fake_run_child,
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.load_ebay_warehouse_identities",
+        lambda **kwargs: loads.pop(0),
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.backup_database",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "zero-novelty apply created a database backup."
+            )
+        ),
+    )
+
+    with pytest.raises(
+        OperatorError,
+        match="Post-run eBay inserts",
+    ):
+        run_operator(
+            args
+        )
 
 
 def test_operator_source_never_retries_or_enables_headless() -> None:

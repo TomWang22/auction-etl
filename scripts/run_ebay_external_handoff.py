@@ -10,7 +10,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -915,6 +915,90 @@ def new_identity_count(
     )
 
 
+def ordered_new_listing_ids(
+    existing_listing_ids: Iterable[str],
+    parsed_listing_ids: Iterable[str],
+) -> list[str]:
+    """Return novel listing IDs in first-seen artifact order."""
+
+    novel = new_warehouse_identities(
+        existing_listing_ids,
+        parsed_listing_ids,
+    )
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    for raw_item_id in parsed_listing_ids:
+        item_id = str(
+            raw_item_id
+        ).strip()
+        if (
+            item_id in novel
+            and item_id not in seen
+        ):
+            seen.add(
+                item_id
+            )
+            ordered.append(
+                item_id
+            )
+
+    return ordered
+
+
+def verify_post_run_inserted_ebay_rows(
+    *,
+    database_url: str,
+    baseline_ids: frozenset[str],
+    expected_inserted_ids: Sequence[str],
+) -> list[str]:
+    """Re-read warehouse.auction and prove the exact new eBay listing IDs."""
+
+    current_ids = load_ebay_warehouse_identities(
+        database_url=database_url,
+    )
+    inserted_ids = frozenset(
+        current_ids - baseline_ids
+    )
+    expected_ids = frozenset(
+        str(item_id).strip()
+        for item_id in expected_inserted_ids
+        if str(item_id).strip()
+    )
+
+    if inserted_ids != expected_ids:
+        raise OperatorError(
+            "Post-run eBay inserts do not match the novelty gate."
+        )
+
+    ordered_ids = [
+        str(item_id).strip()
+        for item_id in expected_inserted_ids
+        if str(item_id).strip()
+    ]
+
+    print()
+    print(
+        "================ POST-RUN DATABASE VERIFICATION ================"
+    )
+    print()
+    print(
+        f"NEW_EBAY_ROWS_INSERTED={len(ordered_ids)}"
+    )
+    print(
+        "NEW_EBAY_LISTING_IDS="
+        + ",".join(ordered_ids)
+    )
+    for item_id in ordered_ids:
+        print(
+            f"NEW_EBAY_LISTING_ID={item_id}"
+        )
+    print(
+        "POST_RUN_DB_VERIFICATION=PASS"
+    )
+    return ordered_ids
+
+
 def load_ebay_warehouse_identities(
     *,
     database_url: str,
@@ -1808,16 +1892,21 @@ def run_operator(
         arguments.apply
         or database_url_value
     ):
+        parsed_ids = artifact_listing_ids(
+            artifact
+        )
         existing_ids = (
             load_ebay_warehouse_identities(
                 database_url=database_url_value,
             )
         )
+        expected_new_ids = ordered_new_listing_ids(
+            existing_ids,
+            parsed_ids,
+        )
         novelty = new_identity_count(
             existing_ids,
-            artifact_listing_ids(
-                artifact
-            ),
+            parsed_ids,
         )
         print(
             f"NEW_IDENTITY_COUNT={novelty}"
@@ -1836,6 +1925,11 @@ def run_operator(
                     "EBAY_EXTERNAL_HANDOFF_DRY_RUN=PASS"
                 )
 
+            verify_post_run_inserted_ebay_rows(
+                database_url=database_url_value,
+                baseline_ids=existing_ids,
+                expected_inserted_ids=(),
+            )
             emit_operator_contract(
                 apply=False
             )
@@ -1851,6 +1945,11 @@ def run_operator(
         if not arguments.apply:
             print(
                 "EBAY_EXTERNAL_HANDOFF_DRY_RUN=PASS"
+            )
+            verify_post_run_inserted_ebay_rows(
+                database_url=database_url_value,
+                baseline_ids=existing_ids,
+                expected_inserted_ids=(),
             )
             emit_operator_contract(
                 apply=False
@@ -2028,6 +2127,12 @@ def run_operator(
     require_artifact_sha(
         artifact=artifact,
         expected_sha256=artifact_sha256,
+    )
+
+    verify_post_run_inserted_ebay_rows(
+        database_url=database_url,
+        baseline_ids=existing_ids,
+        expected_inserted_ids=expected_new_ids,
     )
 
     print()
