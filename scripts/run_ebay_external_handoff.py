@@ -29,9 +29,15 @@ if str(ROOT) not in sys.path:
         str(ROOT),
     )
 
+from scripts.preflight_ebay_operator import (  # noqa: E402
+    preflight_ebay_operator_alignment,
+)
 from scripts.run_latest_auction_refresh import (  # noqa: E402
     create_backup,
     normalize_psycopg_url,
+)
+from scripts.verify_release_alignment import (  # noqa: E402
+    AlignmentError,
 )
 from auction_etl.services.warehouse import (  # noqa: E402
     new_warehouse_identities,
@@ -2076,9 +2082,24 @@ def main() -> int:
     arguments = parse_arguments()
 
     try:
+        preflight_ebay_operator_alignment()
         return run_operator(
             arguments
         )
+    except AlignmentError as exc:
+        print(
+            f"ERROR: {exc}",
+            file=sys.stderr,
+        )
+        print(
+            "OPERATOR_PREFLIGHT_ALIGNMENT=FAIL",
+            file=sys.stderr,
+        )
+        print(
+            "EBAY_EXTERNAL_HANDOFF_OPERATOR_GATE=FAIL",
+            file=sys.stderr,
+        )
+        return 1
     except (
         OperatorError,
         OSError,

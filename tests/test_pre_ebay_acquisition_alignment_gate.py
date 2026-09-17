@@ -35,7 +35,7 @@ def test_pre_acquisition_gate_defaults_expected_sha_to_head() -> None:
     )
 
     assert "git rev-parse HEAD" in source
-    assert "scripts/verify_release_alignment.py" in source
+    assert "scripts/preflight_ebay_operator.py" in source
     assert "--expected-sha" in source
     assert PINNED_RELEASE not in source
 

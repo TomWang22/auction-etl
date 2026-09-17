@@ -88,7 +88,7 @@ git diff --cached --quiet || {
 }
 
 "${PYTHON}" \
-    scripts/verify_release_alignment.py \
+    scripts/preflight_ebay_operator.py \
     --expected-sha "${EXPECTED_RELEASE}"
 
 echo

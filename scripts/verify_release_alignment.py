@@ -41,6 +41,8 @@ PRODUCTION_SMOKE_TESTS = (
     "tests/test_existing_ebay_identities_no_new_warehouse_rows.py",
     "tests/test_classify_ebay_external_current_release_gate.py",
     "tests/test_pre_ebay_acquisition_alignment_gate.py",
+    "tests/test_zero_novelty_cannot_write.py",
+    "tests/test_preflight_ebay_operator.py",
 )
 
 
