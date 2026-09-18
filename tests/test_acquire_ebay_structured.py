@@ -22,7 +22,9 @@ from scripts.acquire_ebay_structured import (
     canonical_listings,
     collector_url_for_source,
     has_next_page,
+    ebay_access_control_reason,
     is_access_block_status,
+    is_access_control_url,
     is_ebay_url,
     is_signin_url,
     merge_window_listings,
@@ -156,6 +158,75 @@ def test_signin_urls_are_detected(
     assert is_signin_url(
         url
     ) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.ebay.com/splashui/challenge",
+        "https://www.ebay.com/splashui/challenge/",
+        (
+            "https://www.ebay.com/splashui/challenge"
+            "?ap=1&appName=orch"
+            "&ru=https%3A%2F%2Fwww.ebay.com"
+        ),
+    ],
+)
+def test_access_control_urls_are_detected(
+    url: str,
+) -> None:
+    """Challenge endpoints must fail closed even with HTTP 200."""
+
+    assert is_access_control_url(
+        url
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        SOLD_SEARCH_URL,
+        "https://www.ebay.com/mye/myebay/summary",
+        "https://www.ebay.com/signin/",
+        "https://example.com/splashui/challenge",
+    ],
+)
+def test_non_challenge_urls_are_not_access_control_urls(
+    url: str,
+) -> None:
+    """Do not classify normal, sign-in, or non-eBay URLs as challenges."""
+
+    assert is_access_control_url(
+        url
+    ) is False
+
+
+def test_access_control_reason_prefers_challenge_url() -> None:
+    """Challenge URL alone is sufficient deterministic block evidence."""
+
+    class ChallengePage:
+        url = (
+            "https://www.ebay.com/splashui/challenge"
+            "?ap=1&appName=orch"
+        )
+
+        def locator(
+            self,
+            selector: str,
+        ) -> object:
+            raise AssertionError(
+                "URL classification must short-circuit "
+                f"before selector inspection: {selector}"
+            )
+
+    assert (
+        ebay_access_control_reason(
+            ChallengePage(),
+            title="",
+            body="",
+        )
+        == "eBay access-control challenge URL"
+    )
 
 
 def test_collector_url_encodes_source_name() -> None:

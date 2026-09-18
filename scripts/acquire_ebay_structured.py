@@ -213,6 +213,19 @@ def is_signin_url(value: str) -> bool:
     return "signin" in hostname or "/signin" in path
 
 
+def is_access_control_url(value: str) -> bool:
+    """Return whether an eBay URL is a known access-control endpoint."""
+
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").casefold()
+    path = parsed.path.casefold().rstrip("/")
+
+    if not EBAY_HOST_PATTERN.search(hostname):
+        return False
+
+    return path == "/splashui/challenge"
+
+
 def is_access_block_status(status: int | None) -> bool:
     """Return whether an HTTP status is an explicit access block."""
 
@@ -304,6 +317,12 @@ def ebay_access_control_reason(
     body: str,
 ) -> str | None:
     """Return deterministic access-control evidence or None."""
+
+    if is_access_control_url(
+        str(getattr(page, "url", ""))
+    ):
+        return "eBay access-control challenge URL"
+
 
     selector = visible_ebay_access_control_selector(
         page
