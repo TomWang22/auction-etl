@@ -132,6 +132,8 @@ def test_zero_new_identity_count_cannot_reach_backup_write_or_refresh(
     assert "DATABASE_WRITE=false" in output
     assert "REAL_REFRESH_RUN=false" in output
     assert "NEW_EBAY_ROWS_INSERTED=0" in output
+    assert "WAREHOUSE_EBAY_ROW_DELTA=0" in output
+    assert "WAREHOUSE_INCREASE_MATCHES_INSERTED_ROWS=true" in output
     assert "NEW_EBAY_LISTING_IDS=" in output
     assert "NEW_EBAY_LISTING_ID=" not in output.replace(
         "NEW_EBAY_LISTING_IDS=",

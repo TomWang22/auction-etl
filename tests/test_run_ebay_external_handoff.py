@@ -953,6 +953,8 @@ def test_operator_skips_apply_when_artifact_has_no_new_identities(
     assert "DATABASE_WRITE=false" in output
     assert "REAL_REFRESH_RUN=false" in output
     assert "NEW_EBAY_ROWS_INSERTED=0" in output
+    assert "WAREHOUSE_EBAY_ROW_DELTA=0" in output
+    assert "WAREHOUSE_INCREASE_MATCHES_INSERTED_ROWS=true" in output
     assert "POST_RUN_DB_VERIFICATION=PASS" in output
     assert "EBAY_EXTERNAL_HANDOFF_OPERATOR=PASS" in output
 
@@ -1621,6 +1623,8 @@ def test_operator_apply_emits_exact_inserted_ebay_listing_ids(
 
     assert "NEW_IDENTITY_COUNT=1" in output
     assert "NEW_EBAY_ROWS_INSERTED=1" in output
+    assert "WAREHOUSE_EBAY_ROW_DELTA=1" in output
+    assert "WAREHOUSE_INCREASE_MATCHES_INSERTED_ROWS=true" in output
     assert "NEW_EBAY_LISTING_IDS=123456789013" in output
     assert "NEW_EBAY_LISTING_ID=123456789013" in output
     assert "POST_RUN_DB_VERIFICATION=PASS" in output
@@ -1704,6 +1708,116 @@ def test_post_run_verification_rejects_unexpected_ebay_inserts(
     with pytest.raises(
         OperatorError,
         match="Post-run eBay inserts",
+    ):
+        run_operator(
+            args
+        )
+
+
+def test_post_run_verification_requires_warehouse_increase_to_match_inserted_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replaced eBay row is not an increase of NEW_EBAY_ROWS_INSERTED."""
+
+    args = operator_args(
+        tmp_path,
+        apply=True,
+        confirm_write=True,
+        database_url=(
+            "postgresql://auction@127.0.0.1:5544/"
+            "auction_warehouse"
+        ),
+    )
+    loads = [
+        frozenset(
+            {
+                "123456789012",
+                "999999999999",
+            }
+        ),
+        frozenset(
+            {
+                "123456789012",
+                "123456789013",
+            }
+        ),
+    ]
+
+    def fake_run_child(
+        *,
+        label: str,
+        command: list[str],
+        environment: object,
+    ) -> str:
+        del command, environment
+
+        if label == "HEADED STRUCTURED EBAY ACQUISITION":
+            write_valid_artifact(
+                args.artifact
+            )
+            return (
+                "EBAY_STRUCTURED_ACQUISITION=PASS\n"
+                "DATABASE_REQUEST_EXECUTED=false\n"
+            )
+
+        if label == "STRUCTURED IMPORTER DRY RUN":
+            return dry_run_output(
+                2,
+                "d" * 64,
+            )
+
+        if label == "APPLY EXACT STRUCTURED ARTIFACT":
+            return (
+                "✓ Raw Page       : 74\n"
+                "IDEMPOTENT_REUSE=false\n"
+                "STRUCTURED_EBAY_RAWPAGE_IMPORT=PASS\n"
+            )
+
+        if label == "EXACT-ID REAL REFRESH":
+            return (
+                "Using 1 "
+                + BROWSER_SKIP_SENTINEL
+                + "\n"
+            )
+
+        raise AssertionError(
+            f"unexpected child: {label}"
+        )
+
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.run_child",
+        fake_run_child,
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.load_ebay_warehouse_identities",
+        lambda **kwargs: loads.pop(0),
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.database_snapshot",
+        lambda **kwargs: SimpleNamespace(
+            database_name="auction_warehouse",
+            database_user="auction",
+            ebay_rows=2,
+            raw_page_parsed=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.backup_database",
+        lambda **kwargs: tmp_path / "backup.sql",
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.resolve_status_file",
+        lambda: tmp_path / "status.json",
+    )
+    monkeypatch.setattr(
+        "scripts.run_ebay_external_handoff.verify_refresh_status",
+        lambda status_file: 2,
+    )
+
+    with pytest.raises(
+        OperatorError,
+        match="increase by NEW_EBAY_ROWS_INSERTED",
     ):
         run_operator(
             args

@@ -37,6 +37,11 @@ OPERATOR = (
     / "scripts"
     / "run_ebay_external_handoff.py"
 )
+RECHECK = (
+    ROOT
+    / "scripts"
+    / "recheck_operator_alignment.sh"
+)
 
 
 def test_preflight_command_is_versioned_and_alignment_only() -> None:
@@ -163,6 +168,27 @@ def test_preflight_runs_immediately_before_every_operator() -> None:
     ) < operator.index(
         "return run_operator("
     )
+
+
+def test_recheck_command_is_read_only_github_railway_vercel_alignment() -> None:
+    """One command rechecks remotes and a clean worktree without Chromium."""
+
+    assert RECHECK.is_file()
+    source = RECHECK.read_text(
+        encoding="utf-8"
+    )
+
+    assert source.startswith(
+        "#!/usr/bin/env bash"
+    )
+    assert "scripts/preflight_ebay_operator.py" in source
+    assert "git rev-parse HEAD" in source
+    assert "--expected-sha" in source
+    assert "railway up" not in source
+    assert "vercel deploy" not in source
+    assert "run_ebay_external_handoff.py" not in source
+    assert "--apply" not in source
+    assert "DATABASE_URL" not in source
 
 
 def test_operator_main_skips_chromium_when_preflight_fails(

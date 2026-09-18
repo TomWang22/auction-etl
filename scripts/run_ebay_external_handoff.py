@@ -971,6 +971,14 @@ def verify_post_run_inserted_ebay_rows(
             "Post-run eBay inserts do not match the novelty gate."
         )
 
+    warehouse_delta = (
+        len(current_ids) - len(baseline_ids)
+    )
+    if warehouse_delta != len(expected_ids):
+        raise OperatorError(
+            "Warehouse eBay row count did not increase by NEW_EBAY_ROWS_INSERTED."
+        )
+
     ordered_ids = [
         str(item_id).strip()
         for item_id in expected_inserted_ids
@@ -993,6 +1001,12 @@ def verify_post_run_inserted_ebay_rows(
         print(
             f"NEW_EBAY_LISTING_ID={item_id}"
         )
+    print(
+        f"WAREHOUSE_EBAY_ROW_DELTA={warehouse_delta}"
+    )
+    print(
+        "WAREHOUSE_INCREASE_MATCHES_INSERTED_ROWS=true"
+    )
     print(
         "POST_RUN_DB_VERIFICATION=PASS"
     )
