@@ -92,6 +92,44 @@ class PageSnapshot:
     visible_signin: bool
 
 
+def wait_for_operator_confirmation() -> None:
+    """Wait for ENTER from the controlling terminal instead of stdin."""
+    tty_path = Path("/dev/tty")
+
+    if not tty_path.exists():
+        raise RuntimeError(
+            "Interactive terminal is unavailable. "
+            "Run this headed authentication gate from a real Terminal."
+        )
+
+    try:
+        with tty_path.open(
+            "w",
+            encoding="utf-8",
+            buffering=1,
+        ) as terminal_output:
+            terminal_output.write(
+                "Press Enter only after normal eBay results are visible..."
+            )
+            terminal_output.flush()
+
+        with tty_path.open(
+            "r",
+            encoding="utf-8",
+            buffering=1,
+        ) as terminal_input:
+            response = terminal_input.readline()
+
+    except OSError as exc:
+        raise RuntimeError(
+            "Could not read operator confirmation from /dev/tty."
+        ) from exc
+
+    if response == "":
+        raise RuntimeError(
+            "The controlling terminal closed before operator confirmation."
+        )
+
 def parse_args() -> argparse.Namespace:
     """Parse one bounded manual profile-validation request."""
 
@@ -600,9 +638,7 @@ def main() -> int:
             )
             print()
 
-            input(
-                "Press Enter only after normal eBay results are visible..."
-            )
+            wait_for_operator_confirmation()
 
             page.wait_for_timeout(
                 1_000

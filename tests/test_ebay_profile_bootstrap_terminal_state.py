@@ -357,3 +357,42 @@ def test_off_domain_signin_page_is_unknown_not_human_auth() -> None:
         state
         is module.BootstrapState.UNKNOWN_ERROR
     )
+
+def test_operator_confirmation_uses_controlling_terminal() -> None:
+    """Manual headed confirmation must not consume redirected stdin."""
+    source = BOOTSTRAP.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "def wait_for_operator_confirmation() -> None:"
+        in source
+    )
+    assert 'Path("/dev/tty")' in source
+    assert (
+        "wait_for_operator_confirmation()"
+        in source
+    )
+
+    tree = __import__("ast").parse(
+        source,
+        filename=str(BOOTSTRAP),
+    )
+
+    input_calls = [
+        node
+        for node in __import__("ast").walk(tree)
+        if (
+            isinstance(
+                node,
+                __import__("ast").Call,
+            )
+            and isinstance(
+                node.func,
+                __import__("ast").Name,
+            )
+            and node.func.id == "input"
+        )
+    ]
+
+    assert input_calls == []
