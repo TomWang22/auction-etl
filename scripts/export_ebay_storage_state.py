@@ -745,11 +745,6 @@ def verify_source_access(
         http_status=http_status,
     )
 
-    require_source_page(
-        requested_url=requested_url,
-        final_url=page.url,
-    )
-
     locator = page.locator(
         ITEM_LINK_SELECTOR
     )

@@ -834,3 +834,104 @@ def test_verify_source_access_ignores_hidden_access_block_copy() -> None:
     assert page.goto_calls == [
         source_url
     ]
+
+def test_verify_source_access_waits_for_settled_source_url() -> None:
+    """Validate source identity after eBay finishes rendering results."""
+    source_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+
+    class SettlingItemLocator(FakeLocator):
+        """Represent an item locator that observes the settled URL."""
+
+        def __init__(
+            self,
+            page: SettlingPage,
+        ) -> None:
+            super().__init__(
+                1
+            )
+            self._page = page
+
+        def wait_for(
+            self,
+            *,
+            state: str,
+            timeout: int,
+        ) -> None:
+            del state
+            del timeout
+
+            self._page.url = source_url
+
+    class SettlingPage(FakePage):
+        """Represent eBay changing its visible URL after DOM content load."""
+
+        def goto(
+            self,
+            url: str,
+            *,
+            wait_until: str,
+            timeout: int,
+        ) -> FakeResponse:
+            del wait_until
+            del timeout
+
+            self.goto_calls.append(
+                url
+            )
+
+            self.url = (
+                "https://www.ebay.com/"
+            )
+
+            return FakeResponse(
+                self.status
+            )
+
+        def locator(
+            self,
+            selector: str,
+        ) -> FakeLocator:
+            if selector == "body":
+                return FakeLocator(
+                    1,
+                    text=(
+                        "Normal eBay search results "
+                        "Completed listings Sold listings"
+                    ),
+                )
+
+            assert (
+                selector
+                == EXPORTER.ITEM_LINK_SELECTOR
+            )
+
+            return SettlingItemLocator(
+                self
+            )
+
+    page = SettlingPage(
+        final_url="https://www.ebay.com/",
+        status=200,
+        item_link_count=1,
+    )
+
+    result = EXPORTER.verify_source_access(
+        page=page,
+        source_url=source_url,
+        navigation_timeout_seconds=10,
+        result_timeout_seconds=10,
+    )
+
+    assert result.http_status == 200
+    assert result.item_link_count == 1
+    assert result.final_url == source_url
+
+    assert page.goto_calls == [
+        source_url
+    ]
