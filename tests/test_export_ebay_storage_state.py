@@ -55,13 +55,16 @@ class FakeResponse:
 
 
 class FakeLocator:
-    """Represent fake eBay item-link lookup behavior."""
+    """Represent fake Playwright locator behavior."""
 
     def __init__(
         self,
         count: int,
+        *,
+        text: str = "",
     ) -> None:
         self._count = count
+        self._text = text
         self.first = self
 
     def wait_for(
@@ -81,6 +84,14 @@ class FakeLocator:
     def count(self) -> int:
         return self._count
 
+    def inner_text(
+        self,
+        *,
+        timeout: int,
+    ) -> str:
+        del timeout
+        return self._text
+
 
 class FakePage:
     """Represent a network-free Playwright page."""
@@ -91,11 +102,17 @@ class FakePage:
         final_url: str,
         status: int = 200,
         html: str = "<html></html>",
+        body_text: str | None = None,
         item_link_count: int = 1,
     ) -> None:
         self.url = final_url
         self.status = status
         self.html = html
+        self.body_text = (
+            html
+            if body_text is None
+            else body_text
+        )
         self.item_link_count = item_link_count
         self.goto_calls: list[str] = []
 
@@ -124,6 +141,12 @@ class FakePage:
         self,
         selector: str,
     ) -> FakeLocator:
+        if selector == "body":
+            return FakeLocator(
+                1,
+                text=self.body_text,
+            )
+
         assert selector == EXPORTER.ITEM_LINK_SELECTOR
 
         return FakeLocator(
@@ -505,6 +528,7 @@ def test_verify_source_access_rejects_security_interstitial(
         ),
         status=200,
         html=f"<html><body>{message}</body></html>",
+        body_text=message,
         item_link_count=1,
     )
 
@@ -767,3 +791,46 @@ def test_verify_source_access_performs_one_source_navigation() -> None:
         "configured_source_navigation"
         in exporter_source
     )
+
+def test_verify_source_access_ignores_hidden_access_block_copy() -> None:
+    """Hidden challenge strings must not override rendered results."""
+    source_url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+    )
+
+    page = FakePage(
+        final_url=source_url,
+        status=200,
+        html=(
+            "<html>"
+            "<head>"
+            "<script>"
+            "const unusedChallengeCopy = 'security measure';"
+            "</script>"
+            "</head>"
+            "<body>Normal eBay search results</body>"
+            "</html>"
+        ),
+        body_text=(
+            "Normal eBay search results "
+            "Completed listings Sold listings"
+        ),
+        item_link_count=7,
+    )
+
+    result = EXPORTER.verify_source_access(
+        page=page,
+        source_url=source_url,
+        navigation_timeout_seconds=10,
+        result_timeout_seconds=10,
+    )
+
+    assert result.http_status == 200
+    assert result.item_link_count == 7
+    assert page.goto_calls == [
+        source_url
+    ]

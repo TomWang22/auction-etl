@@ -610,16 +610,29 @@ def is_access_block_status(
 
 
 def contains_access_block_text(
-    html: str,
+    text: str,
 ) -> bool:
-    """Return whether page content contains a known access block."""
-
-    normalized = html.casefold()
+    """Return whether rendered page text contains a known access block."""
+    normalized = text.casefold()
 
     return any(
         signal in normalized
         for signal in ACCESS_BLOCK_TEXT
     )
+
+
+def rendered_body_text(
+    page: Page,
+) -> str:
+    """Return rendered body text without hidden scripts or markup."""
+    try:
+        return page.locator(
+            "body"
+        ).inner_text(
+            timeout=5_000
+        )
+    except Exception:
+        return ""
 
 
 def page_http_status(
@@ -649,7 +662,6 @@ def assert_page_not_blocked(
     http_status: int | None,
 ) -> None:
     """Fail closed for authentication or access-block conditions."""
-
     final_url = page.url
 
     if is_signin_url(final_url):
@@ -663,9 +675,13 @@ def assert_page_not_blocked(
             f"with HTTP {http_status}."
         )
 
-    html = page.content()
+    body_text = rendered_body_text(
+        page
+    )
 
-    if contains_access_block_text(html):
+    if contains_access_block_text(
+        body_text
+    ):
         raise EbayAccessBlockedError(
             "eBay returned a security/access verification page."
         )
