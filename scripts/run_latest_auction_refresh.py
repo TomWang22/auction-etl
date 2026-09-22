@@ -3498,6 +3498,18 @@ def main() -> int:
                 )
 
         else:
+            default_ebay_state = (
+                Path.home()
+                / ".auction-etl"
+                / "private"
+                / "ebay-storage-state.json"
+            )
+            if not str(
+                environment.get("AUCTION_LOCAL_EBAY_STATE_FILE", "")
+            ).strip() and default_ebay_state.is_file():
+                environment["AUCTION_LOCAL_EBAY_STATE_FILE"] = str(
+                    default_ebay_state
+                )
             for source_name in enabled_ebay_sources(
                 ebay_config_path
             ):
@@ -3517,7 +3529,7 @@ def main() -> int:
                         sys.executable,
                         "scripts/run_with_process_watchdog.py",
                         "--timeout-seconds",
-                        "90",
+                        "600",
                         "--kill-grace-seconds",
                         "10",
                         "--",

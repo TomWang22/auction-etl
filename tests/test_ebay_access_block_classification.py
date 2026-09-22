@@ -60,7 +60,7 @@ def test_ebay_result_wait_precedes_access_classification() -> None:
     )
 
     wait_position = segment.index(
-        "wait_for_results("
+        "load_ebay_results_page("
     )
     classify_position = segment.index(
         "classify_ebay_page("

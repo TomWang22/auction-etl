@@ -429,6 +429,75 @@ def wait_for_results(
     page.wait_for_timeout(2_000)
 
 
+def _configure_ebay_results_tab(page: Page) -> Page:
+    page.set_default_timeout(
+        EBAY_RESULTS_TIMEOUT_MS
+    )
+    page.set_default_navigation_timeout(
+        EBAY_NAVIGATION_TIMEOUT_MS
+    )
+    return page
+
+
+def load_ebay_results_page(
+    page: Page,
+    url: str,
+    *,
+    page_number: int,
+    wait_seconds: float,
+    context: Any | None = None,
+) -> tuple[Page, Any | None, str, int | None, int]:
+    """Load one sold-search page, continuing once after an empty HTTP block."""
+
+    response = navigate_for_results(
+        page,
+        url,
+        page_number=page_number,
+    )
+    wait_for_results(
+        page,
+        wait_seconds,
+    )
+    html = page.content()
+    count = listing_count(html)
+    status = (
+        response.status
+        if response is not None
+        else None
+    )
+
+    if status in {401, 403, 429} and count == 0:
+        print(
+            "EBAY_CRAWL_PHASE=access_continue "
+            f"page={page_number} status={status}",
+            flush=True,
+        )
+        if context is not None:
+            previous = page
+            page = _configure_ebay_results_tab(
+                context.new_page()
+            )
+            previous.close()
+        response = navigate_for_results(
+            page,
+            url,
+            page_number=page_number,
+        )
+        wait_for_results(
+            page,
+            wait_seconds,
+        )
+        html = page.content()
+        count = listing_count(html)
+        status = (
+            response.status
+            if response is not None
+            else None
+        )
+
+    return page, response, html, status, count
+
+
 def page_payload(
     url: str,
     status: int,
@@ -740,12 +809,8 @@ def crawl_source(
         flush=True,
     )
 
-    page = context.new_page()
-    page.set_default_timeout(
-        EBAY_RESULTS_TIMEOUT_MS
-    )
-    page.set_default_navigation_timeout(
-        EBAY_NAVIGATION_TIMEOUT_MS
+    page = _configure_ebay_results_tab(
+        context.new_page()
     )
 
     print(
@@ -791,6 +856,13 @@ def crawl_source(
                     1,
                     source.max_pages + 1,
                 ):
+                    if page_number > 1:
+                        previous = page
+                        page = _configure_ebay_results_tab(
+                            context.new_page()
+                        )
+                        previous.close()
+
                     url = page_url(
                         source.url,
                         page_number,
@@ -807,23 +879,27 @@ def crawl_source(
                         flush=True,
                     )
 
-                    response = navigate_for_results(
-                        page,
-                        url,
-                        page_number=page_number,
+                    page, response, html, status, count = (
+                        load_ebay_results_page(
+                            page,
+                            url,
+                            page_number=page_number,
+                            wait_seconds=source.wait_seconds,
+                            context=context,
+                        )
                     )
 
                     stats.pages_loaded += 1
 
-                    status = (
-                        response.status
-                        if response is not None
-                        else None
-                    )
-
                     print(
                         "EBAY_CRAWL_PHASE=navigation_status "
                         f"page={page_number} status={status}",
+                        flush=True,
+                    )
+                    print(
+                        "EBAY_CRAWL_PHASE=results_ready "
+                        f"page={page_number} status={status} "
+                        f"listing_count={count}",
                         flush=True,
                     )
 
@@ -835,14 +911,7 @@ def crawl_source(
                             "completed-search page to sign-in."
                         )
 
-                    wait_for_results(
-                        page,
-                        source.wait_seconds,
-                    )
-
-                    html = page.content()
                     title = page.title()
-                    current_url = page.url
 
                     try:
                         body = page.locator(
@@ -852,15 +921,6 @@ def crawl_source(
                         )
                     except Exception:
                         body = html
-
-                    count = listing_count(html)
-
-                    print(
-                        "EBAY_CRAWL_PHASE=results_ready "
-                        f"page={page_number} status={status} "
-                        f"listing_count={count}",
-                        flush=True,
-                    )
 
                     page_result = classify_ebay_page(
                         status_code=status,
