@@ -31,8 +31,8 @@ def test_ebay_access_blocked_requires_nonzero_exit() -> None:
     assert ebay_access_blocked(0, output) is False
 
 
-def test_ebay_http_block_precedes_result_wait() -> None:
-    """Blocked HTTP responses cannot enter eBay result waiting."""
+def test_ebay_result_wait_precedes_access_classification() -> None:
+    """Commit HTTP status is not fatal until listing cards can render."""
     source = CRAWLER.read_text(
         encoding="utf-8"
     )
@@ -59,18 +59,86 @@ def test_ebay_http_block_precedes_result_wait() -> None:
         or ""
     )
 
-    block_position = segment.index(
-        "if status in {401, 403, 429}:"
-    )
-    signal_position = segment.index(
-        "eBay rejected the deployed worker's request "
-    )
     wait_position = segment.index(
         "wait_for_results("
     )
-
-    assert (
-        block_position
-        < signal_position
-        < wait_position
+    classify_position = segment.index(
+        "classify_ebay_page("
     )
+
+    assert "if status in {401, 403, 429}:" not in segment
+    assert wait_position < classify_position
+
+
+def test_later_page_access_block_keeps_first_page_results() -> None:
+    """Pagination 403 must stop the crawl without discarding page 1."""
+    source = CRAWLER.read_text(
+        encoding="utf-8"
+    )
+
+    tree = ast.parse(
+        source,
+        filename=str(CRAWLER),
+    )
+
+    crawl_source = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "crawl_source"
+    )
+    main = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "main"
+    )
+
+    crawl_segment = (
+        ast.get_source_segment(
+            source,
+            crawl_source,
+        )
+        or ""
+    )
+    main_segment = (
+        ast.get_source_segment(
+            source,
+            main,
+        )
+        or ""
+    )
+
+    blocked_at = crawl_segment.index(
+        "MarketplaceAccessState.ACCESS_BLOCKED"
+    )
+    first_page_raise_at = crawl_segment.index(
+        "if page_number == 1:",
+        blocked_at,
+    )
+    later_stop_at = crawl_segment.index(
+        "Stopping: later eBay page was not usable",
+        first_page_raise_at,
+    )
+    later_break_at = crawl_segment.index(
+        "break",
+        later_stop_at,
+    )
+
+    assert first_page_raise_at < later_stop_at < later_break_at
+    assert "Keeping already captured pages." in crawl_segment
+
+    fail_at = main_segment.index(
+        "Crawl failed; reports will"
+    )
+    condition = main_segment[
+        main_segment.rindex(
+            "if (",
+            0,
+            fail_at,
+        ):fail_at
+    ]
+
+    assert "stats.pages_processed == 0" in condition
+    assert "stats.failed_sources" in condition
+    assert "stats.blocked_sources" not in condition

@@ -115,14 +115,28 @@ def test_ebay_search_results_with_listing_evidence_are_available() -> None:
     assert "52 listing identity" in result.message
 
 
-def test_ebay_block_status_wins_over_listing_evidence() -> None:
-    """HTTP blocking cannot be hidden by stale listing markup."""
+def test_ebay_listing_identities_override_commit_403() -> None:
+    """Akamai can stamp HTTP 403 on commit while sold cards still render."""
+
+    result = classify_ebay_page(
+        status_code=403,
+        title="Momoe Yamaguchi in Vinyl Records for sale | eBay",
+        body="51 results for Momoe Yamaguchi sold items",
+        listing_count=51,
+    )
+
+    assert result.state is MarketplaceAccessState.AVAILABLE
+    assert "51 listing identity" in result.message
+
+
+def test_ebay_403_without_listings_is_access_blocked() -> None:
+    """A 403 commit with no listing identities remains a real block."""
 
     result = classify_ebay_page(
         status_code=403,
         title="Error Page | eBay",
         body="Something went wrong on our end.",
-        listing_count=52,
+        listing_count=0,
     )
 
     assert result.state is MarketplaceAccessState.ACCESS_BLOCKED

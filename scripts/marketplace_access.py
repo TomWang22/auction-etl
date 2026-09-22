@@ -101,9 +101,18 @@ def classify_ebay_page(
     body: str,
     listing_count: int = 0,
 ) -> MarketplacePageResult:
-    """Classify eBay using response status and positive page evidence."""
+    """Classify eBay using listing evidence first, then HTTP/challenge text."""
     normalized_title = normalize_page_text(title)
     normalized_body = normalize_page_text(body)
+
+    if listing_count > 0:
+        return MarketplacePageResult(
+            state=MarketplaceAccessState.AVAILABLE,
+            message=(
+                "eBay returned a successful page containing "
+                f"{listing_count} listing identity record(s)."
+            ),
+        )
 
     if status_code in {401, 403, 429}:
         return MarketplacePageResult(
@@ -138,19 +147,6 @@ def classify_ebay_page(
             message=(
                 "eBay returned an access/error page "
                 "to the deployed worker."
-            ),
-        )
-
-    if (
-        listing_count > 0
-        and status_code is not None
-        and 200 <= status_code < 400
-    ):
-        return MarketplacePageResult(
-            state=MarketplaceAccessState.AVAILABLE,
-            message=(
-                "eBay returned a successful page containing "
-                f"{listing_count} listing identity record(s)."
             ),
         )
 

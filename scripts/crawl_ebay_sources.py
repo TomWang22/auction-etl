@@ -821,12 +821,11 @@ def crawl_source(
                         else None
                     )
 
-                    if status in {401, 403, 429}:
-                        stats.blocked_sources += 1
-                        raise RuntimeError(
-                            "eBay rejected the deployed worker's request "
-                            f"with HTTP {status}."
-                        )
+                    print(
+                        "EBAY_CRAWL_PHASE=navigation_status "
+                        f"page={page_number} status={status}",
+                        flush=True,
+                    )
 
                     current_url = page.url
 
@@ -856,6 +855,13 @@ def crawl_source(
 
                     count = listing_count(html)
 
+                    print(
+                        "EBAY_CRAWL_PHASE=results_ready "
+                        f"page={page_number} status={status} "
+                        f"listing_count={count}",
+                        flush=True,
+                    )
+
                     page_result = classify_ebay_page(
                         status_code=status,
                         title=title,
@@ -867,8 +873,6 @@ def crawl_source(
                         page_result.state
                         is MarketplaceAccessState.ACCESS_BLOCKED
                     ):
-                        stats.blocked_sources += 1
-
                         diagnostic_dir = Path(
                             "logs"
                         )
@@ -897,19 +901,38 @@ def crawl_source(
                             encoding="utf-8",
                         )
 
-                        raise RuntimeError(
-                            page_result.message
-                            + " "
-                            + f"Screenshot: {screenshot_path}"
+                        if page_number == 1:
+                            stats.blocked_sources += 1
+                            raise RuntimeError(
+                                page_result.message
+                                + " "
+                                + f"Screenshot: {screenshot_path}"
+                            )
+
+                        print(
+                            "Stopping: later eBay page was not usable "
+                            f"(status={status} listing_count={count}). "
+                            "Keeping already captured pages.",
+                            flush=True,
                         )
+                        break
 
                     if (
                         page_result.state
                         is MarketplaceAccessState.UNKNOWN_ERROR
                     ):
-                        raise RuntimeError(
-                            page_result.message
+                        if page_number == 1:
+                            raise RuntimeError(
+                                page_result.message
+                            )
+
+                        print(
+                            "Stopping: later eBay page was unrecognized "
+                            f"(status={status} listing_count={count}). "
+                            "Keeping already captured pages.",
+                            flush=True,
                         )
+                        break
 
 
 
@@ -1278,8 +1301,7 @@ def main() -> int:
             )
 
     if (
-        stats.blocked_sources
-        or stats.failed_sources
+        stats.failed_sources
         or stats.pages_processed == 0
     ):
         print(
