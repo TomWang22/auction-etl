@@ -32,6 +32,8 @@ class Auction(Base):
     disc_count: Mapped[int | None] = mapped_column(Integer)
     edition: Mapped[str | None] = mapped_column(String(64))
     catalog_number: Mapped[str | None] = mapped_column(String(128))
+    label: Mapped[str | None] = mapped_column(String(255))
+    image_url: Mapped[str | None] = mapped_column(Text)
     condition_media: Mapped[str | None] = mapped_column(String(64))
     condition_cover: Mapped[str | None] = mapped_column(String(64))
 

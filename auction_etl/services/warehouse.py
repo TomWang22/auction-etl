@@ -251,6 +251,8 @@ def _row_values(
         "catalog_number": _clean(
             listing.catalog_number
         ),
+        "label": _clean(listing.label),
+        "image_url": _clean(listing.image_url),
         "condition_media": _clean(
             listing.media_condition
         ),

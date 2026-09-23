@@ -1,6 +1,7 @@
 import typer
 
 from auction_etl.cli.audit import app as audit_app
+from auction_etl.cli.identity import app as identity_app
 from auction_etl.cli.doctor import app as doctor_app
 from auction_etl.cli.review import app as review_app
 from auction_etl.cli.report import app as report_app
@@ -53,6 +54,7 @@ app.add_typer(rebuild_app, name="rebuild")
 app.add_typer(stats_app, name="stats")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(audit_app, name="audit")
+app.add_typer(identity_app, name="identity")
 
 
 

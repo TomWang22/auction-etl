@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -31,6 +32,7 @@ from auction_etl.auth.streamlit_auth import (
     require_authenticated_account,
 )
 from auction_etl.services.account_scope import account_transaction
+from auction_etl.services.discogs_fill import apply_release_choice
 from auction_etl.runtime_authority import cloud_runtime_detected
 
 from app.collector_analytics_editor import (
@@ -512,6 +514,19 @@ def load_records(account_id: str) -> pd.DataFrame:
             connection,
             params=parameters,
         )
+        gripsweat_usd_rows = pd.read_sql_query(
+            """
+            SELECT
+                original_listing_id,
+                gripsweat_url,
+                gripsweat_item_id,
+                sold_price,
+                currency,
+                sold_at
+            FROM warehouse.gripsweat_sale
+            """,
+            connection,
+        )
 
     gripsweat_records = load_gripsweat_records(
         database_url=DATABASE_URL,
@@ -552,6 +567,22 @@ def load_records(account_id: str) -> pd.DataFrame:
             sort=False,
         )
 
+    from auction_etl.services.sold_item_overlap import (
+        apply_gripsweat_official_usd,
+        gripsweat_listing_id_from_row,
+    )
+
+    official_usd_index = {}
+    for row in gripsweat_usd_rows.to_dict(orient="records"):
+        listing_id = gripsweat_listing_id_from_row(row)
+        if listing_id:
+            official_usd_index[listing_id] = row
+
+    combined = apply_gripsweat_official_usd(
+        combined,
+        official_usd_index,
+    )
+
     return prepare_records(
         combined
     )
@@ -586,7 +617,10 @@ def prepare_records(
 
     frame["artist_display"] = coalesce_series(
         frame,
-        ("artist",),
+        (
+            "effective_artist",
+            "artist",
+        ),
     ).map(clean_text)
 
     frame["auction_url"] = coalesce_series(
@@ -735,6 +769,48 @@ def prepare_records(
             "auto_catalog_number",
             "catalog_number",
         ),
+    ).map(clean_text)
+
+    frame["label_display"] = coalesce_series(
+        frame,
+        (
+            "effective_label",
+            "label",
+        ),
+    ).map(clean_text)
+
+    frame["release_year_display"] = coalesce_series(
+        frame,
+        ("effective_release_year",),
+    )
+
+    frame["identity_status_display"] = coalesce_series(
+        frame,
+        ("identity_status",),
+    ).map(
+        lambda value: {
+            "filled_auto": "Filled",
+            "filled_manual": "Filled",
+            "needs_review": "Needs review",
+            "unmatched": "Unmatched",
+        }.get(clean_text(value), clean_text(value) or "Unmatched")
+    )
+
+    frame["identity_updated_display"] = coalesce_series(
+        frame,
+        ("identity_status_changed_at", "identity_filled_at"),
+    ).map(
+        lambda value: "Updated" if pd.notna(value) and str(value).strip() else ""
+    )
+
+    frame["listing_image_url"] = coalesce_series(
+        frame,
+        ("image_url",),
+    ).map(clean_text)
+
+    frame["discogs_thumb_url"] = coalesce_series(
+        frame,
+        ("discogs_thumb_url",),
     ).map(clean_text)
 
     frame["region_display"] = coalesce_series(
@@ -2039,6 +2115,21 @@ def render_metrics(
         .nunique(),
     )
 
+    identity_counts = (
+        dataframe.get(
+            "identity_status_display",
+            pd.Series(dtype="object"),
+        )
+        .fillna("Unmatched")
+        .value_counts()
+    )
+    filled = int(identity_counts.get("Filled", 0))
+    needs_review = int(identity_counts.get("Needs review", 0))
+    unmatched = int(identity_counts.get("Unmatched", 0))
+    st.caption(
+        f"{filled} filled · {needs_review} need review · {unmatched} unmatched"
+    )
+
 
 
 def _aggrid_selected_identity(
@@ -2288,6 +2379,30 @@ def render_listing_table(
                 dataframe[
                     "bid_count_display"
                 ].astype(int),
+            "Identity":
+                dataframe[
+                    "identity_status_display"
+                ],
+            "Updated":
+                dataframe[
+                    "identity_updated_display"
+                ],
+            "Label":
+                dataframe[
+                    "label_display"
+                ],
+            "Year":
+                dataframe[
+                    "release_year_display"
+                ],
+            "Listing photo":
+                dataframe[
+                    "listing_image_url"
+                ],
+            "Discogs":
+                dataframe[
+                    "discogs_thumb_url"
+                ],
             "Matrix / catalog":
                 dataframe[
                     "catalog_display"
@@ -2345,6 +2460,31 @@ def render_listing_table(
                 );
             }
 
+            getGui() {
+                return this.eGui;
+            }
+        }
+        """
+    )
+
+    thumb_renderer = JsCode(
+        """
+        class IdentityThumbRenderer {
+            init(params) {
+                this.eGui = document.createElement("div");
+                const url = params.value || "";
+                if (!url) {
+                    return;
+                }
+                const image = document.createElement("img");
+                image.src = url;
+                image.alt = "";
+                image.style.height = "36px";
+                image.style.width = "36px";
+                image.style.objectFit = "cover";
+                image.style.borderRadius = "4px";
+                this.eGui.appendChild(image);
+            }
             getGui() {
                 return this.eGui;
             }
@@ -2466,6 +2606,35 @@ def render_listing_table(
                 "width": 82,
             },
             {
+                "field": "Identity",
+                "width": 128,
+            },
+            {
+                "field": "Updated",
+                "width": 100,
+            },
+            {
+                "field": "Label",
+                "width": 140,
+                "tooltipField": "Label",
+            },
+            {
+                "field": "Year",
+                "width": 80,
+            },
+            {
+                "field": "Listing photo",
+                "width": 90,
+                "sortable": False,
+                "cellRenderer": thumb_renderer,
+            },
+            {
+                "field": "Discogs",
+                "width": 90,
+                "sortable": False,
+                "cellRenderer": thumb_renderer,
+            },
+            {
                 "field": "Matrix / catalog",
                 "width": 155,
                 "tooltipField":
@@ -2516,7 +2685,7 @@ def render_listing_table(
         "suppressCellFocus": True,
         "animateRows": False,
         "ensureDomOrder": True,
-        "rowHeight": 40,
+        "rowHeight": 46,
         "headerHeight": 44,
         "tooltipShowDelay": 150,
         "getRowId": row_identity,
@@ -2693,6 +2862,97 @@ def render_pagination(
 
 
 
+def load_identity_shortlist(
+    marketplace: str,
+    listing_id: str,
+) -> list[dict[str, Any]]:
+    """Load cached Discogs candidates for one warehouse sale."""
+    with get_engine().connect() as connection:
+        raw = connection.execute(
+            text(
+                """
+                SELECT discogs_shortlist
+                FROM warehouse.auction
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                """
+            ),
+            {
+                "marketplace": marketplace,
+                "listing_id": listing_id,
+            },
+        ).scalar()
+
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else []
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
+def render_identity_shortlist(
+    selected: pd.Series,
+    *,
+    account_context: AccountContext,
+    identity: str,
+) -> None:
+    """Inline Discogs chooser for flagged rows. Never a popup."""
+    del account_context
+    status = clean_text(selected.get("identity_status"))
+    photo_columns = st.columns(2)
+    listing_image = clean_text(selected.get("listing_image_url"))
+    discogs_thumb = clean_text(selected.get("discogs_thumb_url"))
+    with photo_columns[0]:
+        if listing_image:
+            st.image(listing_image, caption="Listing", width=160)
+    with photo_columns[1]:
+        if discogs_thumb:
+            st.image(discogs_thumb, caption="Discogs", width=160)
+
+    if status not in {"needs_review", "unmatched"}:
+        return
+
+    shortlist = load_identity_shortlist(
+        str(selected["marketplace"]),
+        str(selected["listing_id"]),
+    )
+    if not shortlist:
+        st.caption("No Discogs shortlist for this sale yet.")
+        return
+
+    st.markdown("**Discogs candidates** — click one to fill identity.")
+    for index, hit in enumerate(shortlist):
+        release_id = hit.get("id")
+        title = hit.get("title") or f"Release {release_id}"
+        catno = hit.get("catno") or ""
+        country = hit.get("country") or ""
+        year = hit.get("year") or ""
+        thumb = hit.get("thumb") or ""
+        columns = st.columns([1, 4, 1])
+        with columns[0]:
+            if thumb:
+                st.image(thumb, width=72)
+        with columns[1]:
+            st.markdown(
+                f"{title}  \n`{catno}` · {country} · {year}"
+            )
+        with columns[2]:
+            if st.button(
+                "Use this",
+                key=f"identity-choose:{identity}:{release_id}:{index}",
+            ):
+                apply_release_choice(
+                    get_engine(),
+                    marketplace=str(selected["marketplace"]),
+                    listing_id=str(selected["listing_id"]),
+                    release_id=int(release_id),
+                )
+                st.rerun()
+
+
 def render_listing_editor(
     dataframe: pd.DataFrame,
     account_context: AccountContext,
@@ -2843,11 +3103,29 @@ def render_listing_editor(
                     f"{selected['detail_status_display'] or 'not available'}"
                 ),
                 (
+                    "Identity: "
+                    f"{selected.get('identity_status_display') or 'Unmatched'}"
+                ),
+                (
+                    "Label: "
+                    f"{selected.get('label_display') or '—'}"
+                ),
+                (
+                    "Year: "
+                    f"{selected.get('release_year_display') or '—'}"
+                ),
+                (
                     "Pressing key: "
                     f"{selected['pressing_token'] or 'not assigned'}"
                 ),
             )
         )
+    )
+
+    render_identity_shortlist(
+        selected,
+        account_context=account_context,
+        identity=identity,
     )
 
     with st.form(

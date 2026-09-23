@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from auction_etl.classifiers import classify_media_details
+from auction_etl.classifiers.labels import extract_record_label
 from auction_etl.models.staging import Listing
 
 
@@ -22,11 +23,6 @@ _CATALOG_PATTERNS = (
     re.compile(
         r"\b([A-Z]{1,5}[-\s]?\d{2,6}(?:[-/][A-Z0-9]{1,6})?)\b"
     ),
-)
-_LABEL_RE = re.compile(
-    r"(?:record\s+label|label|レーベル)"
-    r"\s*[:：]\s*([^\n|]{2,80})",
-    re.IGNORECASE,
 )
 _MEDIA_GRADE_RE = re.compile(
     r"(?:record\s+grading|record\s+grade|disc|盤質|media)"
@@ -243,7 +239,7 @@ def normalize_listing(
         "format": media.format,
         "disc_count": media.disc_count,
         "catalog_number": _extract_catalog_number(text),
-        "label": _extract_first(text, _LABEL_RE),
+        "label": extract_record_label(text),
         "year": _extract_year(text),
         "country": _extract_country(text),
         "media_condition": _extract_first(text, _MEDIA_GRADE_RE),

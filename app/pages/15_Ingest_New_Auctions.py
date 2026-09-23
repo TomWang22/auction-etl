@@ -35,6 +35,11 @@ from auction_etl.auth.streamlit_auth import (  # noqa: E402
 from auction_etl.services.local_refresh_dispatch import (  # noqa: E402
     enqueue_refresh_via_local_worker,
 )
+from auction_etl.services.refresh_progress_copy import (  # noqa: E402
+    marketplace_card_captions,
+    show_processed_metric,
+    show_record_processing_bar,
+)
 from auction_etl.services.refresh_jobs import (  # noqa: E402
     build_refresh_engine,
     coordination_schema_ready,
@@ -564,17 +569,6 @@ def render_source_progress(
     status: dict[str, Any] | None,
 ) -> None:
     """Render record-oriented progress for every marketplace."""
-    overall_state = (
-        str(
-            status.get(
-                "status",
-                "",
-            )
-        )
-        if status
-        else ""
-    )
-
     source_states = durable_source_states(
         status
     )
@@ -588,20 +582,28 @@ def render_source_progress(
         )
     )
 
-    metric_columns = st.columns(
-        2
-    )
+    if show_processed_metric(
+        new_records=new_total
+    ):
+        metric_columns = st.columns(
+            2
+        )
 
-    with metric_columns[0]:
+        with metric_columns[0]:
+            st.metric(
+                "New records found",
+                f"{new_total:,}",
+            )
+
+        with metric_columns[1]:
+            st.metric(
+                "Processed",
+                f"{processed_total:,} / {new_total:,}",
+            )
+    else:
         st.metric(
             "New records found",
             f"{new_total:,}",
-        )
-
-    with metric_columns[1]:
-        st.metric(
-            "Processed",
-            f"{processed_total:,} / {new_total:,}",
         )
 
     columns = st.columns(
@@ -648,28 +650,6 @@ def render_source_progress(
             )
         )
 
-        discovered = max(
-            0,
-            int(
-                details.get(
-                    "discovered",
-                    0,
-                )
-                or 0
-            ),
-        )
-
-        already_known = max(
-            0,
-            int(
-                details.get(
-                    "already_known",
-                    0,
-                )
-                or 0
-            ),
-        )
-
         reason = str(
             details.get(
                 "message"
@@ -689,58 +669,20 @@ def render_source_progress(
                 f"**{new_records:,} new**"
             )
 
-            if (
-                state == "running"
-                and discovered > 0
-                and new_records == 0
+            for caption in marketplace_card_captions(
+                state=state,
+                processed=processed,
+                new_records=new_records,
+                reason=reason,
             ):
                 st.caption(
-                    f"Reconciling {discovered:,} "
-                    "discovered records…"
-                )
-            elif (
-                state == "running"
-                and new_records == 0
-            ):
-                st.caption(
-                    "Checking for new records…"
-                )
-            else:
-                st.caption(
-                    f"Processed {processed:,} "
-                    f"of {new_records:,}"
+                    caption
                 )
 
-            if (
-                discovered > 0
-                or already_known > 0
-            ):
-                st.caption(
-                    f"Discovered {discovered:,} · "
-                    f"already known {already_known:,}"
-                )
-
-            st.caption(
-                source_state_label(
-                    state,
-                    overall_state,
-                )
-            )
-
-            if (
-                state
-                in {
-                    "failed",
-                    "unavailable",
-                    "interrupted",
-                    "awaiting_handoff",
-                    "authentication_required",
-                }
-                and reason
-            ):
-                st.caption(
-                    reason
-                )
+    identity = (status or {}).get("identity_fill") or {}
+    identity_caption = str(identity.get("caption") or "").strip()
+    if identity_caption:
+        st.caption(identity_caption)
 
 
 def failed_sources(
@@ -1192,7 +1134,7 @@ def render_status(
             progress_text = (
                 f"Records processed before stop: "
                 f"{processed_records:,} of {new_records:,} "
-                "discovered new records"
+                "new records"
             )
         elif state in RUNNING_STATES:
             progress_text = (
@@ -1205,36 +1147,10 @@ def render_status(
                 f"of {new_records:,} new records"
             )
     elif state in RUNNING_STATES:
-        summary = marketplace_summary(
-            status
-        )
-
-        discovered_records = sum(
-            max(
-                0,
-                int(
-                    details.get(
-                        "discovered",
-                        0,
-                    )
-                    or 0
-                ),
-            )
-            for details
-            in summary.values()
-        )
-
         progress_fraction = 0.0
-
-        if discovered_records > 0:
-            progress_text = (
-                f"Record processing: reconciling "
-                f"{discovered_records:,} discovered records…"
-            )
-        else:
-            progress_text = (
-                "Record processing: checking for new records…"
-            )
+        progress_text = (
+            "Looking for new sales…"
+        )
     else:
         progress_fraction = 1.0
 
@@ -1250,10 +1166,14 @@ def render_status(
                 "Record processing finished"
             )
 
-    st.progress(
-        progress_fraction,
-        text=progress_text,
-    )
+    if show_record_processing_bar(
+        state=state,
+        new_records=new_records,
+    ):
+        st.progress(
+            progress_fraction,
+            text=progress_text,
+        )
 
     render_source_progress(
         status

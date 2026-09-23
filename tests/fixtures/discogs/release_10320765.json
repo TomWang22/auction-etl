@@ -1,0 +1,37 @@
+{
+  "id": 10320765,
+  "master_id": 1918614,
+  "title": "15才",
+  "year": 1974,
+  "released": "1974",
+  "country": "Japan",
+  "uri": "https://www.discogs.com/release/10320765-山口百恵-15才",
+  "thumb": "https://i.discogs.com/example-thumb.jpg",
+  "notes": "This release includes a lyric sheet and a glossy booklet of headshots of the artist.",
+  "artists": [
+    {
+      "id": 1088201,
+      "name": "Momoe Yamaguchi",
+      "anv": "山口百恵"
+    }
+  ],
+  "labels": [
+    {
+      "id": 33078,
+      "name": "CBS/Sony",
+      "catno": "SOLL-114",
+      "entity_type_name": "Label"
+    }
+  ],
+  "formats": [
+    {
+      "name": "Vinyl",
+      "qty": "1",
+      "descriptions": ["LP", "Album", "Stereo"]
+    }
+  ],
+  "identifiers": [
+    {"type": "Matrix / Runout", "value": "SOLL-114A2"},
+    {"type": "Matrix / Runout", "value": "SOLL-114B3"}
+  ]
+}

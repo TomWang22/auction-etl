@@ -22,7 +22,9 @@ import psycopg
 from psycopg.rows import dict_row
 
 from auction_etl.browser.ebay_owner import owner_socket_path
+from auction_etl.database.session import engine as warehouse_engine
 from auction_etl.runtime_authority import cloud_runtime_detected
+from auction_etl.services.discogs_fill import fill_unmatched_identities
 
 
 DEFAULT_PSQL_URL = (
@@ -427,6 +429,44 @@ def emit_source_state(
         ),
     )
 
+
+
+def run_discogs_identity_pass(
+    *,
+    logger: logging.Logger,
+    status_file: Path,
+    status: dict[str, Any],
+) -> None:
+    """Fill Discogs identity after warehouse sync. Never a review popup."""
+    try:
+        stats = fill_unmatched_identities(warehouse_engine)
+    except Exception:
+        logger.exception("Discogs identity fill failed")
+        status["identity_fill"] = {
+            "error": True,
+            "caption": "Identity fill did not finish",
+        }
+        write_json_atomic(status_file, status)
+        return
+
+    logger.info(
+        "Discogs identity fill filled_auto=%s needs_review=%s unmatched=%s searches=%s",
+        stats.filled_auto,
+        stats.needs_review,
+        stats.unmatched,
+        stats.searched,
+    )
+    status["identity_fill"] = {
+        "filled_auto": stats.filled_auto,
+        "filled_manual": stats.filled_manual,
+        "needs_review": stats.needs_review,
+        "unmatched": stats.unmatched,
+        "searched": stats.searched,
+        "reused": stats.reused,
+        "caption": stats.caption(),
+        "stopped_reason": stats.stopped_reason,
+    }
+    write_json_atomic(status_file, status)
 
 
 def run_command(
@@ -1518,6 +1558,11 @@ def process_ebay_raw_pages(
         database_url=psql_url,
         logger=logger,
         source="eBay",
+    )
+    run_discogs_identity_pass(
+        logger=logger,
+        status_file=status_file,
+        status=status,
     )
 
 
@@ -3013,6 +3058,11 @@ def main() -> int:
                 phase=(
                     "Safely synchronize Buyee without pruning"
                 ),
+                status_file=status_file,
+                status=status,
+            )
+            run_discogs_identity_pass(
+                logger=logger,
                 status_file=status_file,
                 status=status,
             )
