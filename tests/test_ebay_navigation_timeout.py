@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import pytest
 
 from scripts import crawl_ebay_sources as crawler
+
+
+@pytest.fixture(autouse=True)
+def skip_ebay_home_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unit tests stub the home tab; live crawls still load ebay.com first."""
+    monkeypatch.setattr(
+        crawler,
+        "prepare_ebay_search_tab",
+        lambda *args, **kwargs: None,
+    )
 
 
 class FakeResponse:
@@ -199,16 +212,84 @@ def test_empty_http_block_reloads_same_url_once(
     )
 
     url = "https://www.ebay.com/sch/i.html?_pgn=2"
-    _page, response, html, status, count = crawler.load_ebay_results_page(
-        Page(),
-        url,
-        page_number=2,
-        wait_seconds=1,
+    _page, response, html, status, count, _context = (
+        crawler.load_ebay_results_page(
+            Page(),
+            url,
+            page_number=2,
+            wait_seconds=1,
+        )
     )
 
     assert gotos == [url, url]
     assert response is not None
     assert response.status == 200
+    assert status == 200
+    assert count == 1
+    assert "/itm/123456789012" in html
+
+
+def test_empty_200_error_page_continues_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Akamai can stamp 'Error Page | eBay' with HTTP 200 and zero cards."""
+
+    htmls = [
+        "<html><body>Error Page | eBay</body></html>",
+        (
+            "<html><body>"
+            '<a href="https://www.ebay.com/itm/123456789012">item</a>'
+            "</body></html>"
+        ),
+    ]
+    responses = [
+        FakeResponse(200),
+        FakeResponse(200),
+    ]
+    gotos: list[str] = []
+
+    class Page:
+        url = "https://www.ebay.com/sch/i.html"
+        _html = htmls[0]
+
+        def goto(
+            self,
+            url: str,
+            *,
+            wait_until: str,
+            timeout: int,
+        ) -> FakeResponse:
+            del wait_until
+            del timeout
+            index = len(gotos)
+            gotos.append(url)
+            self._html = htmls[index]
+            return responses[index]
+
+        def content(self) -> str:
+            return self._html
+
+        def title(self) -> str:
+            return "Error Page | eBay"
+
+    monkeypatch.setattr(
+        crawler,
+        "wait_for_results",
+        lambda *args, **kwargs: None,
+    )
+
+    url = "https://www.ebay.com/sch/i.html"
+    _page, response, html, status, count, _context = (
+        crawler.load_ebay_results_page(
+            Page(),
+            url,
+            page_number=1,
+            wait_seconds=1,
+        )
+    )
+
+    assert gotos == [url, url]
+    assert response is not None
     assert status == 200
     assert count == 1
     assert "/itm/123456789012" in html
@@ -251,11 +332,13 @@ def test_block_with_listings_does_not_reload(
     )
 
     url = "https://www.ebay.com/sch/i.html"
-    _page, _response, _html, status, count = crawler.load_ebay_results_page(
-        Page(),
-        url,
-        page_number=1,
-        wait_seconds=1,
+    _page, _response, _html, status, count, _context = (
+        crawler.load_ebay_results_page(
+            Page(),
+            url,
+            page_number=1,
+            wait_seconds=1,
+        )
     )
 
     assert gotos == [url]
@@ -296,11 +379,13 @@ def test_empty_block_reload_happens_only_once(
     )
 
     url = "https://www.ebay.com/sch/i.html?_pgn=2"
-    _page, _response, _html, status, count = crawler.load_ebay_results_page(
-        Page(),
-        url,
-        page_number=2,
-        wait_seconds=1,
+    _page, _response, _html, status, count, _context = (
+        crawler.load_ebay_results_page(
+            Page(),
+            url,
+            page_number=2,
+            wait_seconds=1,
+        )
     )
 
     assert gotos == [url, url]
@@ -308,10 +393,10 @@ def test_empty_block_reload_happens_only_once(
     assert count == 0
 
 
-def test_empty_block_continue_uses_fresh_tab(
+def test_empty_block_continue_replaces_poisoned_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A poisoned 403 tab must not be reused for the continuation GET."""
+    """A 403 cookie stamp must not follow onto the continuation GET."""
 
     class Page:
         def __init__(
@@ -360,13 +445,35 @@ def test_empty_block_continue_uses_fresh_tab(
         ),
         200,
     )
-    created: list[str] = []
+    replaced: list[str] = []
+    poisoned_pages: list[str] = []
 
-    class Context:
+    class PoisonedContext:
         def new_page(self) -> Page:
-            created.append("new")
+            poisoned_pages.append("new")
+            raise AssertionError(
+                "continuation must not open a tab on the poisoned context"
+            )
+
+        def close(self) -> None:
+            replaced.append("closed")
+
+    class FreshContext:
+        def new_page(self) -> Page:
+            replaced.append("new")
             return second
 
+    class Runtime:
+        def replace_context(self, profile: str) -> FreshContext:
+            assert profile == "ebay-public"
+            replaced.append(profile)
+            return FreshContext()
+
+    monkeypatch.setattr(
+        crawler,
+        "browser",
+        Runtime(),
+    )
     monkeypatch.setattr(
         crawler,
         "wait_for_results",
@@ -374,21 +481,49 @@ def test_empty_block_continue_uses_fresh_tab(
     )
 
     url = "https://www.ebay.com/sch/i.html?_pgn=3"
-    page, response, html, status, count = crawler.load_ebay_results_page(
-        first,
-        url,
-        page_number=3,
-        wait_seconds=1,
-        context=Context(),
+    page, response, html, status, count, context = (
+        crawler.load_ebay_results_page(
+            first,
+            url,
+            page_number=3,
+            wait_seconds=1,
+            context=PoisonedContext(),
+            profile="ebay-public",
+        )
     )
 
-    assert created == ["new"]
+    assert poisoned_pages == []
+    assert replaced == ["ebay-public", "new"]
     assert first.closed is True
+    assert isinstance(context, FreshContext)
     assert page is second
     assert response is not None
     assert status == 200
     assert count == 1
     assert "/itm/123456789012" in html
+
+
+def test_empty_block_continue_uses_replace_context() -> None:
+    """The continue path must rebuild the browser context from disk."""
+    source = inspect.getsource(
+        crawler.load_ebay_results_page
+    )
+
+    replace_at = source.index("replace_context(")
+    new_page_at = source.index("context.new_page()")
+
+    assert replace_at < new_page_at
+    assert "EBAY_CRAWL_PHASE=context_replace" in source
+    assert source.count("prepare_ebay_search_tab(") >= 2
+    first_home = source.index("prepare_ebay_search_tab(")
+    first_nav = source.index("navigate_for_results(")
+    assert first_home < first_nav
+    assert "reuse_browser=1" in (
+        Path(__file__).resolve().parents[1]
+        / "auction_etl"
+        / "browser"
+        / "manager.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_pagination_opens_a_fresh_tab_per_page() -> None:
@@ -408,3 +543,17 @@ def test_pagination_opens_a_fresh_tab_per_page() -> None:
         "page.close()",
         loop_at,
     ) != -1
+
+
+def test_crawl_source_keeps_replaced_context() -> None:
+    """Pagination after a 403 continue must use the rebuilt context."""
+    source = inspect.getsource(
+        crawler.crawl_source
+    )
+
+    assert (
+        "page, response, html, status, count, context ="
+        in source
+    )
+    assert "profile=source.profile" in source
+    assert "persist_ebay_storage_state(context)" in source

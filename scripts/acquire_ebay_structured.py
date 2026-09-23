@@ -1357,6 +1357,7 @@ def acquire_page(
                     context.close()
 
             launched_browser = playwright.chromium.launch(
+                channel="chrome",
                 headless=headless,
             )
 

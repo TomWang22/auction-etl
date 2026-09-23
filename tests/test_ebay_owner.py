@@ -27,7 +27,7 @@ def test_forwarded_environment_keeps_local_ebay_state() -> None:
     }
 
 
-def test_owner_server_stays_headed_offscreen_and_has_no_cdp() -> None:
+def test_owner_server_pops_visible_chrome_and_has_no_cdp() -> None:
     source = (
         ROOT
         / "scripts"
@@ -38,12 +38,11 @@ def test_owner_server_stays_headed_offscreen_and_has_no_cdp() -> None:
 
     assert "connect_over_cdp" not in source
     assert "--remote-debugging-port" not in source
-    assert "channel=" not in source
-    assert 'channel="chrome"' not in source
+    assert 'channel="chrome"' in source
     assert "launch_persistent_context" not in source
     assert "chromium.launch(" in source
     assert "headless=False" in source
-    assert "--window-position=-32000,-32000" in source
+    assert "--window-position=-32000,-32000" not in source
     assert "browser=self._browser" in source
     assert "storage_state=" in source
     assert "browser.new_context(" not in source

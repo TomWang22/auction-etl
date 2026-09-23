@@ -125,3 +125,29 @@ def test_ebay_profile_loads_gzip_compressed_secret(
 
     assert state is not None
     assert state["cookies"][0]["domain"] == ".ebay.com"
+
+
+def test_managed_replace_context_delegates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replaced: list[str] = []
+
+    class Managed:
+        def replace_context(self, profile: str) -> str:
+            replaced.append(profile)
+            return "fresh-context"
+
+    monkeypatch.setenv(
+        "AUCTION_MARKETPLACE_BROWSER_MODE",
+        "managed",
+    )
+    monkeypatch.setattr(
+        "auction_etl.browser.manager.browser",
+        Managed(),
+    )
+
+    runtime = MarketplaceBrowserRuntime()
+    result = runtime.replace_context("ebay-public")
+
+    assert replaced == ["ebay-public"]
+    assert result == "fresh-context"

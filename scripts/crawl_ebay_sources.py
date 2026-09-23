@@ -22,6 +22,10 @@ from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from auction_etl.services.marketplace_browser_runtime import browser
+from auction_etl.browser.manager import (
+    ebay_storage_state_path,
+    prepare_ebay_search_tab,
+)
 from auction_etl.database.session import SessionLocal
 from auction_etl.models.crawl import CrawlJob
 from auction_etl.services.ingest import ingest_raw_page
@@ -439,6 +443,42 @@ def _configure_ebay_results_tab(page: Page) -> Page:
     return page
 
 
+def persist_ebay_storage_state(context: Any) -> None:
+    """Save live eBay cookies after a good page so the jar stays current."""
+    path = ebay_storage_state_path()
+    persist = getattr(context, "storage_state", None)
+    if path is None or persist is None:
+        return
+    persist(path=str(path))
+    print(
+        "EBAY_CRAWL_PHASE=storage_state_persisted",
+        flush=True,
+    )
+
+
+def _empty_ebay_access_block(
+    *,
+    status: int | None,
+    html: str,
+    title: str,
+    count: int,
+) -> bool:
+    """Return whether this response is an empty Akamai/error stamp."""
+    if count > 0:
+        return False
+    if status in {401, 403, 429}:
+        return True
+    folded = f"{title}\n{html}".casefold()
+    return any(
+        marker in folded
+        for marker in (
+            "error page | ebay",
+            "pardon our interruption",
+            "security measure",
+        )
+    )
+
+
 def load_ebay_results_page(
     page: Page,
     url: str,
@@ -446,9 +486,14 @@ def load_ebay_results_page(
     page_number: int,
     wait_seconds: float,
     context: Any | None = None,
-) -> tuple[Page, Any | None, str, int | None, int]:
+    profile: str | None = None,
+) -> tuple[Page, Any | None, str, int | None, int, Any | None]:
     """Load one sold-search page, continuing once after an empty HTTP block."""
 
+    prepare_ebay_search_tab(
+        page,
+        page_number=page_number,
+    )
     response = navigate_for_results(
         page,
         url,
@@ -465,8 +510,17 @@ def load_ebay_results_page(
         if response is not None
         else None
     )
+    try:
+        title = page.title()
+    except Exception:
+        title = ""
 
-    if status in {401, 403, 429} and count == 0:
+    if _empty_ebay_access_block(
+        status=status,
+        html=html,
+        title=title,
+        count=count,
+    ):
         print(
             "EBAY_CRAWL_PHASE=access_continue "
             f"page={page_number} status={status}",
@@ -474,10 +528,26 @@ def load_ebay_results_page(
         )
         if context is not None:
             previous = page
+            print(
+                "EBAY_CRAWL_PHASE=context_replace "
+                f"page={page_number} "
+                f"profile={profile or 'ebay-public'}",
+                flush=True,
+            )
+            context = browser.replace_context(
+                profile or "ebay-public"
+            )
             page = _configure_ebay_results_tab(
                 context.new_page()
             )
-            previous.close()
+            try:
+                previous.close()
+            except Exception:
+                pass
+        prepare_ebay_search_tab(
+            page,
+            page_number=page_number,
+        )
         response = navigate_for_results(
             page,
             url,
@@ -495,7 +565,7 @@ def load_ebay_results_page(
             else None
         )
 
-    return page, response, html, status, count
+    return page, response, html, status, count, context
 
 
 def page_payload(
@@ -879,13 +949,14 @@ def crawl_source(
                         flush=True,
                     )
 
-                    page, response, html, status, count = (
+                    page, response, html, status, count, context = (
                         load_ebay_results_page(
                             page,
                             url,
                             page_number=page_number,
                             wait_seconds=source.wait_seconds,
                             context=context,
+                            profile=source.profile,
                         )
                     )
 
@@ -902,6 +973,9 @@ def crawl_source(
                         f"listing_count={count}",
                         flush=True,
                     )
+
+                    if count > 0:
+                        persist_ebay_storage_state(context)
 
                     current_url = page.url
 

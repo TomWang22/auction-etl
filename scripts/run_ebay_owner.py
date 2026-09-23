@@ -270,12 +270,13 @@ def main() -> int:
         ).resolve()
 
         browser = playwright.chromium.launch(
+            channel="chrome",
             headless=False,
             args=[
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-popup-blocking",
-                "--window-position=-32000,-32000",
+                "--window-position=80,80",
                 "--window-size=1200,900",
             ],
         )

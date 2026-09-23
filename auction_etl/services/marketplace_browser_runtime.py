@@ -241,38 +241,41 @@ class MarketplaceBrowserRuntime:
             f"phase=storage_state_ready profile={profile}",
             flush=True,
         )
-        print(
-            "AUCTION_BROWSER_RUNTIME_PHASE "
-            f"phase=playwright_start profile={profile}",
-            flush=True,
-        )
-
-        self._playwright = sync_playwright().start()
-
-        print(
-            "AUCTION_BROWSER_RUNTIME_PHASE "
-            f"phase=playwright_ready profile={profile}",
-            flush=True,
-        )
 
         try:
-            print(
-                "AUCTION_BROWSER_RUNTIME_PHASE "
-                f"phase=chromium_launch profile={profile}",
-                flush=True,
-            )
+            if self._playwright is None:
+                print(
+                    "AUCTION_BROWSER_RUNTIME_PHASE "
+                    f"phase=playwright_start profile={profile}",
+                    flush=True,
+                )
 
-            self._browser = self._playwright.chromium.launch(
-                headless=True,
-                timeout=_EPHEMERAL_LAUNCH_TIMEOUT_MS,
-                args=list(_CLOUD_CHROMIUM_ARGS),
-            )
+                self._playwright = sync_playwright().start()
 
-            print(
-                "AUCTION_BROWSER_RUNTIME_PHASE "
-                f"phase=chromium_ready profile={profile}",
-                flush=True,
-            )
+                print(
+                    "AUCTION_BROWSER_RUNTIME_PHASE "
+                    f"phase=playwright_ready profile={profile}",
+                    flush=True,
+                )
+
+            if self._browser is None:
+                print(
+                    "AUCTION_BROWSER_RUNTIME_PHASE "
+                    f"phase=chromium_launch profile={profile}",
+                    flush=True,
+                )
+
+                self._browser = self._playwright.chromium.launch(
+                    headless=True,
+                    timeout=_EPHEMERAL_LAUNCH_TIMEOUT_MS,
+                    args=list(_CLOUD_CHROMIUM_ARGS),
+                )
+
+                print(
+                    "AUCTION_BROWSER_RUNTIME_PHASE "
+                    f"phase=chromium_ready profile={profile}",
+                    flush=True,
+                )
 
             options: dict[str, Any] = {
                 "locale": "en-US",
@@ -341,6 +344,44 @@ class MarketplaceBrowserRuntime:
             )
             return managed_browser.context(profile)
 
+        return self._ephemeral_context(profile)
+
+    def replace_context(self, profile: str) -> BrowserContext:
+        """Rebuild the eBay context from the original storage-state jar."""
+
+        mode = self._effective_mode()
+
+        if mode == "managed":
+            from auction_etl.browser.manager import browser as managed_browser
+
+            print(
+                "AUCTION_BROWSER_RUNTIME "
+                f"mode=managed replace_context profile={profile}",
+                flush=True,
+            )
+            return managed_browser.replace_context(profile)
+
+        if self._context is not None:
+            try:
+                self._context.close()
+            except Exception:
+                pass
+            finally:
+                self._context = None
+
+        if self._browser is not None:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+            finally:
+                self._browser = None
+
+        print(
+            "AUCTION_BROWSER_RUNTIME "
+            f"mode=ephemeral replace_context profile={profile}",
+            flush=True,
+        )
         return self._ephemeral_context(profile)
 
     def close(self) -> None:
