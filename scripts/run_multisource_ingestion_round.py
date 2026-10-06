@@ -43,13 +43,14 @@ LOCK_PATH = (
     / "multisource-ingestion-round.lock"
 )
 
-PROTECTED_KEYS = (
+PROTECTED_NONDECREASING_KEYS = (
     "assignments",
-    "snapshots",
-    "timeline",
     "pressings",
     "families",
+    "snapshots",
+    "timeline",
 )
+PROTECTED_KEYS = PROTECTED_NONDECREASING_KEYS
 
 
 class MultiSourceIngestionError(RuntimeError):
@@ -364,6 +365,73 @@ def pending_marketplace_identities(
         )
 
     return result
+
+
+def drain_pending_marketplace_identities(
+    *,
+    database_url: str,
+    pending: Mapping[str, int],
+) -> dict[str, int]:
+    """Move leftover staged Buyee/eBay identities into the warehouse."""
+
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = database_url
+
+    for marketplace, count in pending.items():
+        if int(count) < 1:
+            continue
+
+        print(
+            "Draining pending "
+            f"{marketplace} staging identities: "
+            f"{count}",
+            flush=True,
+        )
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "auction_etl.cli.main",
+                "sync",
+                "warehouse",
+                "--marketplace",
+                marketplace,
+                "--no-prune",
+            ],
+            cwd=ROOT,
+            check=False,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        if completed.stdout:
+            print(
+                completed.stdout,
+                end="",
+                flush=True,
+            )
+
+        if completed.returncode != 0:
+            raise MultiSourceIngestionError(
+                "Failed to drain pending "
+                f"{marketplace} staging identities."
+            )
+
+    remaining = pending_marketplace_identities(
+        psql_url(database_url)
+    )
+
+    if any(remaining.values()):
+        raise MultiSourceIngestionError(
+            "Buyee/eBay staging still contains "
+            "pending identities after warehouse "
+            f"sync: {remaining}"
+        )
+
+    return remaining
 
 
 def reference_coverage(
@@ -994,16 +1062,21 @@ def verify_transition(
     before: Mapping[str, int],
     after: Mapping[str, int],
 ) -> dict[str, int]:
-    """Verify the post-refresh protected-state transition."""
+    """Verify the post-refresh protected-state transition.
 
-    for key in PROTECTED_KEYS:
+    Completeness snapshots and timeline may grow when new listings or
+    identity fills append immutable history. Assignments, pressings, and
+    families may also grow. None of those protected counts may fall.
+    """
+
+    for key in PROTECTED_NONDECREASING_KEYS:
         if int(
             after[key]
-        ) != int(
+        ) < int(
             before[key]
         ):
             raise MultiSourceIngestionError(
-                "Protected state changed: "
+                "Protected state decreased: "
                 f"{key}: "
                 f"{before[key]} -> "
                 f"{after[key]}"
@@ -1068,6 +1141,15 @@ def verify_transition(
         )
     )
 
+    assignment_delta = (
+        int(
+            after["assignments"]
+        )
+        - int(
+            before["assignments"]
+        )
+    )
+
     queue_delta = (
         int(
             after["queue"]
@@ -1077,10 +1159,11 @@ def verify_transition(
         )
     )
 
-    if queue_delta != auction_delta:
+    if queue_delta != auction_delta - assignment_delta:
         raise MultiSourceIngestionError(
             f"Queue delta {queue_delta} "
-            f"!= auction delta {auction_delta}."
+            f"!= auction delta {auction_delta} "
+            f"- assignment delta {assignment_delta}."
         )
 
     return {
@@ -1278,15 +1361,6 @@ def main(
         )
     )
 
-    if any(
-        pending_before.values()
-    ):
-        raise MultiSourceIngestionError(
-            "Existing Buyee/eBay staging "
-            "contains pending identities: "
-            f"{pending_before}"
-        )
-
     verify_transition(
         before,
         before,
@@ -1414,6 +1488,14 @@ def main(
             "PGOPTIONS",
             None,
         )
+
+        if any(
+            pending_before.values()
+        ):
+            drain_pending_marketplace_identities(
+                database_url=arguments.database_url,
+                pending=pending_before,
+            )
 
         command = [
             sys.executable,

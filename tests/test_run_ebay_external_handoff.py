@@ -139,19 +139,27 @@ def test_acquisition_command_is_always_headed(
         wait_seconds=4.0,
     )
 
-    state = (
-        tmp_path
-        / "state.json"
-    )
-
     artifact = (
         tmp_path
         / "artifact.json"
     )
 
+    profile = (
+        tmp_path
+        / "facerecords"
+    )
+    profile.mkdir()
+    (
+        profile
+        / "Default"
+    ).write_text(
+        "existing-profile\n",
+        encoding="utf-8",
+    )
+
     command = build_acquisition_command(
         source=source,
-        storage_state=state,
+        profile_dir=profile,
         artifact=artifact,
         timeout_seconds=45.0,
         settle_seconds=4.0,
@@ -160,6 +168,7 @@ def test_acquisition_command_is_always_headed(
 
     assert "--headless" not in command
     assert "_ipg" not in command
+    assert "--storage-state" not in command
     assert (
         command[
             command.index(
@@ -173,12 +182,12 @@ def test_acquisition_command_is_always_headed(
     assert (
         command[
             command.index(
-                "--storage-state"
+                "--profile-dir"
             )
             + 1
         ]
         == str(
-            state
+            profile
         )
     )
 
@@ -212,7 +221,7 @@ def test_acquisition_command_rejects_page_one_only_window(
     ):
         build_acquisition_command(
             source=source,
-            storage_state=tmp_path / "state.json",
+            profile_dir=tmp_path / "profile",
             artifact=tmp_path / "artifact.json",
             timeout_seconds=45.0,
             settle_seconds=4.0,
@@ -294,7 +303,7 @@ def test_acquisition_command_rejects_configured_cap_below_minimum(
     ):
         build_acquisition_command(
             source=source,
-            storage_state=tmp_path / "state.json",
+            profile_dir=tmp_path / "profile",
             artifact=tmp_path / "artifact.json",
             timeout_seconds=45.0,
             settle_seconds=4.0,
@@ -560,10 +569,20 @@ def operator_args(
         '{"cookies":[]}\n',
         encoding="utf-8",
     )
+    profile_dir = tmp_path / "facerecords"
+    profile_dir.mkdir()
+    (
+        profile_dir
+        / "Default"
+    ).write_text(
+        "existing-profile\n",
+        encoding="utf-8",
+    )
 
     return argparse.Namespace(
         config=config,
         storage_state=storage_state,
+        profile_dir=profile_dir,
         artifact=tmp_path / "artifact.json",
         timeout_seconds=45.0,
         settle_seconds=None,

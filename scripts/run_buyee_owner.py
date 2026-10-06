@@ -27,6 +27,7 @@ from typing import Any, Iterator, Mapping
 from playwright.sync_api import BrowserContext, Playwright, sync_playwright
 
 from auction_etl.browser.buyee_owner import OWNER_PROTOCOL_VERSION
+from auction_etl.browser.defaults import LOCAL_CHROME_IGNORE_DEFAULT_ARGS
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -1218,9 +1219,7 @@ def main() -> int:
         context = (
             playwright.chromium.launch_persistent_context(
                 user_data_dir=str(runtime_profile_dir),
-                executable_path=str(
-                    executable
-                ),
+                channel="chrome",
                 headless=headless,
                 user_agent=(
                     "Mozilla/5.0 "
@@ -1238,9 +1237,12 @@ def main() -> int:
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-popup-blocking",
-                    "--window-position=-32000,-32000",
+                    "--window-position=80,80",
                     "--window-size=1200,900",
                 ],
+                ignore_default_args=list(
+                    LOCAL_CHROME_IGNORE_DEFAULT_ARGS
+                ),
             )
         )
 

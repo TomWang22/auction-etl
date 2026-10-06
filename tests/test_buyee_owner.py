@@ -64,7 +64,10 @@ def test_owner_server_has_no_cdp_transport() -> None:
     assert "launch_persistent_context" in source
     assert "headless=headless" in source
     assert '"headless": False' in source
-    assert "--window-position=-32000,-32000" in source
+    assert 'channel="chrome"' in source
+    assert "ignore_default_args" in source
+    assert "LOCAL_CHROME_IGNORE_DEFAULT_ARGS" in source
+    assert "--window-position=-32000,-32000" not in source
 
 
 def test_owner_protocol_is_high_level_only() -> None:

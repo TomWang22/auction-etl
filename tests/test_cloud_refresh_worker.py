@@ -105,6 +105,8 @@ def test_worker_uses_existing_canonical_runner() -> None:
     assert "heartbeat_refresh_job" in source
     assert "release_refresh_job" in source
     assert "AUCTION_BUYEE_PROFILE_DIR" in source
+    assert '"AUCTION_WORKER_LEASE_SECONDS"' in source
+    assert '"1800"' in source
 
 
 def test_railway_config_runs_persistent_worker_when_repo_config_exists() -> None:

@@ -21,6 +21,9 @@ from auction_etl.auth.oidc_production import (
 from auction_etl.services.account_access import (
     resolve_or_create_personal_account,
 )
+from auction_etl.services.account_visibility import (
+    attach_development_warehouse_visibility,
+)
 
 
 def _claim(name: str, default: str = "") -> str:
@@ -101,6 +104,14 @@ def render_login_screen() -> None:
         "Sign in to access your listings, tracked artists, "
         "refresh history, and collection decisions."
     )
+    st.caption(
+        "Local Yahoo login must return to "
+        "https://localhost:8501/oauth2callback. Open this UI at "
+        "https://localhost:8501. Collector Review serves TLS locally so "
+        "Yahoo's required HTTPS callback can complete. Yahoo identifies "
+        "you; the local warehouse listings are attached to this account "
+        "after sign-in."
+    )
     if st.button(
         "Sign in or create account",
         type="primary",
@@ -130,7 +141,9 @@ def require_authenticated_account(engine: Engine) -> AccountContext:
         render_login_screen()
         raise RuntimeError("Streamlit stop unexpectedly returned.")
 
-    return resolve_or_create_personal_account(engine, principal)
+    context = resolve_or_create_personal_account(engine, principal)
+    attach_development_warehouse_visibility(engine, context.account_id)
+    return context
 
 
 def render_account_menu(context: AccountContext) -> None:

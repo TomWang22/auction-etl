@@ -105,6 +105,32 @@ def first_attr(
     return str(value) if value else None
 
 
+_PLACEHOLDER_IMAGE = re.compile(
+    r"spacer\.gif|noimage|placeholder",
+    re.IGNORECASE,
+)
+
+
+def is_placeholder_image(url: str | None) -> bool:
+    """True for Buyee lazy-load spacers and missing-image stubs."""
+    if not url or not str(url).strip():
+        return True
+    return bool(_PLACEHOLDER_IMAGE.search(str(url)))
+
+
+def parse_image(card: Tag) -> str | None:
+    image = card.select_one("img.g-thumbnail__image") or card.select_one(
+        "img[data-src], img[src]"
+    )
+    if image is None:
+        return None
+    for attribute in ("data-src", "data-original", "data-lazy", "src"):
+        value = image.get(attribute)
+        if value and not is_placeholder_image(str(value)):
+            return str(value)
+    return None
+
+
 def labeled_value(
     card: Tag,
     label: str,
@@ -319,18 +345,6 @@ def parse_seller(card: Tag) -> str | None:
     return labeled_value(
         card,
         "Seller",
-    )
-
-
-def parse_image(card: Tag) -> str | None:
-    return first_attr(
-        card,
-        "img.g-thumbnail__image",
-        "src",
-    ) or first_attr(
-        card,
-        "img[src]",
-        "src",
     )
 
 

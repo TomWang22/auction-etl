@@ -448,6 +448,20 @@ def extract_offer(
     json_ld: list[dict[str, Any]],
     visible_text: str,
 ) -> tuple[Decimal | None, str | None]:
+    # An accepted offer prints the asking price struck through, then the
+    # price that was paid. The last amount on that line is the sale.
+    final_line = re.search(
+        r"Final Price:\s*([^\n]{0,120})",
+        visible_text,
+        re.IGNORECASE,
+    )
+    if final_line:
+        amounts = PRICE_PATTERN.findall(final_line.group(0))
+        if len(amounts) >= 2:
+            accepted = decimal_value(amounts[-1])
+            if accepted is not None:
+                return accepted, "USD"
+
     for payload in json_ld:
         offers = payload.get("offers")
 

@@ -124,7 +124,7 @@ def test_listing_table_uses_single_row_selection() -> None:
 
     required_fragments = (
         "from st_aggrid import AgGrid, JsCode",
-        "def _aggrid_selected_identity(",
+        "_grid_click_identity(",
         "AgGrid(",
         '"mode": "singleRow"',
         '"checkboxes": False',

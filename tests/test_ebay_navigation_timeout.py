@@ -141,6 +141,28 @@ def test_ebay_navigation_timeout_is_nonfatal(
     )
 
 
+def test_aborted_navigation_returns_to_result_validation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An interruption abort is the same recovery path as a timeout."""
+
+    class AbortedPage:
+        def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+            del url, wait_until, timeout
+            raise crawler.PlaywrightError(
+                "Page.goto: net::ERR_ABORTED"
+            )
+
+    response = crawler.navigate_for_results(
+        AbortedPage(),
+        "https://www.ebay.com/sch/i.html",
+        page_number=1,
+    )
+
+    assert response is None
+    assert "navigation_aborted_nonfatal page=1" in capsys.readouterr().out
+
+
 def test_non_timeout_navigation_failure_propagates() -> None:
     """Only Playwright navigation timeouts are suppressed."""
     with pytest.raises(
@@ -168,7 +190,7 @@ def test_crawl_source_uses_resilient_navigation_helper() -> None:
 def test_empty_http_block_reloads_same_url_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Akamai 403 on a later page is a one-shot cookie stamp, not the end."""
+    """Akamai 403 on page 1 is a one-shot cookie stamp, not the end."""
 
     htmls = [
         "<html><body>Error Page | eBay</body></html>",
@@ -185,7 +207,7 @@ def test_empty_http_block_reloads_same_url_once(
     gotos: list[str] = []
 
     class Page:
-        url = "https://www.ebay.com/sch/i.html?_pgn=2"
+        url = "https://www.ebay.com/sch/i.html"
         _html = htmls[0]
 
         def goto(
@@ -211,12 +233,12 @@ def test_empty_http_block_reloads_same_url_once(
         lambda *args, **kwargs: None,
     )
 
-    url = "https://www.ebay.com/sch/i.html?_pgn=2"
+    url = "https://www.ebay.com/sch/i.html"
     _page, response, html, status, count, _context = (
         crawler.load_ebay_results_page(
             Page(),
             url,
-            page_number=2,
+            page_number=1,
             wait_seconds=1,
         )
     )
@@ -293,6 +315,58 @@ def test_empty_200_error_page_continues_once(
     assert status == 200
     assert count == 1
     assert "/itm/123456789012" in html
+
+
+def test_page_one_still_blocked_returns_to_homepage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leave the orange jacket so the next artist search is not a cold error URL."""
+    homes: list[int | None] = []
+
+    def record_home(*args, **kwargs) -> None:
+        del args
+        homes.append(kwargs.get("page_number"))
+
+    monkeypatch.setattr(
+        crawler,
+        "prepare_ebay_search_tab",
+        record_home,
+    )
+    monkeypatch.setattr(
+        crawler,
+        "wait_for_results",
+        lambda *args, **kwargs: None,
+    )
+
+    class Page:
+        url = "https://www.ebay.com/sch/i.html"
+
+        def goto(
+            self,
+            url: str,
+            *,
+            wait_until: str,
+            timeout: int,
+        ) -> FakeResponse:
+            del url
+            del wait_until
+            del timeout
+            return FakeResponse(403)
+
+        def content(self) -> str:
+            return "<html><body>Error Page | eBay</body></html>"
+
+        def title(self) -> str:
+            return "Error Page | eBay"
+
+    crawler.load_ebay_results_page(
+        Page(),
+        "https://www.ebay.com/sch/i.html",
+        page_number=1,
+        wait_seconds=1,
+    )
+
+    assert homes == [1, 1, 1]
 
 
 def test_block_with_listings_does_not_reload(
@@ -388,7 +462,7 @@ def test_empty_block_reload_happens_only_once(
         )
     )
 
-    assert gotos == [url, url]
+    assert gotos == [url]
     assert status == 403
     assert count == 0
 
@@ -407,7 +481,7 @@ def test_empty_block_continue_replaces_poisoned_context(
             self._html = html
             self._status = status
             self.closed = False
-            self.url = "https://www.ebay.com/sch/i.html?_pgn=3"
+            self.url = "https://www.ebay.com/sch/i.html"
 
         def goto(
             self,
@@ -480,12 +554,12 @@ def test_empty_block_continue_replaces_poisoned_context(
         lambda *args, **kwargs: None,
     )
 
-    url = "https://www.ebay.com/sch/i.html?_pgn=3"
+    url = "https://www.ebay.com/sch/i.html"
     page, response, html, status, count, context = (
         crawler.load_ebay_results_page(
             first,
             url,
-            page_number=3,
+            page_number=1,
             wait_seconds=1,
             context=PoisonedContext(),
             profile="ebay-public",
@@ -503,6 +577,150 @@ def test_empty_block_continue_replaces_poisoned_context(
     assert "/itm/123456789012" in html
 
 
+def test_later_page_clicks_next_instead_of_opening_pgn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Page 2 follows the results Next control. A direct _pgn URL is the orange jacket."""
+
+    class NextLink:
+        def __init__(self, page: "ResultsPage") -> None:
+            self.page = page
+            self.first = self
+
+        def count(self) -> int:
+            return 1
+
+        def get_attribute(self, name: str) -> str:
+            del name
+            return "https://www.ebay.com/sch/i.html?_pgn=2"
+
+        def click(self, timeout: int) -> None:
+            del timeout
+            self.page.clicked = True
+            self.page.html = (
+                "<a href='/itm/123456789012'>kept</a>"
+            )
+
+    class ResultsPage:
+        def __init__(self) -> None:
+            self.clicked = False
+            self.gotos: list[str] = []
+            self.html = "<a class='pagination__next' href='?_pgn=2'></a>"
+            self.url = "https://www.ebay.com/sch/i.html"
+
+        def locator(self, selector: str) -> NextLink:
+            del selector
+            return NextLink(self)
+
+        def goto(
+            self,
+            url: str,
+            *,
+            wait_until: str,
+            timeout: int,
+        ) -> FakeResponse:
+            del wait_until, timeout
+            self.gotos.append(url)
+            return FakeResponse(403)
+
+        def content(self) -> str:
+            return self.html
+
+        def title(self) -> str:
+            return "Anita Mui for sale | eBay"
+
+    monkeypatch.setattr(
+        crawler,
+        "wait_for_results",
+        lambda *args, **kwargs: None,
+    )
+    page = ResultsPage()
+    loaded, _response, html, status, count, _context = (
+        crawler.load_ebay_results_page(
+            page,
+            "https://www.ebay.com/sch/i.html?_nkw=anita+mui&_pgn=2",
+            page_number=2,
+            wait_seconds=1,
+            context=object(),
+            profile="ebay-public",
+        )
+    )
+
+    assert loaded is page
+    assert page.clicked is True
+    assert page.gotos == []
+    assert count == 1
+    assert status is None
+    assert "/itm/123456789012" in html
+
+
+def test_later_page_error_does_not_deep_link_after_replace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Teresa Teng _pgn=3 on a fresh jar is the orange jacket error page."""
+
+    class Page:
+        def __init__(self) -> None:
+            self.closed = False
+            self.url = "https://www.ebay.com/sch/i.html?_pgn=3"
+
+        def goto(
+            self,
+            url: str,
+            *,
+            wait_until: str,
+            timeout: int,
+        ) -> FakeResponse:
+            del url
+            del wait_until
+            del timeout
+            return FakeResponse(403)
+
+        def content(self) -> str:
+            return "<html><body>Error Page | eBay</body></html>"
+
+        def title(self) -> str:
+            return "Error Page | eBay"
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Runtime:
+        def replace_context(self, profile: str) -> None:
+            raise AssertionError(
+                "later pages must not rebuild Chrome to retry _pgn"
+            )
+
+    monkeypatch.setattr(
+        crawler,
+        "browser",
+        Runtime(),
+    )
+    monkeypatch.setattr(
+        crawler,
+        "wait_for_results",
+        lambda *args, **kwargs: None,
+    )
+
+    first = Page()
+    url = "https://www.ebay.com/sch/i.html?_pgn=3"
+    page, _response, _html, status, count, _context = (
+        crawler.load_ebay_results_page(
+            first,
+            url,
+            page_number=3,
+            wait_seconds=1,
+            context=object(),
+            profile="ebay-public",
+        )
+    )
+
+    assert page is first
+    assert first.closed is False
+    assert status == 403
+    assert count == 0
+
+
 def test_empty_block_continue_uses_replace_context() -> None:
     """The continue path must rebuild the browser context from disk."""
     source = inspect.getsource(
@@ -514,7 +732,9 @@ def test_empty_block_continue_uses_replace_context() -> None:
 
     assert replace_at < new_page_at
     assert "EBAY_CRAWL_PHASE=context_replace" in source
-    assert source.count("prepare_ebay_search_tab(") >= 2
+    assert "EBAY_CRAWL_PHASE=access_stop" in source
+    assert "page_number == 1" in source
+    assert "page_number != 1" in source
     first_home = source.index("prepare_ebay_search_tab(")
     first_nav = source.index("navigate_for_results(")
     assert first_home < first_nav
@@ -526,8 +746,8 @@ def test_empty_block_continue_uses_replace_context() -> None:
     ).read_text(encoding="utf-8")
 
 
-def test_pagination_opens_a_fresh_tab_per_page() -> None:
-    """Each _pgn must load in a new tab so a prior 403 cannot poison page 2."""
+def test_pagination_keeps_the_same_results_tab() -> None:
+    """Later sold-search pages stay on the live tab; a new tab plus _pgn is the orange jacket."""
     source = inspect.getsource(
         crawler.crawl_source
     )
@@ -538,11 +758,8 @@ def test_pagination_opens_a_fresh_tab_per_page() -> None:
     assert source.find(
         "context.new_page()",
         loop_at,
-    ) != -1
-    assert source.find(
-        "page.close()",
-        loop_at,
-    ) != -1
+    ) == -1
+    assert "previous.close()" not in source[loop_at:]
 
 
 def test_crawl_source_keeps_replaced_context() -> None:

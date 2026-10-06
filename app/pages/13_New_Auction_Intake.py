@@ -54,12 +54,24 @@ def _auction_label(row: dict[str, object]) -> str:
 
 def _pressing_label(row: dict[str, object]) -> str:
     """Return one exact-pressing selector label."""
+    required = int(
+        row.get(
+            "required_reference_count"
+        )
+        or 0
+    )
+    reference = (
+        f"{required} required"
+        if required
+        else "no master reference"
+    )
     return (
         f"Pressing #{row['pressing_id']} · "
         f"{row['display_artist']} · "
         f"{row['display_title']} · "
         f"{row['catalog_number']} · "
-        f"{row['media_type']}"
+        f"{row['media_type']} · "
+        f"{reference}"
     )
 
 
@@ -92,6 +104,7 @@ def main() -> None:
     render_account_menu(
         page_account_context
     )
+    account_id = page_account_context.account_id
 
     queue_tab, alerts_tab, cohorts_tab, audit_tab = st.tabs(
         (
@@ -104,7 +117,8 @@ def main() -> None:
 
     with queue_tab:
         total_queue = queue_count(
-            engine
+            engine,
+            account_id=account_id,
         )
 
         st.metric(
@@ -115,7 +129,8 @@ def main() -> None:
         marketplace_options = [
             "ALL",
             *list_queue_marketplaces(
-                engine
+                engine,
+                account_id=account_id,
             ),
         ]
 
@@ -136,6 +151,7 @@ def main() -> None:
 
         queue_rows = list_unassigned_auctions(
             engine,
+            account_id=account_id,
             limit=1000,
             marketplace=(
                 None
@@ -213,6 +229,19 @@ def main() -> None:
                 selected_pressing_label
             ]
 
+            if int(
+                selected_pressing.get(
+                    "required_reference_count"
+                )
+                or 0
+            ) == 0:
+                st.warning(
+                    "This pressing has no REQUIRED master-reference rows. "
+                    "Assignment can proceed, but Listing Completeness "
+                    "will stay at NO_VERIFIED_REFERENCE until Completeness "
+                    "Reference asserts REQUIRED or NOT_INCLUDED components."
+                )
+
             basis_options = list_match_basis_options(
                 engine
             )
@@ -258,6 +287,7 @@ def main() -> None:
                         preview_key
                     ] = preview_assignment(
                         engine,
+                        account_id=account_id,
                         marketplace=
                             selected_auction[
                                 "marketplace"
@@ -313,6 +343,8 @@ def main() -> None:
                     try:
                         result = apply_assignment(
                             engine,
+                            account_id=account_id,
+                            user_id=page_account_context.user_id,
                             marketplace=
                                 preview[
                                     "mutation"
@@ -406,7 +438,8 @@ def main() -> None:
 
     with alerts_tab:
         alerts = list_current_alerts(
-            engine
+            engine,
+            account_id=account_id,
         )
 
         critical_count = sum(
@@ -461,7 +494,8 @@ def main() -> None:
         st.dataframe(
             _frame(
                 list_alert_history(
-                    engine
+                    engine,
+                    account_id=account_id,
                 )
             ),
             use_container_width=True,
@@ -477,7 +511,8 @@ def main() -> None:
         st.dataframe(
             _frame(
                 list_cohort_summary(
-                    engine
+                    engine,
+                    account_id=account_id,
                 )
             ),
             use_container_width=True,
@@ -493,7 +528,8 @@ def main() -> None:
         st.dataframe(
             _frame(
                 list_assignment_audit(
-                    engine
+                    engine,
+                    account_id=account_id,
                 )
             ),
             use_container_width=True,

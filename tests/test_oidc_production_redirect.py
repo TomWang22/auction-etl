@@ -421,7 +421,7 @@ def test_development_may_use_explicit_localhost() -> None:
 
 
 def test_development_may_use_explicit_https_localhost() -> None:
-    """Development accepts HTTPS loopback; production still rejects it."""
+    """Yahoo local login uses HTTPS loopback; production still rejects it."""
     uri = resolve_oidc_redirect_uri(
         environ={"AUCTION_ENV": "development"},
         secrets_auth=production_secrets(
@@ -723,18 +723,16 @@ def test_example_secrets_document_yahoo_consent_override() -> None:
     assert "Yahoo compatibility" in example
 
 
-def test_example_secrets_document_local_http_or_https_callbacks() -> None:
-    """Local guidance must match the validator: HTTP or HTTPS on loopback."""
+def test_example_secrets_document_local_https_callback() -> None:
+    """Yahoo requires HTTPS locally; Streamlit must serve TLS on 8501."""
     example = (
         ROOT / ".streamlit" / "secrets.toml.example"
     ).read_text(encoding="utf-8")
     comments = example.split("\n[auth]\n", 1)[0]
-    assert "Use an explicit local HTTP callback" not in example
-    assert "HTTP or HTTPS" in comments
     assert LOCAL_HTTPS_CALLBACK in comments
     assert "sslCertFile" in comments
     assert "sslKeyFile" in comments
-    assert "rejects loopback" in comments
+    assert "Loopback callbacks are rejected" in comments
 
 
 @pytest.mark.parametrize(

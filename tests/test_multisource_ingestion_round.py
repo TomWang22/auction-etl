@@ -81,12 +81,12 @@ def test_transition_accepts_new_source_rows() -> None:
     }
 
 
-def test_transition_rejects_assignment_changes() -> None:
+def test_transition_rejects_assignment_decreases() -> None:
     before = state()
 
     after = state(
-        assignments=7,
-        queue=846,
+        assignments=5,
+        queue=848,
     )
 
     with pytest.raises(
@@ -97,6 +97,68 @@ def test_transition_rejects_assignment_changes() -> None:
             before,
             after,
         )
+
+
+def test_transition_accepts_identity_fill_assignment_increase() -> None:
+    before = state()
+
+    after = state(
+        auctions=856,
+        assignments=7,
+        queue=849,
+        pressings=3,
+        families=3,
+        gripsweat_sales=604,
+        crawl_jobs=10,
+        raw_pages=13,
+    )
+
+    delta = module.verify_transition(
+        before,
+        after,
+    )
+
+    assert delta["auction_delta"] == 3
+    assert delta["queue_delta"] == 2
+
+
+def test_transition_rejects_snapshot_decreases() -> None:
+    before = state()
+
+    after = state(
+        snapshots=5,
+        timeline=5,
+    )
+
+    with pytest.raises(
+        module.MultiSourceIngestionError,
+        match="snapshots",
+    ):
+        module.verify_transition(
+            before,
+            after,
+        )
+
+
+def test_transition_accepts_completeness_history_for_new_listings() -> None:
+    before = state()
+
+    after = state(
+        auctions=858,
+        queue=852,
+        snapshots=11,
+        timeline=11,
+        gripsweat_sales=603,
+        crawl_jobs=10,
+        raw_pages=13,
+    )
+
+    delta = module.verify_transition(
+        before,
+        after,
+    )
+
+    assert delta["auction_delta"] == 5
 
 
 def test_matrix_evidence_uses_only_matrix_keys() -> None:
@@ -120,6 +182,21 @@ def test_matrix_evidence_uses_only_matrix_keys() -> None:
             "MR-2276 B",
         ),
     ]
+
+
+def test_round_drains_pending_staging_instead_of_aborting() -> None:
+    """Leftover staged identities must finish ingest, not block refresh."""
+    source = MODULE_PATH.read_text(
+        encoding="utf-8"
+    )
+
+    assert "drain_pending_marketplace_identities" in source
+    assert "Draining pending" in source
+    assert "--no-prune" in source
+    assert (
+        "Existing Buyee/eBay staging "
+        "contains pending identities:"
+    ) not in source
 
 
 def test_release_type_hints_are_not_title_identity() -> None:

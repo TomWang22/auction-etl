@@ -16,6 +16,9 @@ from auction_etl.services.artist_tracking import (
     set_artist_enabled,
     upsert_artist,
 )
+from auction_etl.services.tracked_listing_scope import (
+    listing_belongs_to_tracked_artists,
+)
 
 
 def write_json(
@@ -394,11 +397,72 @@ def test_generated_marketplace_urls_encode_artist_names() -> None:
         "1"
     ]
 
+    assert ebay_query[
+        "_sop"
+    ] == [
+        "13"
+    ]
+
+    assert "_ipg" not in ebay_query
+    assert "_from" not in ebay_query
+    assert "rt" not in ebay_query
+    assert "_sacat" not in ebay_query
+
     assert gripsweat_query[
         "query"
     ] == [
         "Faye Wong"
     ]
+
+
+def test_strip_ebay_ipg_and_use_local_browser_crawl() -> None:
+    """Artist-tracking eBay sources crawl locally, not via FaceRecords handoff."""
+
+    from auction_etl.services.artist_tracking import (
+        prepare_local_ebay_source,
+        strip_ebay_ipg,
+    )
+
+    url = (
+        "https://www.ebay.com/sch/i.html"
+        "?_nkw=teresa+teng"
+        "&LH_Complete=1"
+        "&LH_Sold=1"
+        "&_sop=13"
+        "&_ipg=240"
+        "&_sacat=176985"
+        "&_ssn=facerecords"
+    )
+
+    stripped = strip_ebay_ipg(
+        url
+    )
+    query = parse_qs(
+        urlsplit(
+            stripped
+        ).query
+    )
+
+    assert "_ipg" not in query
+    assert "_sacat" not in query
+    assert query["_sop"] == ["13"]
+    assert query["LH_Sold"] == ["1"]
+
+    prepared = prepare_local_ebay_source(
+        {
+            "url": url,
+            "name": "legacy",
+            "seller": "facerecords",
+            "profile": "facerecords",
+        }
+    )
+
+    assert prepared["acquisition_mode"] == "browser"
+    assert prepared["seller"] == ""
+    assert prepared["profile"] == "ebay-public"
+    assert "_ipg" not in prepared["url"]
+    assert "_ssn=" not in prepared["url"]
+    assert "_sacat=" not in prepared["url"]
 
 
 def test_refresh_materialization_preserves_legacy_and_adds_user_artist(
@@ -454,16 +518,24 @@ def test_refresh_materialization_preserves_legacy_and_adds_user_artist(
         source
         for source
         in ebay_sources
-        if source.get(
-            "seller"
-        ) == "facerecords"
+        if "teresa" in str(source.get("url", "")).casefold()
+        or str(source.get("name", "")).casefold() in {"facerecords", "teresa-teng"}
     )
 
     assert (
         legacy_ebay[
-            "profile"
+            "acquisition_mode"
         ]
-        == "facerecords"
+        == "browser"
+    )
+
+    assert "_ssn=" not in str(legacy_ebay.get("url") or "")
+    assert str(legacy_ebay.get("profile") or "") != "facerecords"
+
+    assert "_ipg" not in str(
+        legacy_ebay[
+            "url"
+        ]
     )
 
     faye_ebay = next(
@@ -491,6 +563,23 @@ def test_refresh_materialization_preserves_legacy_and_adds_user_artist(
         ]
     )
 
+    assert (
+        faye_ebay[
+            "acquisition_mode"
+        ]
+        == "browser"
+    )
+
+    assert faye_ebay.get("seller") in {"", None}
+    assert "_ssn=" not in str(faye_ebay["url"])
+    assert str(faye_ebay.get("profile") or "") != "facerecords"
+
+    assert "_ipg" not in str(
+        faye_ebay[
+            "url"
+        ]
+    )
+
     faye_gripsweat = next(
         source
         for source
@@ -505,4 +594,69 @@ def test_refresh_materialization_preserves_legacy_and_adds_user_artist(
             "query"
         ]
         == "Faye Wong"
+    )
+
+
+TRACKED_COLLECTION = (
+    "Teresa Teng",
+    "Momoe Yamaguchi",
+    "Anita Mui",
+)
+
+
+def test_tracked_listing_keeps_owned_titles_and_hides_seller_inventory() -> None:
+    assert listing_belongs_to_tracked_artists(
+        title="Teresa Teng LP Polydor 2427 333",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert listing_belongs_to_tracked_artists(
+        title="鄧麗君 水上人 LP",
+        artist="",
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert listing_belongs_to_tracked_artists(
+        title="山口百恵 15才 SOLL-114",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert listing_belongs_to_tracked_artists(
+        title="梅艷芳 似是故人來",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert not listing_belongs_to_tracked_artists(
+        title="Felipe Rodriguez Con Los Antares Desfile Melodico Lp Original",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert not listing_belongs_to_tracked_artists(
+        title="Dirty Dancing Soundtrack Lp (Korean pressing)",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert not listing_belongs_to_tracked_artists(
+        title="The Electric Company Sesame Street Lp Original",
+        artist="everything*and*anything*for*sale",
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert not listing_belongs_to_tracked_artists(
+        title="GORO YAMAGUCHI WORLD OF SHAKUHACHI DENON WP7008 1LP",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert not listing_belongs_to_tracked_artists(
+        title="Mioko Yamaguchi/Yume Hiko C28A0131 Used LP",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert not listing_belongs_to_tracked_artists(
+        title="嶋野百恵 (Shimano Momoe) / Next Lounge",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert listing_belongs_to_tracked_artists(
+        title="Dirty Dancing Soundtrack Lp",
+        artist=None,
+        tracked_names=(),
     )

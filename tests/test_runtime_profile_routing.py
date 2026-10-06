@@ -77,12 +77,7 @@ def test_generated_source_reuses_authenticated_template_profile(
         "1",
     ]
 
-    assert query.get(
-        "_sacat"
-    ) == [
-        "176985",
-    ]
-
+    assert "_sacat" not in query
     assert "_ssn" not in query
 
 

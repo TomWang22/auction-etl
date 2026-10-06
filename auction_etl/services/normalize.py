@@ -11,9 +11,13 @@ from sqlalchemy.orm import Session
 from auction_etl.classifiers import classify_media_details
 from auction_etl.classifiers.labels import extract_record_label
 from auction_etl.models.staging import Listing
+from auction_etl.services.discogs_identity import (
+    catalog_token,
+    extract_release_year,
+    is_junk_catalog,
+)
 
 
-_YEAR_RE = re.compile(r"(?<!\d)(19[4-9]\d|20[0-2]\d)(?!\d)")
 _CATALOG_PATTERNS = (
     re.compile(
         r"(?:catalog(?:ue)?(?:\s+number)?|cat\.?\s*no\.?|品番)"
@@ -152,27 +156,45 @@ def _extract_first(
 
 
 def _extract_catalog_number(text: str) -> str | None:
+    token = catalog_token(title=text)
+    if token:
+        return token
+
     for pattern in _CATALOG_PATTERNS:
         match = pattern.search(text)
 
         if match:
             candidate = _clean(match.group(1))
 
-            if candidate and not candidate.isdigit():
+            if (
+                candidate
+                and not is_junk_catalog(candidate)
+            ):
                 return candidate.upper()
 
     return None
 
 
 def _extract_year(text: str) -> int | None:
-    match = _YEAR_RE.search(text)
-    return int(match.group(1)) if match else None
+    return extract_release_year(text)
+
+
+_CJK_COUNTRY_HINTS = (
+    (re.compile(r"台湾|台灣|\btaiwan", re.IGNORECASE), "Taiwan"),
+    (re.compile(r"香港|hong\s*kong", re.IGNORECASE), "Hong Kong"),
+    (re.compile(r"韓国|韓國|\bkorea", re.IGNORECASE), "South Korea"),
+    (re.compile(r"日本盤|国内盤|\bjapan\b", re.IGNORECASE), "Japan"),
+)
 
 
 def _extract_country(text: str) -> str | None:
     explicit = _extract_first(text, _COUNTRY_RE)
     if explicit:
         return explicit
+
+    for pattern, country in _CJK_COUNTRY_HINTS:
+        if pattern.search(text):
+            return country
 
     lowered = text.casefold()
 
@@ -215,7 +237,11 @@ def _set_if_missing(
     current = getattr(listing, field)
 
     if current is not None and not force:
-        return False
+        if not (
+            field == "catalog_number"
+            and is_junk_catalog(str(current))
+        ):
+            return False
 
     if current == value:
         return False

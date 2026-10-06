@@ -36,3 +36,40 @@ def test_unrelated_failure_is_not_access_block() -> None:
         1,
         "ERROR facerecords: parser exploded unexpectedly",
     )
+
+
+def test_access_stop_403_is_access_block() -> None:
+    """Sold-search 403 after context replace is blocked access, not a crash."""
+    assert ebay_access_blocked(
+        1,
+        (
+            "EBAY_CRAWL_PHASE=access_continue page=1 status=403\n"
+            "EBAY_CRAWL_PHASE=context_replace page=1 profile=ebay-public\n"
+            "EBAY_CRAWL_PHASE=access_stop page=1 status=403\n"
+            "EBAY_CRAWL_PHASE=results_ready page=1 status=403 "
+            "listing_count=0\n"
+        ),
+    )
+
+
+def test_screenshot_timeout_after_403_is_access_block() -> None:
+    """Diagnostic screenshot hang on a 403 stamp must not look like a crash."""
+    assert ebay_access_blocked(
+        1,
+        (
+            "EBAY_CRAWL_PHASE=results_ready page=1 status=403 "
+            "listing_count=0\n"
+            "ERROR b90ab4a1-7fe0-5edb-aea5-3d9b7135325b: "
+            "Page.screenshot: Timeout 8000ms exceeded.\n"
+            "Blocked         : 0\n"
+            "Failed          : 1\n"
+        ),
+    )
+
+
+def test_screenshot_timeout_without_http_block_is_not_access_block() -> None:
+    """A screenshot hang with no HTTP-block evidence stays a crawl failure."""
+    assert not ebay_access_blocked(
+        1,
+        "ERROR facerecords: Page.screenshot: Timeout 8000ms exceeded.",
+    )

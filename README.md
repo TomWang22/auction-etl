@@ -6,76 +6,91 @@
 
 Collector Ledger is a collector-focused auction intelligence and ETL system for discovering marketplace sales, preserving source evidence, normalizing auction records, identifying pressings and completeness, reviewing uncertain records, coordinating durable refresh jobs, and exporting collector-ready research.
 
-The repository currently integrates **Buyee, eBay, and Gripsweat** with a PostgreSQL warehouse, Streamlit review and curation workflows, durable refresh coordination, reporting/export tooling, browser-assisted collection, and a lightweight Vercel control plane.
+The local loop integrates **Buyee, eBay, and Gripsweat** with PostgreSQL at `127.0.0.1:5544/auction_warehouse`, Streamlit Collector Review on HTTP `127.0.0.1:8501`, headed eBay acquisition from a persistent browser profile, a headed Buyee owner, and Gripsweat probe/import. GitHub is the source/promotion boundary. Vercel and Railway are deferred non-data shells and must not point at the local database.
+
+## Requirements
+
+- Python **3.11+** and this repository's `.venv` (install with `uv sync` or `pip install -e ".[dev]"`).
+- Local PostgreSQL **`127.0.0.1:5544/auction_warehouse`**, user `auction`.
+- `DATABASE_URL='postgresql+psycopg://auction:auction@127.0.0.1:5544/auction_warehouse'`
+- Collector Review: `AUCTION_ENV=development` on **HTTPS** `localhost:8501` with local TLS certs. Yahoo redirect URI is `https://localhost:8501/oauth2callback`.
+- Playwright persistent profiles: `profiles/facerecords` for eBay; the headed Buyee owner for Buyee.
+- Do not attach Vercel, Railway, or Neon to this loopback database.
+
+## How it is designed
+
+One warehouse, three ingest paths, one review UI:
+
+| Source | How it is acquired | Local money | Warehouse table |
+| --- | --- | --- | --- |
+| Buyee | Headed owner + closed watchlist | **JPY** | `warehouse.auction` `marketplace=buyee` |
+| eBay | Headed completed/sold search from `profiles/facerecords`, exact raw-page import | **Listing display currency** (not automatically USD) | `warehouse.auction` `marketplace=ebay` |
+| Gripsweat | Artist probe/import | **Official USD** on eBay duplicates (`sold_at`) | `warehouse.gripsweat_sale` |
+
+Identity is `(marketplace, listing_id)`. eBay sold URLs are `https://www.ebay.com/itm/{id}`. Gripsweat archives the same sale as `https://gripsweat.com/item/{id}/...`.
+
+**Currency:** eBay completed/sold cards can be `US $`, `GBP`/`£`, `EUR`/`€`, `AU $`, `C $`, or a bare `$`. Bare `$` is a display amount on ebay.com, **not** official USD.
+
+**Duplicates:** if the same `{id}` exists on eBay and Gripsweat, Collector Review keeps the native eBay row. **Gripsweat's sold amount on `sold_at` is the official transaction-day USD** for that duplicate, even if the eBay card shows `$` / GBP / EUR. The eBay local display amount stays on the eBay row.
+
+**Buyee completeness:** every closed-watchlist identity must be in the warehouse with a listing ID, title, and JPY sold price. Live item-detail pages are extra enrichment, not the identity itself.
 
 ## Architecture overview
 
 ```mermaid
 flowchart LR
-    Collector["Collector / operator"]
+    Operator["Collector / operator"]
 
-    subgraph Review["Review and curation"]
-        UI["Streamlit application<br/>app/"]
-        Pages["Workbenches / admin / intake<br/>app/pages/"]
+    subgraph Review["Collector Review"]
+        UI["Streamlit HTTP 8501<br/>app/collector_review.py"]
     end
 
-    subgraph Core["Collector Ledger core"]
-        Services["Domain + application services<br/>auction_etl/services/"]
-        Classify["Classification / normalization<br/>classifiers + domain"]
-        Reporting["Reporting / exports<br/>auction_etl/reporting/"]
-    end
-
-    subgraph Cloud["Accepted staging control + data plane"]
-        Vercel["Vercel control plane<br/>auction_etl/cloud_api.py"]
-        Neon[("Neon PostgreSQL<br/>warehouse + ops + system")]
-    end
-
-    subgraph Execution["Refresh execution role"]
-        Worker["Durable refresh worker<br/>scripts/run_cloud_refresh_worker.py"]
-        Runner["Canonical marketplace refresh"]
-        Profile[("Buyee browser profile")]
+    subgraph Local["Authoritative local runtime"]
+        DB[("PostgreSQL 127.0.0.1:5544<br/>auction_warehouse")]
+        Refresh["scripts/run_latest_auction_refresh.py"]
+        EbayOp["Headed eBay operator<br/>persistent facerecords profile"]
+        BuyeeOwner["Headed Buyee owner"]
+        Gripsweat["Gripsweat probe / import"]
     end
 
     subgraph Sources["Marketplace sources"]
-        Buyee["Buyee"]
-        Ebay["eBay"]
-        Gripsweat["Gripsweat"]
+        Buyee["Buyee completed watchlist"]
+        Ebay["eBay completed/sold search<br/>LH_Sold=1 LH_Complete=1 _sop=13"]
+        Grip["Gripsweat artist search"]
     end
 
-    Output["CSV / Excel / JSON / Markdown / Word<br/>reports + evidence"]
+    subgraph Promotion["Promotion boundary"]
+        Git["GitHub main"]
+        Cloud["Vercel / Railway / Neon<br/>deferred non-data shells"]
+    end
 
-    Collector --> UI
-    UI --> Pages
-    UI --> Services
-    Pages --> Services
-
-    Services --> Classify
-    Services --> Reporting
-    Services --> Neon
-    Reporting --> Output
-
-    Collector --> Vercel
-    Vercel --> Neon
-
-    Worker --> Neon
-    Worker --> Runner
-    Runner --> Buyee
-    Runner --> Ebay
-    Runner --> Gripsweat
-    Runner <--> Profile
-    Runner --> Neon
+    Operator --> UI
+    UI --> DB
+    Operator --> EbayOp
+    EbayOp --> Ebay
+    EbayOp --> DB
+    Operator --> Refresh
+    Refresh --> BuyeeOwner
+    Refresh --> Gripsweat
+    BuyeeOwner --> Buyee
+    Gripsweat --> Grip
+    Refresh --> DB
+    Git -.-> Cloud
 ```
 
 The key architectural boundary is deliberate:
 
-- **Vercel** is the lightweight HTTP control plane.
-- **Neon PostgreSQL** is authoritative managed staging data and durable refresh coordination.
-- **The refresh worker** owns long-running marketplace and browser execution.
-- **The Buyee profile** is worker/browser session state, not database state.
+- **Local PostgreSQL on 5544** is the authoritative warehouse.
+- **Collector Review on HTTP 8501** is the review UI against that warehouse.
+- **eBay** is a generalized local sold/completed crawl from tracked-artist
+  searches, using hidden headed Google Chrome. It is not a FaceRecords
+  seller handoff.
+- **Buyee** uses the headed owner plus authenticated HTTPS watchlist crawl.
+- **Gripsweat** uses probe/import against configured artist searches.
 - **Git/GitHub** is the source and promotion boundary.
-- **Railway** is a deferred worker-host experiment, not part of the accepted Vercel + Neon runtime.
+- **Vercel, Railway, and Neon** are out of the local data plane.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full system architecture, state ownership, deployment boundaries, refresh lifecycle, and accepted/deferred infrastructure.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full system architecture, including historical Vercel + Neon staging topology that no longer defines data authority.
 
 ## Goals
 
@@ -88,6 +103,17 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full system architect
 - Keep long-running browser/marketplace execution outside HTTP request lifecycles.
 - Preserve explicit staging and production promotion boundaries.
 
+## How it works
+
+1. Point every command at local `DATABASE_URL` on port **5544**.
+2. Open Collector Review at `https://localhost:8501` with `AUCTION_ENV=development` and local TLS certs.
+3. Ingest **eBay** through the local hidden-Chrome sold/completed crawl driven
+   by tracked artists (`LH_Sold=1`, `LH_Complete=1`, `_sop=13`).
+4. Ingest **Buyee** through the headed owner (closed watchlist) and **Gripsweat** through probe/import via `scripts/run_latest_auction_refresh.py`.
+5. Review and export from the warehouse. eBay+Gripsweat duplicates keep the eBay row and use the Gripsweat sold amount as the official transaction-day USD.
+
+Commands are in **Start the application** and **Local marketplace ingest** below.
+
 ## Collector Review web UI
 
 `app/collector_review.py` provides the main Streamlit interface for
@@ -98,8 +124,9 @@ collector metadata.
 
 The main result set combines:
 
-- native Buyee warehouse auctions;
-- native eBay warehouse auctions; and
+- native Buyee warehouse auctions (JPY);
+- native eBay warehouse auctions (local sold-card currency, with
+  Gripsweat USD stamped on duplicates); and
 - Gripsweat-only sales after exact native-eBay listing-ID
   deduplication.
 
@@ -118,14 +145,72 @@ cd ~/auction-etl
 source .venv/bin/activate
 
 export DATABASE_URL='postgresql+psycopg://auction:auction@127.0.0.1:5544/auction_warehouse'
+export AUCTION_ENV=development
+export OIDC_ENV=development
+export OIDC_REDIRECT_URI='https://localhost:8501/oauth2callback'
 
-python -m streamlit run             app/collector_review.py             --server.address 127.0.0.1             --server.port 8501             --server.headless true
+mkdir -p .streamlit/certs
+if [ ! -f .streamlit/certs/localhost.pem ]; then
+  mkcert -install
+  mkcert \
+    -cert-file .streamlit/certs/localhost.pem \
+    -key-file .streamlit/certs/localhost-key.pem \
+    localhost 127.0.0.1 ::1
+fi
+
+python -m streamlit run             app/collector_review.py             --server.address 127.0.0.1             --server.port 8501             --server.headless true             --server.sslCertFile .streamlit/certs/localhost.pem             --server.sslKeyFile .streamlit/certs/localhost-key.pem
 ```
 
-Open `http://127.0.0.1:8501`.
+Open `https://localhost:8501` for Yahoo login. Yahoo requires HTTPS, including
+localhost. Keep the Yahoo Developer redirect URI as
+`https://localhost:8501/oauth2callback`. Collector Review serves that callback
+with a local mkcert TLS certificate. HTTP 8501 cannot complete Yahoo login.
+
+Yahoo login only identifies the operator. It does not import Yahoo Mail or
+Yahoo Auctions inventory. Local Buyee, eBay, and Gripsweat rows live in
+PostgreSQL and stay invisible until they are attached to that personal
+account. In development, Collector Review attaches the local warehouse to the
+signed-in Yahoo account after login so Review is not an empty first-run
+workspace.
 
 Always use the project virtual environment. A system Python installation
 may not include Streamlit or the repository dependencies.
+
+### Local marketplace ingest
+
+eBay, Buyee, and Gripsweat all write to the same warehouse. eBay is a
+generalized local sold/completed crawl from tracked artists, using hidden
+headed Google Chrome. It is not a FaceRecords seller handoff.
+
+```bash
+cd ~/auction-etl
+source .venv/bin/activate
+export DATABASE_URL='postgresql+psycopg://auction:auction@127.0.0.1:5544/auction_warehouse'
+unset RAILWAY_ENVIRONMENT RAILWAY_ENVIRONMENT_ID RAILWAY_PROJECT_ID RAILWAY_SERVICE_ID RAILWAY_REPLICA_ID
+
+# Add/enable artists in Collector Review, then start a local refresh.
+# Streamlit queues the job and starts the local worker automatically.
+# Direct CLI equivalent:
+.venv/bin/python scripts/run_latest_auction_refresh.py \
+  --database-url "${DATABASE_URL}" \
+  --expected-database-name auction_warehouse \
+  --expected-database-user auction
+```
+
+Teresa Teng eBay completed/sold item URLs (`itm/{id}`) are the sale
+identity. Gripsweat often archives the same sale as `/item/{id}/`.
+Those overlaps are expected. Native eBay still wins the visible row.
+**Gripsweat's sold amount on `sold_at` is the official transaction-day USD**
+for that duplicate, even when the eBay card is not USD. eBay sold cards
+are local display currency; do not treat bare `$` as official USD. Sold
+cards with no Gripsweat row are also expected.
+
+```bash
+.venv/bin/python scripts/compare_ebay_sold_to_gripsweat.py
+```
+
+That writes operator notes under gitignored `reports/` so the overlap
+comb is kept next to the work without landing in git.
 
 ### Listing interaction
 
@@ -273,8 +358,10 @@ The media selector can export all matches in one file, one selected media
 type, or a ZIP containing one file per media type.
 
 Deduplication prefers native eBay warehouse records over matching
-Gripsweat archive records sharing the same listing ID. Exporting is
-read-only and never deletes or modifies warehouse records.
+Gripsweat archive records sharing the same listing ID. On those
+duplicates, the Gripsweat USD amount on the sale date is the official
+transaction-day USD. Exporting is read-only and never deletes or
+modifies warehouse records.
 <!-- collector-filtered-export:end -->
 
 <!-- BEGIN AUCTION_ETL_CLOUD_ARCHITECTURE -->
@@ -283,42 +370,38 @@ read-only and never deletes or modifies warehouse records.
 
 The authoritative architecture is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-The Phase-D auth/account-tenancy closeout has been merged into `main`. The accepted staging architecture separates the runtime into a lightweight Vercel control plane, Neon PostgreSQL for authoritative staging data and durable refresh coordination, and a separate logical marketplace-execution worker.
+The accepted runtime is local: Collector Review on HTTP `127.0.0.1:8501`, PostgreSQL at `127.0.0.1:5544/auction_warehouse`, and three marketplace ingest paths that all write that warehouse. Vercel, Railway, and Neon are deferred shells, not the data plane.
 
 ```mermaid
 flowchart LR
     Git["GitHub / main"]
-    Vercel["Vercel control plane"]
-    Neon[("Neon PostgreSQL")]
-    Jobs["Durable refresh jobs"]
-    Worker["Marketplace execution worker"]
-    Sources["Buyee / eBay / Gripsweat"]
-    Profile[("Buyee browser profile")]
+    UI["Collector Review HTTP 8501"]
+    DB[("Local PostgreSQL 5544")]
+    EbayOp["Headed eBay operator"]
+    Buyee["Headed Buyee owner"]
+    Grip["Gripsweat probe / import"]
+    Sources["Completed/sold marketplaces"]
 
-    Git -. source .-> Vercel
-    Git -. source .-> Worker
-
-    Vercel --> Neon
-    Vercel --> Jobs
-    Jobs --> Neon
-
-    Worker --> Jobs
-    Worker --> Sources
-    Worker <--> Profile
-    Worker --> Neon
+    Git -. source .-> UI
+    UI --> DB
+    EbayOp --> Sources
+    Buyee --> Sources
+    Grip --> Sources
+    EbayOp --> DB
+    Buyee --> DB
+    Grip --> DB
 ```
 
 Current architecture status:
-  * Phase-D account tenancy is accepted in Neon staging; the existing collector state is assigned to the accepted owner account.
-  * Accepted owner-state counts are 1440 visible listings, 3 tracked artists, and 5 marketplace searches.
+  * Local warehouse counts after the 2026-09-19 loop: Buyee 411, eBay 899, Gripsweat 827.
+  * eBay ingest is a generalized local sold/completed crawl from tracked
+    artists (`LH_Sold=1`, `LH_Complete=1`, `_sop=13`) using hidden Chrome.
+  * Buyee uses the headed owner; Gripsweat uses configured artist probe/import.
+  * Phase-D account tenancy remains in the product, with Collector Review login on the local HTTP UI.
+  * Vercel/Railway/Neon must not be pointed at this loopback database.
 
-- Vercel staging control-plane identity, health, and readiness were accepted.
-- Neon staging is the accepted authoritative managed staging database.
-- Durable refresh coordination lives in PostgreSQL.
-- The controlled-V3 staging refresh is reconciled and must not be rerun for historical proof.
-- Permanent cloud worker hosting and permanent Buyee profile storage remain separate future decisions.
-- Railway is deferred and is not part of the accepted Vercel + Neon staging runtime.
-- Production runtime/data cutover remains a separate explicit operation.
+- Durable refresh coordination lives in local PostgreSQL.
+- Railway is deferred (trial expired) and is not part of the accepted local runtime.
 - Compatibility identifiers such as `auction_etl`, `~/auction-etl`, and `auction-etl-staging` remain unchanged for now.
 
 <!-- COLLECTOR_LEDGER_PHASE_D_AUTH_ACCOUNTS -->

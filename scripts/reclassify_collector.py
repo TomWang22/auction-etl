@@ -8,7 +8,9 @@ from typing import Any
 
 from sqlalchemy import inspect, text
 
+from auction_etl.classifiers.media import classify_media_details
 from auction_etl.database.session import engine
+from auction_etl.services.discogs_identity import catalog_token
 
 
 CATALOG_PATTERNS = (
@@ -170,7 +172,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--marketplace",
-        choices=("all", "buyee", "ebay"),
+        choices=("all", "buyee", "ebay", "gripsweat"),
         default="all",
     )
     parser.add_argument(
@@ -193,53 +195,16 @@ def normalized_text(*values: Any) -> str:
 
 
 def normalize_catalog(value: str) -> str:
-    compact = re.sub(
-        r"\s+",
-        "",
-        value.upper(),
+    token = catalog_token(title=value) or catalog_token(
+        catalog_number=value
     )
-
-    compact = re.sub(
-        r"^([A-Z0-9]+)-?(\d+)$",
-        r"\1-\2",
-        compact,
-    )
-
-    compact = compact.replace(
-        "MRZ-",
-        "MRZ-",
-    )
-
-    return compact
+    if token:
+        return token
+    return re.sub(r"\s+", " ", value.strip().upper())
 
 
 def extract_catalog(text_value: str) -> str | None:
-    candidates: list[str] = []
-
-    for pattern in CATALOG_PATTERNS:
-        candidates.extend(
-            match.group(0)
-            for match in pattern.finditer(text_value)
-        )
-
-    for candidate in candidates:
-        normalized = normalize_catalog(candidate)
-
-        if re.fullmatch(
-            r"LP-?(?:19|20)\d{2}",
-            normalized,
-        ):
-            continue
-
-        if re.fullmatch(
-            r"(?:19|20)\d{2}",
-            normalized,
-        ):
-            continue
-
-        return normalized
-
-    return None
+    return catalog_token(title=text_value)
 
 
 def extract_region(text_value: str) -> str | None:
@@ -290,6 +255,10 @@ def extract_disc_count(
 def extract_media_type(
     text_value: str,
 ) -> str | None:
+    classified = classify_media_details(text_value).format
+    if classified:
+        return classified
+
     if re.search(
         r"\b(?:cd\s*/\s*dvd|cd\+dvd|cd dvd)\b",
         text_value,
@@ -370,9 +339,12 @@ def extract_bulk_lot(
     media_type: str | None,
     disc_count: int | None,
 ) -> bool:
-    has_bulk_term = any(
-        term.casefold() in text_value
-        for term in BULK_TERMS
+    has_bulk_term = (
+        classify_media_details(text_value).bulk_lot
+        or any(
+            term.casefold() in text_value
+            for term in BULK_TERMS
+        )
     )
 
     if not has_bulk_term:
@@ -902,46 +874,174 @@ def main() -> int:
             a.listing_id
     """
 
-    update_sql = text(
+    insert_legacy_sql = text(
         """
-        UPDATE warehouse.auction_collector
-        SET
+        INSERT INTO warehouse.auction_collector (
+            marketplace,
+            listing_id,
+            auto_catalog_number,
+            auto_region,
+            auto_media_type,
+            auto_disc_count,
+            auto_bulk_lot,
+            auto_obi,
+            auto_insert_present,
+            auto_poster_present,
+            auto_rental,
+            auto_sticker,
+            auto_promo,
+            auto_sealed,
+            auto_reissue,
+            auto_first_press,
+            auto_importance_score,
+            auto_verdict,
+            updated_at
+        )
+        VALUES (
+            :marketplace,
+            :listing_id,
+            :auto_catalog_number,
+            :auto_region,
+            :auto_media_type,
+            :auto_disc_count,
+            :auto_bulk_lot,
+            :auto_obi,
+            :auto_insert_present,
+            :auto_poster_present,
+            :auto_rental,
+            :auto_sticker,
+            :auto_promo,
+            :auto_sealed,
+            :auto_reissue,
+            :auto_first_press,
+            :auto_importance_score,
+            :auto_verdict,
+            NOW()
+        )
+        ON CONFLICT (marketplace, listing_id)
+        WHERE account_id IS NULL
+        DO UPDATE SET
             auto_catalog_number =
-                :auto_catalog_number,
+                EXCLUDED.auto_catalog_number,
             auto_region =
-                :auto_region,
+                EXCLUDED.auto_region,
             auto_media_type =
-                :auto_media_type,
+                EXCLUDED.auto_media_type,
             auto_disc_count =
-                :auto_disc_count,
+                EXCLUDED.auto_disc_count,
             auto_bulk_lot =
-                :auto_bulk_lot,
+                EXCLUDED.auto_bulk_lot,
             auto_obi =
-                :auto_obi,
+                EXCLUDED.auto_obi,
             auto_insert_present =
-                :auto_insert_present,
+                EXCLUDED.auto_insert_present,
             auto_poster_present =
-                :auto_poster_present,
+                EXCLUDED.auto_poster_present,
             auto_rental =
-                :auto_rental,
+                EXCLUDED.auto_rental,
             auto_sticker =
-                :auto_sticker,
+                EXCLUDED.auto_sticker,
             auto_promo =
-                :auto_promo,
+                EXCLUDED.auto_promo,
             auto_sealed =
-                :auto_sealed,
+                EXCLUDED.auto_sealed,
             auto_reissue =
-                :auto_reissue,
+                EXCLUDED.auto_reissue,
             auto_first_press =
-                :auto_first_press,
+                EXCLUDED.auto_first_press,
             auto_importance_score =
-                :auto_importance_score,
+                EXCLUDED.auto_importance_score,
             auto_verdict =
-                :auto_verdict,
+                EXCLUDED.auto_verdict,
             updated_at = NOW()
-        WHERE marketplace = :marketplace
-          AND listing_id = :listing_id
-          AND account_id IS NULL
+        """
+    )
+
+    insert_account_sql = text(
+        """
+        INSERT INTO warehouse.auction_collector (
+            account_id,
+            marketplace,
+            listing_id,
+            auto_catalog_number,
+            auto_region,
+            auto_media_type,
+            auto_disc_count,
+            auto_bulk_lot,
+            auto_obi,
+            auto_insert_present,
+            auto_poster_present,
+            auto_rental,
+            auto_sticker,
+            auto_promo,
+            auto_sealed,
+            auto_reissue,
+            auto_first_press,
+            auto_importance_score,
+            auto_verdict,
+            updated_at
+        )
+        SELECT
+            visible.account_id,
+            CAST(:marketplace AS varchar),
+            CAST(:listing_id AS varchar),
+            CAST(:auto_catalog_number AS varchar),
+            CAST(:auto_region AS varchar),
+            CAST(:auto_media_type AS varchar),
+            CAST(:auto_disc_count AS integer),
+            CAST(:auto_bulk_lot AS boolean),
+            CAST(:auto_obi AS boolean),
+            CAST(:auto_insert_present AS boolean),
+            CAST(:auto_poster_present AS boolean),
+            CAST(:auto_rental AS boolean),
+            CAST(:auto_sticker AS boolean),
+            CAST(:auto_promo AS boolean),
+            CAST(:auto_sealed AS boolean),
+            CAST(:auto_reissue AS boolean),
+            CAST(:auto_first_press AS boolean),
+            CAST(:auto_importance_score AS integer),
+            CAST(:auto_verdict AS varchar),
+            NOW()
+        FROM account.auction_listing AS visible
+        WHERE lower(btrim(visible.marketplace)) =
+              lower(btrim(CAST(:marketplace AS text)))
+          AND visible.listing_id = CAST(:listing_id AS text)
+        ON CONFLICT (account_id, marketplace, listing_id)
+        WHERE account_id IS NOT NULL
+        DO UPDATE SET
+            auto_catalog_number =
+                EXCLUDED.auto_catalog_number,
+            auto_region =
+                EXCLUDED.auto_region,
+            auto_media_type =
+                EXCLUDED.auto_media_type,
+            auto_disc_count =
+                EXCLUDED.auto_disc_count,
+            auto_bulk_lot =
+                EXCLUDED.auto_bulk_lot,
+            auto_obi =
+                EXCLUDED.auto_obi,
+            auto_insert_present =
+                EXCLUDED.auto_insert_present,
+            auto_poster_present =
+                EXCLUDED.auto_poster_present,
+            auto_rental =
+                EXCLUDED.auto_rental,
+            auto_sticker =
+                EXCLUDED.auto_sticker,
+            auto_promo =
+                EXCLUDED.auto_promo,
+            auto_sealed =
+                EXCLUDED.auto_sealed,
+            auto_reissue =
+                EXCLUDED.auto_reissue,
+            auto_first_press =
+                EXCLUDED.auto_first_press,
+            auto_importance_score =
+                EXCLUDED.auto_importance_score,
+            auto_verdict =
+                EXCLUDED.auto_verdict,
+            updated_at = NOW()
         """
     )
 
@@ -955,6 +1055,67 @@ def main() -> int:
             text(select_sql),
             parameters,
         ).mappings().all()
+
+        if args.marketplace in {"all", "gripsweat"}:
+            gripsweat_rows = connection.execute(
+                text(
+                    """
+                    SELECT
+                        'gripsweat' AS marketplace,
+                        COALESCE(
+                            NULLIF(g.original_listing_id, ''),
+                            g.gripsweat_item_id,
+                            g.gripsweat_item_key
+                        ) AS listing_id,
+                        g.title AS title,
+                        g.raw_text AS description,
+                        NULL::text AS condition_text,
+                        g.sold_price AS gross_price,
+                        0 AS bid_count,
+                        c.auto_catalog_number AS stored_auto_catalog_number,
+                        c.auto_region AS stored_auto_region,
+                        c.auto_media_type AS stored_auto_media_type,
+                        c.auto_disc_count AS stored_auto_disc_count,
+                        c.auto_bulk_lot AS stored_auto_bulk_lot,
+                        c.auto_obi AS stored_auto_obi,
+                        c.auto_insert_present AS stored_auto_insert_present,
+                        c.auto_poster_present AS stored_auto_poster_present,
+                        c.auto_rental AS stored_auto_rental,
+                        c.auto_sticker AS stored_auto_sticker,
+                        c.auto_promo AS stored_auto_promo,
+                        c.auto_sealed AS stored_auto_sealed,
+                        c.auto_reissue AS stored_auto_reissue,
+                        c.auto_first_press AS stored_auto_first_press,
+                        c.auto_importance_score AS stored_auto_importance_score,
+                        c.auto_verdict AS stored_auto_verdict
+                    FROM warehouse.gripsweat_sale AS g
+                    LEFT JOIN warehouse.auction_collector AS c
+                      ON c.marketplace = 'gripsweat'
+                     AND c.listing_id = COALESCE(
+                            NULLIF(g.original_listing_id, ''),
+                            g.gripsweat_item_id,
+                            g.gripsweat_item_key
+                        )
+                     AND c.account_id IS NULL
+                    WHERE COALESCE(
+                            NULLIF(g.original_listing_id, ''),
+                            g.gripsweat_item_id,
+                            g.gripsweat_item_key
+                        ) IS NOT NULL
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM warehouse.auction AS a
+                            WHERE a.marketplace = 'ebay'
+                              AND a.listing_id = COALESCE(
+                                    NULLIF(g.original_listing_id, ''),
+                                    g.gripsweat_item_id,
+                                    g.gripsweat_item_key
+                                )
+                        )
+                    """
+                )
+            ).mappings().all()
+            rows = [*rows, *gripsweat_rows]
 
         for row_mapping in rows:
             row = dict(row_mapping)
@@ -1036,20 +1197,47 @@ def main() -> int:
                 ),
             }
 
+            if not args.dry_run:
+                if row["marketplace"] != "gripsweat":
+                    connection.execute(
+                        text(
+                            """
+                            UPDATE warehouse.auction
+                            SET
+                                catalog_number = :catalog_number,
+                                media_type = COALESCE(
+                                    :media_type,
+                                    media_type
+                                ),
+                                bulk_lot = :bulk_lot
+                            WHERE marketplace = :marketplace
+                              AND listing_id = :listing_id
+                            """
+                        ),
+                        {
+                            "marketplace": row["marketplace"],
+                            "listing_id": row["listing_id"],
+                            "catalog_number": classification.catalog_number,
+                            "media_type": classification.media_type,
+                            "bulk_lot": classification.bulk_lot,
+                        },
+                    )
+                legacy = connection.execute(
+                    insert_legacy_sql,
+                    payload,
+                )
+                account = connection.execute(
+                    insert_account_sql,
+                    payload,
+                )
+                changed += legacy.rowcount + account.rowcount
+                continue
+
             if not automatic_classification_changed(
                 row,
                 payload,
             ):
                 continue
-
-            if args.dry_run:
-                continue
-
-            result = connection.execute(
-                update_sql,
-                payload,
-            )
-            changed += result.rowcount
 
         if args.dry_run:
             connection.rollback()

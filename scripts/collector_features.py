@@ -15,8 +15,10 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 
+from auction_etl.classifiers.media import classify_media_details
 from auction_etl.database.session import engine
 from auction_etl.database.collector_views import install_collector_views
+from auction_etl.services.discogs_identity import catalog_token, is_junk_catalog
 
 
 CLEAR_VALUE = "__CLEAR__"
@@ -36,17 +38,9 @@ CATALOG_PATTERNS = (
 
 REGION_PATTERNS = (
     (
-        "Japan",
-        re.compile(
-            r"\bJapan(?:ese)?\b|日本盤|国内盤|日本国内|"
-            r"昭和|Taurus|Tauras|トーラス",
-            re.IGNORECASE,
-        ),
-    ),
-    (
         "Taiwan",
         re.compile(
-            r"\bTaiwan(?:ese)?\b|台湾盤|台灣盤|歌林|Kolin|Life",
+            r"\bTaiwan(?:ese)?\b|台湾盤|台灣盤|台湾|台灣|歌林|Kolin|Kuopin|Life",
             re.IGNORECASE,
         ),
     ),
@@ -82,6 +76,14 @@ REGION_PATTERNS = (
         "China",
         re.compile(
             r"\bChina\b|中國盤|中国盤|大陸盤",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "Japan",
+        re.compile(
+            r"\bJapan(?:ese)?\b|日本盤|国内盤|日本国内|"
+            r"昭和|Taurus|Tauras|トーラス",
             re.IGNORECASE,
         ),
     ),
@@ -297,39 +299,20 @@ def money(value: Any) -> Decimal | None:
 
 
 def normalize_catalog(value: str) -> str:
+    token = catalog_token(title=value) or catalog_token(
+        catalog_number=value
+    )
+    if token:
+        return token
     return re.sub(
         r"\s+",
-        "-",
+        " ",
         value.strip().upper(),
     )
 
 
 def extract_catalog_number(text_value: str) -> str | None:
-    candidates: list[str] = []
-
-    for pattern in CATALOG_PATTERNS:
-        candidates.extend(
-            match.group(0)
-            for match in pattern.finditer(text_value)
-        )
-
-    if not candidates:
-        return None
-
-    normalized = [
-        normalize_catalog(candidate)
-        for candidate in candidates
-    ]
-
-    normalized.sort(
-        key=lambda value: (
-            any(character.isalpha() for character in value),
-            len(value),
-        ),
-        reverse=True,
-    )
-
-    return normalized[0]
+    return catalog_token(title=text_value)
 
 
 def classify_region(text_value: str) -> str | None:
@@ -344,6 +327,10 @@ def classify_media(
     text_value: str,
     existing_media: str | None,
 ) -> str | None:
+    classified = classify_media_details(text_value).format
+    if classified:
+        return classified
+
     normalized_existing = (
         existing_media.strip().upper()
         if existing_media
@@ -943,10 +930,14 @@ def build_features(
                 if value
             )
 
-            catalog_number = (
-                extract_catalog_number(combined_text)
-                or row.get("catalog_number")
-            )
+            catalog_number = extract_catalog_number(combined_text)
+            stored_catalog = row.get("catalog_number")
+            if stored_catalog and is_junk_catalog(
+                str(stored_catalog),
+                title=str(row.get("title") or ""),
+            ):
+                stored_catalog = None
+            catalog_number = catalog_number or stored_catalog
             region = classify_region(combined_text)
             media_type = classify_media(
                 combined_text,
@@ -959,6 +950,7 @@ def build_features(
 
             bulk_lot = bool(
                 row.get("bulk_lot")
+                or classify_media_details(combined_text).bulk_lot
                 or BULK_PATTERNS.search(combined_text)
                 or (
                     disc_count is not None
@@ -987,7 +979,7 @@ def build_features(
             )
             sticker = bool(
                 STICKER_PATTERN.search(combined_text)
-            )
+            ) or rental
             promo = bool(
                 PROMO_PATTERN.search(combined_text)
             )

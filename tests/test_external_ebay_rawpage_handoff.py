@@ -128,12 +128,19 @@ def test_browser_crawler_remains_fallback() -> None:
     """Preserve current Railway crawler when no imported page is waiting."""
     source = runner_source()
 
-    assert (
-        "else:\n"
-        "            for source_name in enabled_ebay_sources("
-        in source
-    )
+    assert "enabled_ebay_sources(" in source
     assert '"scripts/crawl_ebay_sources.py"' in source
+    tracked = source[
+        source.index("ebay-incremental-tracked-artists.json"):
+        source.index("ebay-incremental-tracked-artists.json") + 1400
+    ]
+    assert '"--source"' not in tracked
+    partial = source[
+        source.index("partial_ebay_crawl = ("):
+        source.index("if crawl_status != 0 and not partial_ebay_crawl:")
+    ]
+    assert "pages_processed > 0" in partial
+    assert "ebay_access_blocked" not in partial
     assert '"--incremental-newest-first"' in source
     assert '"--known-stop-threshold"' in source
 

@@ -37,6 +37,9 @@ def test_listing_page_exposes_separate_deterministic_details() -> None:
     for fragment in required:
         assert fragment in source
 
+    assert "No master reference" in source
+    assert "Required and verified units stay at 0" in source
+
 
 def test_profile_page_is_configuration_not_evidence() -> None:
     """The profile page configures fields without creating claims."""

@@ -627,8 +627,12 @@ def verify_results(
                 COUNT(*) AS rows,
                 COUNT(fx_rate_to_usd)
                     AS fx_rates,
+                COUNT(final_price)
+                    AS final_prices,
                 COUNT(final_price_usd)
                     AS final_prices_usd,
+                COUNT(gross_price)
+                    AS gross_prices,
                 COUNT(gross_price_usd)
                     AS gross_prices_usd,
                 COUNT(current_price_usd)
@@ -669,19 +673,29 @@ def verify_results(
                 f"found {expected} rows."
             )
 
-        for column in (
-            "fx_rates",
-            "final_prices_usd",
-            "gross_prices_usd",
+        fx_rates = int(row["fx_rates"])
+        if fx_rates != expected:
+            raise RuntimeError(
+                f"{marketplace}: expected "
+                f"{expected} fx_rates; found "
+                f"{fx_rates}."
+            )
+
+        for column, source_column in (
+            ("final_prices_usd", "final_prices"),
+            ("gross_prices_usd", "gross_prices"),
         ):
             actual = int(
                 row[column]
             )
+            source = int(
+                row[source_column]
+            )
 
-            if actual != expected:
+            if actual != source:
                 raise RuntimeError(
                     f"{marketplace}: expected "
-                    f"{expected} {column}; found "
+                    f"{source} {column}; found "
                     f"{actual}."
                 )
 
@@ -702,8 +716,16 @@ def verify_results(
             row["fx_rates"],
         )
         print(
+            "Final prices      :",
+            row["final_prices"],
+        )
+        print(
             "Final prices USD  :",
             row["final_prices_usd"],
+        )
+        print(
+            "Gross prices      :",
+            row["gross_prices"],
         )
         print(
             "Gross prices USD  :",

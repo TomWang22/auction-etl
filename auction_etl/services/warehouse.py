@@ -3,21 +3,23 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from auction_etl.models.staging import Listing
-from auction_etl.classifiers import classify_media_details
-from auction_etl.models.warehouse import Auction
-
-
-_BULK_RE = re.compile(
-    r"\b(?:lot|bundle|collection|set|box\s*set|まとめ|セット)\b",
-    re.IGNORECASE,
+from auction_etl.classifiers import (
+    classify_condition,
+    classify_media_details,
+    extract_record_label,
+    is_canonical_grade,
+    is_job_lot,
 )
+from auction_etl.models.warehouse import Auction
+from auction_etl.services.discogs_identity import catalog_token, is_junk_catalog
+from auction_etl.services.parse import apply_ebay_us_tax, parse_sold_money
 
 _TAX_AMOUNT_RE = re.compile(
     r"(?:Tax|税)\s*[:：]?\s*"
@@ -39,6 +41,7 @@ _ARTIST_SEPARATORS = (
     " — ",
     " | ",
 )
+
 
 
 @dataclass(slots=True)
@@ -105,10 +108,10 @@ def _extract_artist(
     return None
 
 
-def _is_bulk_lot(
+def _listing_classify_text(
     listing: Listing,
-) -> bool:
-    text = " ".join(
+) -> str:
+    return " ".join(
         value
         for value in (
             listing.title,
@@ -118,9 +121,12 @@ def _is_bulk_lot(
         if value
     )
 
-    return bool(
-        _BULK_RE.search(text)
-    )
+
+def _is_bulk_lot(
+    listing: Listing,
+) -> bool:
+    text = _listing_classify_text(listing)
+    return classify_media_details(text).bulk_lot or is_job_lot(text)
 
 
 def _currency(
@@ -156,15 +162,28 @@ def _price_components(
     Decimal | None,
     bool | None,
 ]:
-    gross = _decimal_or_none(
+    hammer = _decimal_or_none(
         listing.final_price
     )
 
+    if listing.marketplace == "ebay":
+        hammer, tax, gross, tax_rate = apply_ebay_us_tax(
+            hammer,
+            currency=_currency(listing),
+        )
+        return (
+            hammer,
+            tax,
+            gross,
+            tax_rate,
+            False if tax is not None else None,
+        )
+
     if listing.marketplace != "buyee":
         return (
-            gross,
+            hammer,
             None,
-            gross,
+            hammer,
             None,
             None,
         )
@@ -212,6 +231,402 @@ def _price_components(
     )
 
 
+def _sale_format(value: str | None) -> str | None:
+    cleaned = _clean(value)
+    if not cleaned:
+        return None
+    return (
+        cleaned
+        .upper()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
+
+
+def _start_price(listing: Listing) -> Decimal | None:
+    payload = listing.payload if isinstance(listing.payload, dict) else {}
+    nested = payload.get("price_details")
+    if not isinstance(nested, dict):
+        nested = {}
+    for raw in (
+        nested.get("starting_price"),
+        nested.get("start_price"),
+        payload.get("starting_price"),
+        payload.get("start_price"),
+    ):
+        if raw is None or raw == "":
+            continue
+        amount, _currency = parse_sold_money(raw)
+        if amount is not None:
+            return amount
+        try:
+            return Decimal(str(raw).replace(",", ""))
+        except (InvalidOperation, ValueError):
+            continue
+    return None
+
+
+def _conflict_updates(values: dict) -> dict:
+    """Keep detail-enriched seller, start price, and sale format on refresh."""
+    updates = {
+        key: value
+        for key, value in values.items()
+        if key not in {
+            "marketplace",
+            "listing_id",
+            "seller",
+            "start_price",
+            "auction_format",
+            "watch_count",
+            "label",
+            "condition_media",
+            "condition_cover",
+        }
+    }
+    updates["seller"] = text(
+        """
+        CASE
+          WHEN warehouse.auction.seller IS NOT NULL
+           AND BTRIM(warehouse.auction.seller) <> ''
+           AND EXCLUDED.seller ~ '^[A-Za-z0-9]{16,}$'
+           AND warehouse.auction.seller !~ '^[A-Za-z0-9]{16,}$'
+          THEN warehouse.auction.seller
+          ELSE COALESCE(
+            NULLIF(BTRIM(EXCLUDED.seller), ''),
+            warehouse.auction.seller
+          )
+        END
+        """
+    )
+    updates["start_price"] = text(
+        "COALESCE(EXCLUDED.start_price, warehouse.auction.start_price)"
+    )
+    updates["final_price"] = text(
+        """
+        CASE
+          WHEN EXCLUDED.auction_format = 'FIXED_PRICE_OBO'
+           AND EXCLUDED.final_price IS NULL
+           AND warehouse.auction.final_price
+               IS NOT DISTINCT FROM warehouse.auction.start_price
+          THEN NULL
+          ELSE COALESCE(
+            EXCLUDED.final_price,
+            warehouse.auction.final_price
+          )
+        END
+        """
+    )
+    updates["gross_price"] = text(
+        """
+        CASE
+          WHEN EXCLUDED.auction_format = 'FIXED_PRICE_OBO'
+           AND EXCLUDED.gross_price IS NULL
+           AND warehouse.auction.gross_price
+               IS NOT DISTINCT FROM warehouse.auction.start_price
+          THEN NULL
+          ELSE COALESCE(
+            EXCLUDED.gross_price,
+            warehouse.auction.gross_price
+          )
+        END
+        """
+    )
+    updates["tax_amount"] = text(
+        "COALESCE(EXCLUDED.tax_amount, warehouse.auction.tax_amount)"
+    )
+    updates["tax_rate"] = text(
+        "COALESCE(EXCLUDED.tax_rate, warehouse.auction.tax_rate)"
+    )
+    updates["auction_format"] = text(
+        """
+        COALESCE(
+            NULLIF(BTRIM(EXCLUDED.auction_format), ''),
+            warehouse.auction.auction_format
+        )
+        """
+    )
+    updates["label"] = text(
+        """
+        COALESCE(
+            NULLIF(BTRIM(EXCLUDED.label), ''),
+            warehouse.auction.label
+        )
+        """
+    )
+    updates["condition_media"] = text(
+        """
+        COALESCE(
+            NULLIF(BTRIM(EXCLUDED.condition_media), ''),
+            warehouse.auction.condition_media
+        )
+        """
+    )
+    updates["condition_cover"] = text(
+        """
+        COALESCE(
+            NULLIF(BTRIM(EXCLUDED.condition_cover), ''),
+            warehouse.auction.condition_cover
+        )
+        """
+    )
+    return updates
+
+
+def promote_sale_facts(
+    session: Session,
+    *,
+    marketplace: str | None = None,
+) -> None:
+    """Restore seller, opened, start price, and sale type after a card sync."""
+    scoped = ""
+    params: dict[str, str] = {}
+    if marketplace:
+        scoped = " AND auction.marketplace = :marketplace"
+        params["marketplace"] = marketplace
+    session.execute(
+        text(
+            f"""
+            UPDATE warehouse.auction AS auction
+            SET
+                seller = CASE
+                  WHEN BTRIM(COALESCE(detail.seller_name, '')) <> ''
+                   AND (
+                     auction.seller IS NULL
+                     OR BTRIM(auction.seller) = ''
+                     OR auction.seller ~ '^[A-Za-z0-9]{{16,}}$'
+                   )
+                  THEN BTRIM(detail.seller_name)
+                  ELSE auction.seller
+                END,
+                opening_at = COALESCE(auction.opening_at, detail.opening_at),
+                closing_at = COALESCE(auction.closing_at, detail.closing_at),
+                start_price = COALESCE(auction.start_price, detail.starting_price),
+                buyout_price_gross = COALESCE(
+                    auction.buyout_price_gross,
+                    detail.buyout_price_gross
+                )
+            FROM warehouse.auction_detail AS detail
+            WHERE detail.marketplace = auction.marketplace
+              AND detail.listing_id = auction.listing_id
+              {scoped}
+            """
+        ),
+        params,
+    )
+    session.execute(
+        text(
+            f"""
+            UPDATE warehouse.auction AS auction
+            SET auction_format = UPPER(REPLACE(REPLACE(BTRIM(listing.sale_type), ' ', '_'), '-', '_'))
+            FROM staging.listing AS listing
+            WHERE listing.marketplace = auction.marketplace
+              AND listing.listing_id = auction.listing_id
+              AND listing.sale_type IS NOT NULL
+              AND BTRIM(listing.sale_type) <> ''
+              AND (
+                auction.auction_format IS NULL
+                OR BTRIM(auction.auction_format) = ''
+                OR auction.auction_format = 'UNKNOWN'
+              )
+              {scoped}
+            """
+        ),
+        params,
+    )
+    session.execute(
+        text(
+            f"""
+            UPDATE warehouse.auction AS auction
+            SET auction_format = CASE
+                WHEN buyout_price_gross IS NOT NULL
+                 AND COALESCE(bid_count, 0) > 0
+                    THEN 'AUCTION_WITH_BUYOUT'
+                WHEN buyout_price_gross IS NOT NULL
+                 AND COALESCE(bid_count, 0) = 0
+                    THEN 'FIXED_PRICE'
+                WHEN COALESCE(bid_count, 0) > 0
+                  OR start_price IS NOT NULL
+                    THEN 'AUCTION'
+                WHEN marketplace = 'ebay'
+                 AND ended_at IS NOT NULL
+                    THEN 'FIXED_PRICE'
+                WHEN marketplace = 'buyee'
+                    THEN 'AUCTION'
+                ELSE 'UNKNOWN'
+            END
+            WHERE (
+                auction.auction_format IS NULL
+                OR BTRIM(auction.auction_format) = ''
+                OR auction.auction_format = 'UNKNOWN'
+            )
+            {scoped}
+            """
+        ),
+        params,
+    )
+    promote_classification_facts(session, marketplace=marketplace)
+
+
+def promote_classification_facts(
+    session: Session,
+    *,
+    marketplace: str | None = None,
+) -> None:
+    """Fill labels, catalogs, and grades from staging, details, and Discogs."""
+    scoped = ""
+    params: dict[str, str] = {}
+    if marketplace:
+        scoped = " AND auction.marketplace = :marketplace"
+        params["marketplace"] = marketplace
+    session.execute(
+        text(
+            f"""
+            UPDATE warehouse.auction AS auction
+            SET
+                label = COALESCE(
+                    NULLIF(BTRIM(auction.label), ''),
+                    NULLIF(BTRIM(listing.label), '')
+                ),
+                catalog_number = COALESCE(
+                    NULLIF(BTRIM(auction.catalog_number), ''),
+                    NULLIF(BTRIM(listing.catalog_number), '')
+                ),
+                media_type = COALESCE(
+                    NULLIF(BTRIM(auction.media_type), ''),
+                    NULLIF(BTRIM(listing.format), '')
+                )
+            FROM staging.listing AS listing
+            WHERE listing.marketplace = auction.marketplace
+              AND listing.listing_id = auction.listing_id
+              {scoped}
+            """
+        ),
+        params,
+    )
+    session.execute(
+        text(
+            f"""
+            UPDATE warehouse.auction AS auction
+            SET
+                label = COALESCE(
+                    NULLIF(BTRIM(auction.label), ''),
+                    NULLIF(BTRIM(canonical.display_name), ''),
+                    NULLIF(BTRIM(pressing.label_name), '')
+                ),
+                catalog_number = COALESCE(
+                    NULLIF(BTRIM(auction.catalog_number), ''),
+                    NULLIF(BTRIM(pressing.catalog_number), '')
+                )
+            FROM warehouse.auction_pressing_assignment AS assignment
+            JOIN warehouse.pressing_identity AS pressing
+              ON pressing.id = assignment.pressing_id
+            LEFT JOIN warehouse.label AS canonical
+              ON canonical.id = pressing.label_id
+            WHERE assignment.marketplace = auction.marketplace
+              AND assignment.listing_id = auction.listing_id
+              AND auction.identity_status IN ('filled_auto', 'filled_manual')
+              {scoped}
+            """
+        ),
+        params,
+    )
+    rows = session.execute(
+        text(
+            f"""
+            SELECT
+                auction.marketplace,
+                auction.listing_id,
+                auction.title,
+                auction.artist,
+                auction.label,
+                auction.catalog_number,
+                auction.condition_media,
+                auction.condition_cover,
+                auction.bulk_lot,
+                detail.condition_text,
+                detail.description
+            FROM warehouse.auction AS auction
+            LEFT JOIN warehouse.auction_detail AS detail
+              ON detail.marketplace = auction.marketplace
+             AND detail.listing_id = auction.listing_id
+            WHERE TRUE
+              {scoped}
+            """
+        ),
+        params,
+    ).mappings().all()
+    for row in rows:
+        title = str(row.get("title") or "")
+        catalog = str(row.get("catalog_number") or "").strip() or None
+        if catalog and is_junk_catalog(catalog, title=title):
+            catalog = None
+        if not catalog:
+            catalog = catalog_token(title=title)
+        label = str(row.get("label") or "").strip() or None
+        if not label:
+            label = extract_record_label(
+                " ".join(
+                    part
+                    for part in (row.get("artist"), title)
+                    if part
+                )
+            )
+        current_media = str(row.get("condition_media") or "").strip() or None
+        current_cover = str(row.get("condition_cover") or "").strip() or None
+        grades = classify_condition(
+            row.get("description"),
+            row.get("condition_text"),
+            title,
+        )
+        media_grade = (
+            current_media
+            if is_canonical_grade(current_media)
+            else grades.media_grade
+        )
+        cover_grade = (
+            current_cover
+            if is_canonical_grade(current_cover)
+            else grades.cover_grade
+        )
+        media = classify_media_details(title)
+        job = is_job_lot(title)
+        if job and catalog and is_junk_catalog(catalog, title=title):
+            catalog = None
+        session.execute(
+            text(
+                """
+                UPDATE warehouse.auction
+                SET
+                    catalog_number = CAST(:catalog_number AS varchar),
+                    bulk_lot = CAST(:bulk_lot AS boolean),
+                    label = COALESCE(
+                        NULLIF(BTRIM(label), ''),
+                        CAST(:label AS varchar)
+                    ),
+                    condition_media = COALESCE(
+                        CAST(:media_grade AS varchar),
+                        condition_media
+                    ),
+                    condition_cover = COALESCE(
+                        CAST(:cover_grade AS varchar),
+                        condition_cover
+                    )
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                """
+            ),
+            {
+                "catalog_number": catalog,
+                "bulk_lot": bool(media.bulk_lot or job),
+                "label": label,
+                "media_grade": media_grade,
+                "cover_grade": cover_grade,
+                "marketplace": row["marketplace"],
+                "listing_id": row["listing_id"],
+            },
+        )
+
+
 def _row_values(
     listing: Listing,
 ) -> dict:
@@ -240,16 +655,17 @@ def _row_values(
         "artist": _extract_artist(title),
         "title": title,
         "media_type": (
-            _clean(listing.format)
-            or media.format
+            media.format
+            or _clean(listing.format)
         ),
         "disc_count": (
             listing.disc_count
             or media.disc_count
         ),
         "edition": _clean(listing.edition),
-        "catalog_number": _clean(
-            listing.catalog_number
+        "catalog_number": catalog_token(
+            catalog_number=listing.catalog_number,
+            title=title,
         ),
         "label": _clean(listing.label),
         "image_url": _clean(listing.image_url),
@@ -265,7 +681,7 @@ def _row_values(
         ),
         "bid_count": listing.bid_count,
         "watch_count": None,
-        "start_price": None,
+        "start_price": _start_price(listing),
         "final_price": hammer_price,
         "tax_amount": tax_amount,
         "gross_price": gross_price,
@@ -276,6 +692,7 @@ def _row_values(
         ),
         "currency": _currency(listing),
         "ended_at": listing.ended_at,
+        "auction_format": _sale_format(listing.sale_type),
     }
 
 
@@ -373,14 +790,7 @@ def sync_staging_to_warehouse(
             Auction
         ).values(**values)
 
-        update_values = {
-            key: value
-            for key, value in values.items()
-            if key not in {
-                "marketplace",
-                "listing_id",
-            }
-        }
+        update_values = _conflict_updates(values)
 
         upsert_statement = (
             insert_statement
@@ -397,6 +807,8 @@ def sync_staging_to_warehouse(
         )
 
         stats.inserted_or_updated += 1
+
+    promote_sale_facts(session, marketplace=marketplace)
 
     if prune:
         stats.pruned = _prune_obsolete(

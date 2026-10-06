@@ -142,3 +142,57 @@ def test_later_page_access_block_keeps_first_page_results() -> None:
     assert "stats.pages_processed == 0" in condition
     assert "stats.failed_sources" in condition
     assert "stats.blocked_sources" not in condition
+
+
+def test_crawl_source_uses_nonfatal_page_evidence() -> None:
+    """Access-block and empty-result diagnostics must not raise on screenshot."""
+    source = CRAWLER.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(CRAWLER))
+    crawl_source = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "crawl_source"
+    )
+    helper = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_save_ebay_page_evidence"
+    )
+    crawl_segment = ast.get_source_segment(source, crawl_source) or ""
+    helper_segment = ast.get_source_segment(source, helper) or ""
+
+    assert "page.screenshot(" not in crawl_segment
+    assert crawl_segment.count("_save_ebay_page_evidence(") >= 2
+    assert "timeout=4_000" in helper_segment
+    assert "full_page=False" in helper_segment
+    assert "EBAY_CRAWL_PHASE=evidence_skip" in helper_segment
+
+
+def test_ebay_page_evidence_survives_screenshot_timeout(
+    tmp_path: Path,
+) -> None:
+    """HTML is kept even when Playwright hangs waiting for fonts on a 403 page."""
+    from scripts import crawl_ebay_sources as crawler
+
+    class BoomPage:
+        def screenshot(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+            raise TimeoutError("Timeout 8000ms exceeded.")
+
+    html_path = tmp_path / "ebay_block.html"
+    screenshot_path = tmp_path / "ebay_block.png"
+    page = BoomPage()
+
+    crawler._save_ebay_page_evidence(
+        page,  # type: ignore[arg-type]
+        "<html>403</html>",
+        screenshot_path=screenshot_path,
+        html_path=html_path,
+    )
+
+    assert html_path.read_text(encoding="utf-8") == "<html>403</html>"
+    assert screenshot_path.exists() is False
+    assert page.kwargs["timeout"] == 4_000
+    assert page.kwargs["full_page"] is False

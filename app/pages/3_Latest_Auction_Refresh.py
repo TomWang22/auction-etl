@@ -525,10 +525,10 @@ with refresh_tab:
     st.subheader("Safe refresh controls")
 
     st.write(
-        "Inspection is read-only. Buyee and Gripsweat are refreshed "
-        "by the persistent worker. eBay is external-acquisition only: "
-        "a refresh processes a pending FaceRecords handoff when one "
-        "exists; otherwise eBay is shown unavailable, not complete."
+        "Inspection is read-only. Buyee, eBay, and Gripsweat are "
+        "refreshed by the local persistent worker as a visible Google "
+        "Chrome local crawl. Tracked artists drive the eBay and Gripsweat "
+        "searches. eBay is not a FaceRecords handoff."
     )
 
     job_running = (

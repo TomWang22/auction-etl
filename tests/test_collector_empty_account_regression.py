@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 import pandas as pd
 
+from app.collector_review_support import derive_pressing_group_key
 
 ROOT = Path(__file__).resolve().parents[1]
 COLLECTOR_REVIEW = ROOT / "app" / "collector_review.py"
@@ -80,23 +80,6 @@ def _keyword_value(
     )
 
 
-def _derive_pressing_group_key(row: pd.Series) -> str:
-    """Mirror the Collector Ledger pressing-group normalization."""
-    return "|".join(
-        value
-        for value in (
-            re.sub(
-                r"[^A-Z0-9]",
-                "",
-                row["artist_display"].upper(),
-            ),
-            row["media_display"].upper(),
-            row["pressing_token"],
-        )
-        if value
-    )
-
-
 def test_pressing_group_assignment_forces_series_reduction() -> None:
     """Empty account preparation must keep apply() one-dimensional."""
     call = _pressing_group_assignment_call()
@@ -116,7 +99,7 @@ def test_empty_pressing_group_apply_returns_assignable_series() -> None:
     )
 
     result = frame.apply(
-        _derive_pressing_group_key,
+        derive_pressing_group_key,
         axis=1,
         result_type="reduce",
     )
@@ -138,22 +121,50 @@ def test_nonempty_pressing_group_behavior_is_preserved() -> None:
                 "artist_display": "Miles Davis",
                 "media_display": "LP",
                 "pressing_token": "A1/B1",
+                "job_lot": False,
+                "discogs_release_id": None,
             },
             {
                 "artist_display": "The Beatles",
                 "media_display": "7 inch",
                 "pressing_token": "",
+                "job_lot": False,
+                "discogs_release_id": None,
+            },
+            {
+                "artist_display": "鄧麗君",
+                "media_display": "LP",
+                "pressing_token": "28TR2134",
+                "job_lot": False,
+                "discogs_release_id": None,
+            },
+            {
+                "artist_display": "Teresa Teng",
+                "media_display": "LP",
+                "pressing_token": "28TR2134",
+                "job_lot": False,
+                "discogs_release_id": None,
+            },
+            {
+                "artist_display": "Teresa Teng",
+                "media_display": "LP",
+                "pressing_token": "28TR2134",
+                "job_lot": False,
+                "discogs_release_id": 10426595,
             },
         ]
     )
 
     frame["pressing_group_key"] = frame.apply(
-        _derive_pressing_group_key,
+        derive_pressing_group_key,
         axis=1,
         result_type="reduce",
     )
 
     assert frame["pressing_group_key"].tolist() == [
-        "MILESDAVIS|LP|A1/B1",
-        "THEBEATLES|7 INCH",
+        "milesdavis|LP|A1/B1",
+        "",
+        "teresateng|LP|28TR2134",
+        "teresateng|LP|28TR2134",
+        "D10426595",
     ]

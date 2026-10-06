@@ -246,6 +246,15 @@ def test_success_requires_available_state() -> None:
     )
 
     assert (
+        "persist_operator_storage_state("
+        in source
+    )
+
+    assert (
+        "EBAY_OPERATOR_STORAGE_STATE_EXPORTED=true"
+        in source
+    )
+    assert (
         "if initial.state is BootstrapState.AVAILABLE:"
         in source
     )
@@ -396,3 +405,36 @@ def test_operator_confirmation_uses_controlling_terminal() -> None:
     ]
 
     assert input_calls == []
+
+
+def test_persist_operator_storage_state_writes_existing_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Validated cookies go to the operator storage-state path."""
+
+    module = load_bootstrap()
+    destination = (
+        tmp_path
+        / "private"
+        / "ebay-storage-state.json"
+    )
+    destination.parent.mkdir()
+    monkeypatch.setattr(
+        module,
+        "DEFAULT_OPERATOR_STORAGE_STATE",
+        destination,
+    )
+
+    class FakeContext:
+        def storage_state(self, path: str) -> None:
+            Path(path).write_text(
+                "{}",
+                encoding="utf-8",
+            )
+
+    module.persist_operator_storage_state(
+        FakeContext()
+    )
+
+    assert destination.is_file()

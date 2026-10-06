@@ -160,6 +160,11 @@ def test_buyee_production_details_use_https_first_with_waf_fallback() -> None:
     )
 
     assert (
+        '"--headed"'
+        in production_detail
+    )
+
+    assert (
         "Apply WAF-only Buyee browser "
         in production_detail
     )

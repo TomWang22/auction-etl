@@ -79,6 +79,20 @@ class Auction(Base):
         DateTime(timezone=True)
     )
 
+    opening_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    closing_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    buyout_price_gross: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2)
+    )
+
+    auction_format: Mapped[str | None] = mapped_column(String(32))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

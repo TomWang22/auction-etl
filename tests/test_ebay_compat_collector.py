@@ -73,6 +73,24 @@ def test_fixed_price_listing_has_no_bid_row() -> None:
     assert listing["bids"] is None
 
 
+def test_best_offer_sold_card_is_not_fixed_price_hammer() -> None:
+    html = render_search_page(
+        [
+            EbayListing(
+                item_id="377493856081",
+                url="https://www.ebay.com/itm/377493856081",
+                title="Teresa Teng With Love From... Teresa Teng 12\" Black Vinyl LP",
+                price="$50.00 or Best Offer",
+                seller="hunts4stuff",
+            )
+        ]
+    )
+    listing = parse_search(html)[0]
+    assert listing["sale_type"] == "FIXED_PRICE_OBO"
+    assert listing["price"] == "$50.00 or Best Offer"
+    assert listing["start_price"] == "$50.00 or Best Offer"
+
+
 def test_required_identity_fields_are_validated() -> None:
     """Reject records that cannot become valid existing-parser listings."""
     invalid = EbayListing(

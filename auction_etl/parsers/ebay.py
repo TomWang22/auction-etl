@@ -121,7 +121,10 @@ def parse_attribute_rows(card: Tag) -> list[str]:
 
 def parse_price(rows: list[str]) -> str | None:
     for row in rows:
-        if "$" in row or "£" in row or "€" in row:
+        if "$" in row or "£" in row or "€" in row or "¥" in row:
+            if "delivery" not in row.lower():
+                return row
+        if any(token in row.upper() for token in ("GBP", "EUR", "JPY", "USD")):
             if "delivery" not in row.lower():
                 return row
 
@@ -153,6 +156,9 @@ def parse_bid_text(rows: list[str]) -> str | None:
 
 
 def parse_sale_type(rows: list[str]) -> str:
+    blob = " ".join(rows).lower()
+    if "best offer" in blob:
+        return "FIXED_PRICE_OBO"
     bid = parse_bid_text(rows)
 
     if bid is None:
@@ -228,6 +234,8 @@ def parse_search(html: str) -> list[dict[str, Any]]:
         rows = parse_attribute_rows(card)
 
         seller, seller_feedback = parse_seller(card)
+        sale_type = parse_sale_type(rows)
+        price = parse_price(rows)
 
         listings.append(
             {
@@ -235,10 +243,11 @@ def parse_search(html: str) -> list[dict[str, Any]]:
                 "url": parse_url(card),
                 "title": parse_title(card),
                 "subtitle": parse_subtitle(card),
-                "price": parse_price(rows),
+                "price": price,
                 "shipping": parse_shipping(rows),
                 "bids": parse_bid_text(rows),
-                "sale_type": parse_sale_type(rows),
+                "sale_type": sale_type,
+                "start_price": price if sale_type == "FIXED_PRICE_OBO" else None,
                 "location": parse_location(rows),
                 "seller": seller,
                 "seller_feedback": seller_feedback,

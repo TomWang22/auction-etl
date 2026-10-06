@@ -6,6 +6,7 @@ import http.cookiejar
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from enum import StrEnum
@@ -338,13 +339,25 @@ def classify_response(
     return BuyeeHttpState.INDETERMINATE
 
 
+def closed_watchlist_page_numbers(body: str) -> list[int]:
+    """Return page numbers advertised by the ended-watchlist form."""
+    return [
+        int(value)
+        for value in re.findall(
+            r"historyform\.page\.value\s*=\s*(\d+)",
+            body,
+        )
+    ]
+
+
 def fetch_closed_watchlist(
     *,
     storage_state_path: Path,
     url: str = DEFAULT_WATCHLIST_URL,
     timeout_seconds: float = 30.0,
+    page: int = 1,
 ) -> BuyeeHttpResult:
-    """Fetch the authenticated Buyee closed watchlist over HTTPS."""
+    """Fetch one page of the authenticated Buyee closed watchlist."""
     jar = load_buyee_cookie_jar(
         storage_state_path
     )
@@ -355,8 +368,15 @@ def fetch_closed_watchlist(
         )
     )
 
+    payload = None
+    if page > 1:
+        payload = urllib.parse.urlencode(
+            {"page": str(page)}
+        ).encode("utf-8")
+
     request = urllib.request.Request(
         url,
+        data=payload,
         headers={
             "User-Agent": DEFAULT_USER_AGENT,
             "Accept": (

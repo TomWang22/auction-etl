@@ -13,6 +13,7 @@ from auction_etl.models.crawl import CrawlJob
 from auction_etl.models.raw import RawPage
 from scripts.buyee_http_session import (
     BuyeeHttpState,
+    closed_watchlist_page_numbers,
     fetch_closed_watchlist,
 )
 
@@ -99,8 +100,8 @@ def crawl_closed_watchlist(
     session: Session,
     state_file: Path,
     url: str = DEFAULT_WATCHLIST_URL,
-) -> tuple[CrawlJob, RawPage]:
-    """Fetch and persist the authenticated Buyee closed watchlist."""
+) -> tuple[CrawlJob, RawPage, int]:
+    """Fetch and persist every page of the ended Buyee watchlist."""
     result = fetch_closed_watchlist(
         storage_state_path=state_file,
         url=url,
@@ -127,12 +128,40 @@ def crawl_closed_watchlist(
             "Buyee authenticated watchlist contained zero auction links."
         )
 
-    return persist_raw_page(
-        session=session,
-        url=result.final_url,
-        status_code=result.status_code,
-        html=result.body,
+    pages = [result]
+    seen_links = set(result.auction_links)
+    last_page = min(
+        max(closed_watchlist_page_numbers(result.body) or [1]),
+        40,
     )
+    for page_number in range(2, last_page + 1):
+        page_result = fetch_closed_watchlist(
+            storage_state_path=state_file,
+            url=url,
+            page=page_number,
+        )
+        if page_result.state is not BuyeeHttpState.AUTHENTICATED:
+            break
+        if not page_result.auction_links:
+            break
+        if set(page_result.auction_links) <= seen_links:
+            break
+        seen_links.update(page_result.auction_links)
+        pages.append(page_result)
+
+    persisted_job = None
+    persisted_raw = None
+    for index, page_result in enumerate(pages, start=1):
+        page_url = page_result.final_url
+        if index > 1:
+            page_url = f"{page_url.split('?')[0]}?page={index}"
+        persisted_job, persisted_raw = persist_raw_page(
+            session=session,
+            url=page_url,
+            status_code=int(page_result.status_code or 0),
+            html=page_result.body,
+        )
+    return persisted_job, persisted_raw, len(pages)
 
 
 def main() -> int:
@@ -140,7 +169,7 @@ def main() -> int:
     arguments = parse_arguments()
 
     with SessionLocal() as session:
-        job, raw_page = crawl_closed_watchlist(
+        job, raw_page, page_count = crawl_closed_watchlist(
             session=session,
             state_file=arguments.state_file.expanduser(),
             url=arguments.url,
@@ -153,7 +182,7 @@ def main() -> int:
     print(f"HTTP    : {raw_page.http_status}")
     print(f"SHA256  : {raw_page.sha256}")
     print()
-    print("Fetched 1 page(s)")
+    print(f"Fetched {page_count} page(s)")
     print()
     print("BUYEE_HTTP_RAW_CRAWL=PASS")
 

@@ -27,7 +27,18 @@ if str(
     )
 
 
+import pandas as pd  # noqa: E402
+
 from auction_etl.auth.context import AccountContext  # noqa: E402
+from auction_etl.reporting.ingestion_activity import (  # noqa: E402
+    LOCAL_ZONE,
+    WINDOW_THIS_RUN,
+    WINDOWS,
+    filter_catalog_additions,
+    ingestion_day_chart,
+    load_recent_catalog_additions,
+    week_counts,
+)
 from auction_etl.auth.streamlit_auth import (  # noqa: E402
     render_account_menu,
     require_authenticated_account,
@@ -1581,6 +1592,78 @@ account_context = require_authenticated_account(
     )
 )
 
+def render_ingestion_history(
+    account_id: str,
+    status: dict[str, Any] | None,
+) -> None:
+    """Show catalog additions by day, week, and the latest refresh."""
+    st.subheader("What came in")
+    try:
+        additions = load_recent_catalog_additions(
+            build_refresh_engine(DATABASE_URL),
+            account_id,
+        )
+    except Exception as exc:
+        st.caption(f"Catalog additions could not be loaded. {exc}")
+        return
+
+    today = datetime.now(LOCAL_ZONE).date()
+    this_week, previous_week = week_counts(additions, today=today)
+    chart = ingestion_day_chart(additions, today=today)
+    week_columns = st.columns(2)
+    week_columns[0].metric("This week", f"{this_week:,}")
+    week_columns[1].metric("Previous week", f"{previous_week:,}")
+    st.caption("Rows added to the catalog, by day.")
+    st.bar_chart(
+        chart,
+        x="Day",
+        y=["Buyee", "eBay", "Gripsweat"],
+        height=220,
+    )
+
+    window = st.pills(
+        "Ingestion window",
+        WINDOWS,
+        default=WINDOW_THIS_RUN,
+        key="ingestion_activity_window",
+    ) or WINDOW_THIS_RUN
+    selected = filter_catalog_additions(
+        additions,
+        window,
+        today=today,
+        run_start=None if status is None else status.get("started_at"),
+        run_end=None if status is None else status.get("finished_at"),
+    )
+    st.caption(
+        f"{len(selected):,} listings in {window.lower()}. "
+        "These are rows added to the catalog. "
+        "A marketplace card can still count an updated listing "
+        "that was already here."
+    )
+    if selected.empty:
+        st.info("No catalog rows in this window.")
+        return
+    display = pd.DataFrame(
+        {
+            "Marketplace": selected["marketplace"],
+            "Listing": selected["listing_id"],
+            "Title": selected["title"].fillna("").map(
+                lambda value: str(value)[:120]
+            ),
+            "Catalog": selected["catalog_number"].fillna(""),
+            "Added": selected["created_at"].dt.tz_convert(LOCAL_ZONE).dt.strftime(
+                "%Y-%m-%d %H:%M"
+            ),
+        }
+    )
+    st.dataframe(
+        display,
+        hide_index=True,
+        width="stretch",
+        height=360,
+    )
+
+
 render_account_menu(
     account_context
 )
@@ -1730,6 +1813,11 @@ else:
         render_status(
             status
         )
+
+render_ingestion_history(
+    str(account_context.account_id),
+    status,
+)
 
 if status is not None:
     state = str(

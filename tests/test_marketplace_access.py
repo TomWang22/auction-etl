@@ -71,7 +71,8 @@ def test_ebay_brand_name_alone_does_not_mean_available() -> None:
         body="Something went wrong on our end. eBay Homepage.",
     )
 
-    assert result.state is MarketplaceAccessState.ACCESS_BLOCKED
+    assert result.state is MarketplaceAccessState.UNKNOWN_ERROR
+    assert "site error" in result.message.casefold()
 
 
 def test_ebay_normal_homepage_is_available() -> None:

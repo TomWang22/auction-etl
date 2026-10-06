@@ -70,7 +70,7 @@ def test_production_ebay_uses_external_handoff() -> None:
 
     assert source[
         "acquisition_mode"
-    ] == "external"
+    ] == "browser"
 
     assert source[
         "profile"

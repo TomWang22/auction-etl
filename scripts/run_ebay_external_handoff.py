@@ -50,6 +50,11 @@ DEFAULT_STORAGE_STATE = (
     / "private"
     / "ebay-storage-state.json"
 )
+DEFAULT_PROFILE_DIR = (
+    ROOT
+    / "profiles"
+    / "facerecords"
+)
 DEFAULT_ARTIFACT_DIR = (
     ROOT
     / "logs"
@@ -448,10 +453,36 @@ def default_artifact_path() -> Path:
     )
 
 
+def require_existing_profile_dir(
+    path: Path,
+) -> Path:
+    """Require one existing non-empty persistent eBay profile directory."""
+
+    resolved = path.expanduser().resolve()
+
+    if not resolved.is_dir():
+        raise OperatorError(
+            "eBay persistent profile directory is missing: "
+            f"{resolved}"
+        )
+
+    try:
+        next(
+            resolved.iterdir()
+        )
+    except StopIteration as exc:
+        raise OperatorError(
+            "eBay persistent profile directory is empty: "
+            f"{resolved}"
+        ) from exc
+
+    return resolved
+
+
 def build_acquisition_command(
     *,
     source: EbaySource,
-    storage_state: Path,
+    profile_dir: Path,
     artifact: Path,
     timeout_seconds: float,
     settle_seconds: float,
@@ -493,9 +524,9 @@ def build_acquisition_command(
         source.url,
         "--source-name",
         source.name,
-        "--storage-state",
+        "--profile-dir",
         str(
-            storage_state
+            profile_dir
         ),
         "--output",
         str(
@@ -524,9 +555,10 @@ def build_acquisition_command(
             "Operator acquisition unexpectedly became headless."
         )
 
-    if "_ipg" in command:
+    if "--storage-state" in command:
         raise OperatorError(
-            "Operator acquisition unexpectedly set _ipg."
+            "Operator acquisition must use the persistent profile, "
+            "not a detached storage-state context."
         )
 
     return command
@@ -1657,6 +1689,17 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--profile-dir",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "AUCTION_EBAY_PROFILE_DIR",
+                str(DEFAULT_PROFILE_DIR),
+            )
+        ),
+    )
+
+    parser.add_argument(
         "--artifact",
         type=Path,
         default=None,
@@ -1746,6 +1789,9 @@ def run_operator(
         arguments.storage_state,
         label="eBay storage state",
     )
+    profile_dir = require_existing_profile_dir(
+        arguments.profile_dir
+    )
 
     artifact = (
         arguments.artifact
@@ -1782,7 +1828,7 @@ def run_operator(
         label="HEADED STRUCTURED EBAY ACQUISITION",
         command=build_acquisition_command(
             source=source,
-            storage_state=storage_state,
+            profile_dir=profile_dir,
             artifact=artifact,
             timeout_seconds=arguments.timeout_seconds,
             settle_seconds=settle_seconds,

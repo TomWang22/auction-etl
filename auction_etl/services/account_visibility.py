@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import psycopg
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
 
 MARKETPLACES = frozenset({"buyee", "ebay", "gripsweat"})
 
@@ -150,6 +153,152 @@ def publish_marketplace_visibility(
         visible_count=visible_count,
         visible_added=visible_added,
     )
+
+
+_ATTACHED_WAREHOUSE_GENERATION: dict[str, int] = {}
+
+
+NATIVE_VISIBILITY_SQL = """
+    WITH candidates AS (
+        SELECT DISTINCT
+            lower(btrim(marketplace)) AS marketplace,
+            btrim(listing_id) AS listing_id
+        FROM warehouse.auction
+        WHERE lower(btrim(marketplace)) = :marketplace
+          AND btrim(listing_id) <> ''
+    )
+    INSERT INTO account.auction_listing (
+        account_id,
+        marketplace,
+        listing_id,
+        source_kind
+    )
+    SELECT
+        CAST(:account_id AS uuid),
+        marketplace,
+        listing_id,
+        :source_kind
+    FROM candidates
+    ON CONFLICT (account_id, marketplace, listing_id)
+    DO NOTHING
+"""
+
+GRIPSWEAT_VISIBILITY_SQL = """
+    WITH candidates AS (
+        SELECT DISTINCT
+            COALESCE(
+                NULLIF(btrim(original_listing_id), ''),
+                substring(gripsweat_url FROM '/item/([0-9]{9,15})')
+            ) AS listing_id
+        FROM warehouse.gripsweat_sale
+    ),
+    eligible AS (
+        SELECT listing_id
+        FROM candidates
+        WHERE listing_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM warehouse.auction AS auction
+              WHERE lower(btrim(auction.marketplace)) = 'ebay'
+                AND auction.listing_id = candidates.listing_id
+          )
+    )
+    INSERT INTO account.auction_listing (
+        account_id,
+        marketplace,
+        listing_id,
+        source_kind
+    )
+    SELECT
+        CAST(:account_id AS uuid),
+        'gripsweat',
+        listing_id,
+        :source_kind
+    FROM eligible
+    ON CONFLICT (account_id, marketplace, listing_id)
+    DO NOTHING
+"""
+
+
+def attach_development_warehouse_visibility(
+    engine: Engine,
+    account_id: str | uuid.UUID,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> int:
+    """Attach local warehouse identities to the signed-in development account.
+
+    Yahoo OIDC only identifies the operator. Local warehouse facts stay
+    invisible until they exist in account.auction_listing. Production
+    first-login workspaces remain empty.
+    """
+    from auction_etl.auth.oidc_production import classify_oidc_runtime
+
+    if classify_oidc_runtime(environ) != "development":
+        return 0
+
+    account_uuid = _uuid(account_id, "account_id")
+    with engine.connect() as connection:
+        generation = int(
+            connection.execute(
+                text(
+                    """
+                    SELECT
+                      (SELECT COUNT(*) FROM warehouse.auction)
+                      + (SELECT COUNT(*) FROM warehouse.gripsweat_sale)
+                    """
+                )
+            ).scalar_one()
+        )
+    cache_key = str(account_uuid)
+    if _ATTACHED_WAREHOUSE_GENERATION.get(cache_key) == generation:
+        return 0
+
+    added = 0
+    with engine.begin() as connection:
+        before = int(
+            connection.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM account.auction_listing
+                    WHERE account_id = CAST(:account_id AS uuid)
+                    """
+                ),
+                {"account_id": account_uuid},
+            ).scalar_one()
+        )
+        for marketplace in ("buyee", "ebay"):
+            connection.execute(
+                text(NATIVE_VISIBILITY_SQL),
+                {
+                    "account_id": account_uuid,
+                    "marketplace": marketplace,
+                    "source_kind": "local-warehouse",
+                },
+            )
+        connection.execute(
+            text(GRIPSWEAT_VISIBILITY_SQL),
+            {
+                "account_id": account_uuid,
+                "source_kind": "local-warehouse",
+            },
+        )
+        after = int(
+            connection.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM account.auction_listing
+                    WHERE account_id = CAST(:account_id AS uuid)
+                    """
+                ),
+                {"account_id": account_uuid},
+            ).scalar_one()
+        )
+        added = after - before
+    _ATTACHED_WAREHOUSE_GENERATION[cache_key] = generation
+    return added
 
 
 def publish_current_refresh_visibility(

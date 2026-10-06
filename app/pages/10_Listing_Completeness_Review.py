@@ -44,6 +44,24 @@ def _engine():
     )
 
 
+STATUS_LABELS = {
+    "NO_VERIFIED_REFERENCE": "No master reference",
+    "NO_ASSIGNMENT": "Unassigned",
+    "COMPLETE": "Complete",
+    "INCOMPLETE": "Incomplete",
+    "UNVERIFIED": "Unverified",
+}
+
+
+def _status_label(status: str) -> str:
+    """Return a metric-safe label for a completeness status code."""
+    normalized = str(status or "").strip()
+    return STATUS_LABELS.get(
+        normalized,
+        normalized.replace("_", " ").title() or "—",
+    )
+
+
 def _listing_label(
     row: dict[str, object],
 ) -> str:
@@ -117,6 +135,7 @@ def main() -> None:
     listings = list_assigned_listings(
         engine,
         search,
+        account_id=page_account_context.account_id,
     )
 
     if not listings:
@@ -171,7 +190,9 @@ def main() -> None:
 
     columns[0].metric(
         "Status",
-        result.status,
+        _status_label(
+            result.status
+        ),
     )
 
     columns[1].metric(
@@ -201,6 +222,16 @@ def main() -> None:
         result.completeness_ratio
         or "—",
     )
+
+    if result.status == "NO_VERIFIED_REFERENCE":
+        st.warning(
+            "Pressing "
+            f"{result.pressing_id} is assigned, but Completeness "
+            "Reference has no REQUIRED or NOT_INCLUDED rows for it. "
+            "Required and verified units stay at 0 until that master "
+            "is asserted. Open Completeness Reference to define the "
+            "exact pressing."
+        )
 
     st.write(
         result.explanation

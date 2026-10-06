@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 APP_PATH = Path("app/collector_review.py")
+SUPPORT_PATH = Path("app/collector_review_support.py")
 PROJECT_PATH = Path("pyproject.toml")
 
 
@@ -81,6 +82,9 @@ def test_listing_grid_uses_click_selection() -> None:
     assert '"enableClickSelection": True' in table_source
     assert '"selectionChanged"' in table_source
     assert '"server_wins"' in table_source
+    assert "should_grid_return" in table_source
+    assert "rowDataChanged" in table_source
+    assert "_grid_click_identity(" in table_source
     assert ".ag-row-hover" in table_source
     assert ".ag-row-selected" in table_source
     assert '"Review": [' not in table_source
@@ -93,7 +97,7 @@ def test_stable_identity_is_returned_by_grid() -> None:
     )
 
     helper_source = function_source(
-        source,
+        SUPPORT_PATH.read_text(encoding="utf-8"),
         "_aggrid_selected_identity",
     )
 
@@ -102,6 +106,93 @@ def test_stable_identity_is_returned_by_grid() -> None:
         "render_listing_table",
     )
 
-    assert "__identity" in helper_source
     assert "__identity" in table_source
+    assert "grid_row_identity" in helper_source
+    assert "_aggrid_selection_ids" in helper_source
     assert "_set_listing_identity(" in table_source
+    assert '"rowClicked"' in table_source
+    assert "__current_listing" in table_source
+    assert "params.data.__selected" not in table_source
+    assert '"field": "__selected"' not in table_source
+
+
+def test_grid_row_identity_uses_visible_listing_columns() -> None:
+    """Unmatched clicks still open the editor when AG Grid omits hidden fields."""
+    from app.collector_review_support import grid_row_identity
+
+    assert (
+        grid_row_identity(
+            {
+                "Marketplace": "ebay",
+                "Listing ID": 14665373254,
+                "Title": "1991 Teresa Teng",
+            }
+        )
+        == "ebay:14665373254"
+    )
+    assert (
+        grid_row_identity(
+            {"__identity": "buyee:n1245996680", "Listing ID": "ignored"}
+        )
+        == "buyee:n1245996680"
+    )
+    assert grid_row_identity({}) is None
+
+
+class _GridResponse:
+    """Minimal stand-in for an AG Grid return value."""
+
+    def __init__(self, event_data):
+        self.event_data = event_data
+        self.selected_rows_id = None
+        self.selected_rows = None
+
+
+def test_row_data_refresh_does_not_count_as_a_click() -> None:
+    """server_wins row replacement must not open or replace a listing."""
+    from app.collector_review_support import _grid_click_identity
+
+    assert (
+        _grid_click_identity(
+            _GridResponse(
+                {
+                    "source": "rowDataChanged",
+                    "type": "selectionChanged",
+                    "data": {"__identity": "ebay:800138386816"},
+                }
+            )
+        )
+        is None
+    )
+
+
+def test_row_click_opens_the_listing_identity() -> None:
+    """A row click carries the listing identity even without selected rows."""
+    from app.collector_review_support import _grid_click_identity
+
+    assert (
+        _grid_click_identity(
+            _GridResponse(
+                {
+                    "streamlitRerunEventTriggerName": "rowClicked",
+                    "data": {
+                        "Marketplace": "ebay",
+                        "Listing ID": "800138386816",
+                        "__identity": "ebay:800138386816",
+                    },
+                }
+            )
+        )
+        == "ebay:800138386816"
+    )
+    assert (
+        _grid_click_identity(
+            _GridResponse(
+                {
+                    "streamlitRerunEventTriggerName": "rowClicked",
+                    "node": {"id": "buyee:n1245996680"},
+                }
+            )
+        )
+        == "buyee:n1245996680"
+    )

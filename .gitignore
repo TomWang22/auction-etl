@@ -47,3 +47,5 @@ app/*.backup.*
 
 # Streamlit authentication secrets
 .streamlit/secrets.toml
+.streamlit/certs/
+

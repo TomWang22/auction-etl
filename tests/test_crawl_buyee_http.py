@@ -127,7 +127,8 @@ def test_crawl_closed_watchlist_persists_authenticated_response(
         state_file=Path("/private/state.json"),
     )
 
-    assert actual == expected
+    assert actual[:2] == expected
+    assert actual[2] == 1
 
     persist.assert_called_once_with(
         session=session,
@@ -135,6 +136,54 @@ def test_crawl_closed_watchlist_persists_authenticated_response(
         status_code=200,
         html=result.body,
     )
+
+
+def test_crawl_closed_watchlist_saves_every_ended_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ended watchlist is saved through the last advertised page."""
+    pages = {
+        1: authenticated_result(
+            body=(
+                '<a href="/item/jdirectitems/auction/one">one</a>'
+                '<a href="javascript:void(0);" '
+                'onclick="document.historyform.page.value = 2; '
+                'document.historyform.submit();"></a>'
+            ),
+            auction_links=(
+                "https://buyee.jp/item/jdirectitems/auction/one",
+            ),
+        ),
+        2: authenticated_result(
+            body='<a href="/item/jdirectitems/auction/two">two</a>',
+            auction_links=(
+                "https://buyee.jp/item/jdirectitems/auction/two",
+            ),
+        ),
+    }
+
+    def fetch(**kwargs):
+        return pages[int(kwargs.get("page") or 1)]
+
+    monkeypatch.setattr(
+        "scripts.crawl_buyee_http.fetch_closed_watchlist",
+        fetch,
+    )
+    monkeypatch.setattr(
+        "scripts.crawl_buyee_http.persist_raw_page",
+        lambda **kwargs: (
+            SimpleNamespace(id=1),
+            SimpleNamespace(id=kwargs["url"]),
+        ),
+    )
+
+    _job, raw_page, page_count = crawl_closed_watchlist(
+        session=MagicMock(),
+        state_file=Path("/private/state.json"),
+    )
+
+    assert page_count == 2
+    assert raw_page.id.endswith("?page=2")
 
 
 @pytest.mark.parametrize(

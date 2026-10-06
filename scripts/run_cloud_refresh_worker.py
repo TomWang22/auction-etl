@@ -181,7 +181,7 @@ def parse_args(
         default=int(
             os.environ.get(
                 "AUCTION_WORKER_LEASE_SECONDS",
-                "90",
+                "1800",
             )
         ),
     )

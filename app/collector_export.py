@@ -14,6 +14,9 @@ import pandas as pd
 import streamlit as st
 
 from app.collector_review_support import clean_text
+from auction_etl.services.sold_item_overlap import (
+    apply_gripsweat_official_usd,
+)
 
 
 ALL_COMBINED = "All media — one file"
@@ -573,6 +576,30 @@ def deduplicate_export_frame(
         ],
         keep="first",
         inplace=True,
+    )
+
+    gripsweat_usd: dict[str, dict[str, Any]] = {}
+    for _, row in dataframe.iterrows():
+        marker = " ".join(
+            str(row.get(column) or "")
+            for column in (
+                "marketplace",
+                "_activity_source",
+                "ingestion_source",
+                "record_source",
+                "data_source",
+                "source",
+            )
+        ).lower()
+        if "gripsweat" not in marker:
+            continue
+        listing = str(row.get("listing_id") or "").strip()
+        if listing:
+            gripsweat_usd[listing] = dict(row)
+
+    frame = apply_gripsweat_official_usd(
+        frame,
+        gripsweat_usd,
     )
 
     frame.sort_values(

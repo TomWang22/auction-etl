@@ -77,6 +77,7 @@ EFFECTIVE_VIEW_COLUMNS = (
     "manual_completeness_notes",
     "manual_collector_notes",
     "effective_catalog_number",
+    "effective_matrix_number",
     "effective_region",
     "effective_media_type",
     "effective_disc_count",
@@ -182,6 +183,7 @@ REVIEW_VIEW_COLUMNS = (
     "manual_completeness_notes",
     "manual_collector_notes",
     "effective_catalog_number",
+    "effective_matrix_number",
     "effective_region",
     "effective_media_type",
     "effective_disc_count",
@@ -293,6 +295,7 @@ SELECT a.id,
     c.manual_completeness_notes,
     c.manual_collector_notes,
     COALESCE(c.manual_catalog_number, NULLIF(pressing.catalog_number, ''), c.auto_catalog_number, a.catalog_number) AS effective_catalog_number,
+    NULLIF(pressing.matrix_number, '') AS effective_matrix_number,
     COALESCE(c.manual_region, NULLIF(pressing.region, ''), NULLIF(pressing.country, ''), c.auto_region) AS effective_region,
     COALESCE(c.manual_media_type, NULLIF(pressing.media_type, ''), c.auto_media_type, a.media_type) AS effective_media_type,
     COALESCE(c.manual_disc_count, pressing.disc_count, c.auto_disc_count, a.disc_count) AS effective_disc_count,
@@ -327,7 +330,15 @@ SELECT a.id,
     a.discogs_thumb_url,
     COALESCE(canonical_label.display_name, NULLIF(pressing.label_name, ''), a.label) AS effective_label,
     COALESCE(NULLIF(family.display_artist, ''), a.artist) AS effective_artist,
-    pressing.release_year AS effective_release_year,
+    CASE
+        WHEN listing.year IS NOT NULL
+         AND pressing.release_year IS NOT NULL
+         AND listing.year BETWEEN 1940 AND 1999
+         AND pressing.release_year >= listing.year + 8
+         AND COALESCE(a.title, '') !~* '復刻|再発|reissue|repress|180\\s*g|stereo\\s*sound|new\\s+vinyl|NHK|コンサート|19[4-9][0-9].{0,12}(live|concert)|20[0-2][0-9].{0,12}(live|concert)'
+        THEN listing.year
+        ELSE COALESCE(pressing.release_year, listing.year)
+    END AS effective_release_year,
     pressing.id AS pressing_id,
     pressing.discogs_release_id
    FROM warehouse.auction a
@@ -335,7 +346,10 @@ SELECT a.id,
      LEFT JOIN warehouse.auction_pressing_assignment assignment ON assignment.marketplace::text = a.marketplace::text AND assignment.listing_id::text = a.listing_id::text
      LEFT JOIN warehouse.pressing_identity pressing ON pressing.id = assignment.pressing_id
      LEFT JOIN warehouse.release_family family ON family.id = pressing.release_family_id
-     LEFT JOIN warehouse.label canonical_label ON canonical_label.id = pressing.label_id;
+     LEFT JOIN warehouse.label canonical_label ON canonical_label.id = pressing.label_id
+     LEFT JOIN staging.listing listing
+       ON listing.marketplace::text = a.marketplace::text
+      AND listing.listing_id::text = a.listing_id::text;
 """
 
 REVIEW_VIEW_SELECT_SQL = r"""
@@ -404,6 +418,7 @@ SELECT effective.id,
     effective.manual_completeness_notes,
     effective.manual_collector_notes,
     effective.effective_catalog_number,
+    effective.effective_matrix_number,
     effective.effective_region,
     effective.effective_media_type,
     effective.effective_disc_count,
@@ -464,6 +479,14 @@ COLLECTOR_VIEW_DDL = (
     f"CREATE VIEW {EFFECTIVE_VIEW} AS\n{EFFECTIVE_VIEW_SELECT_SQL}",
     f"CREATE VIEW {REVIEW_VIEW} AS\n{REVIEW_VIEW_SELECT_SQL}",
 )
+
+# The review view reads listing.year by marketplace + listing_id.
+# staging.listing otherwise has only a primary key on id, so that join
+# seq-scans the whole staging table, including description text.
+LISTING_YEAR_LOOKUP_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS listing_marketplace_listing_year_idx
+ON staging.listing (marketplace, listing_id) INCLUDE (year)
+"""
 
 _REQUIRED_COLUMNS = {
     ("warehouse", "auction"): {
@@ -601,6 +624,14 @@ _REQUIRED_COLUMNS = {
         "detail_status",
         "error_message",
         "fetched_at",
+    },
+    ("staging", "listing"): {
+        "marketplace",
+        "listing_id",
+        "year",
+        "image_url",
+        "payload",
+        "catalog_number",
     },
 }
 
@@ -934,6 +965,8 @@ def install_collector_views(
 
     for statement in COLLECTOR_VIEW_DDL:
         connection.execute(text(statement))
+
+    connection.execute(text(LISTING_YEAR_LOOKUP_INDEX_SQL))
 
     return verify_collector_views(
         connection,

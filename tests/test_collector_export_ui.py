@@ -92,6 +92,29 @@ def test_recent_ingestion_uses_recent_flag() -> None:
     )
 
 
+def test_deduplication_keeps_gripsweat_usd_as_reference() -> None:
+    """Gripsweat OBO asks stay reference. Native eBay amounts stay the sale."""
+    from decimal import Decimal
+
+    frame = sample_frame()
+    frame["total_usd"] = frame["total_usd"].astype(object)
+    frame.loc[
+        frame["marketplace"] == "gripsweat",
+        "total_usd",
+    ] = Decimal("41.00")
+    frame.loc[
+        frame["marketplace"] == "gripsweat",
+        "currency_display",
+    ] = "USD"
+
+    result = deduplicate_export_frame(frame)
+    ebay = result[result["listing_id"] == "188586715117"].iloc[0]
+    assert ebay["marketplace"] == "ebay"
+    assert ebay["total_usd"] == 37
+    assert ebay["_gripsweat_usd_reference"] == Decimal("41.00")
+    assert ebay["_official_usd_source"] == "gripsweat-reference"
+
+
 def test_deduplication_prefers_native_ebay() -> None:
     result = deduplicate_export_frame(
         sample_frame()

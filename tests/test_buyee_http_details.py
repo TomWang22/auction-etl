@@ -96,6 +96,35 @@ def test_extract_detail_from_server_rendered_html() -> None:
         detail.detail_status
         == "complete"
     )
+    assert detail.description is None
+
+
+def test_item_explanation_is_stored_for_later_ingest() -> None:
+    """The translated condition sheet is kept with the detail row."""
+    html = """
+    <html><body>
+      <h1>Teresa Teng single</h1>
+      <div>Seller</div><div>vin-store</div>
+      <div>Opening Time (JST)</div><div>8 Sep 2026 22:05:10</div>
+      <div>Closing Time (JST)</div><div>15 Sep 2026 22:05:10</div>
+      <div>Starting Price</div><div>320 YEN</div>
+      <div>Item Condition</div><div>A little damaged/dirty</div>
+      <h2>Item Explanation</h2>
+      <div>Condition Details</div>
+      <div>Catalog number 07TR-1086</div>
+      <div>/ Jacket: EX- Some scuffs, overall in good condition.</div>
+      <div>/ Record condition: EX Only minor scuffs.</div>
+    </body></html>
+    """
+    detail = extract_detail_from_html(
+        html=html,
+        listing_id="l1242006639",
+        auction_url="https://buyee.jp/item/jdirectitems/auction/l1242006639",
+    )
+    assert detail.condition_text == "A little damaged/dirty"
+    assert detail.description is not None
+    assert "Jacket: EX-" in detail.description
+    assert "Record condition: EX" in detail.description
 
 def test_contains_aws_waf_challenge_detects_buyee_challenge() -> None:
     """Recognize the AWS WAF JavaScript page returned by Buyee."""

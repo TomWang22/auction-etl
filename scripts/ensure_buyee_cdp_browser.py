@@ -110,8 +110,6 @@ def launch_hidden_chrome(
 
     command = [
         "open",
-        "-g",
-        "-j",
         "-n",
         "-a",
         "Google Chrome",
@@ -136,7 +134,7 @@ def launch_hidden_chrome(
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-popup-blocking",
-        "--window-position=-32000,-32000",
+        "--window-position=80,80",
         "--window-size=1200,900",
         "about:blank",
     ]
@@ -215,7 +213,7 @@ def main() -> int:
         )
 
         print(
-            "VISIBLE_BROWSER_LAUNCHED=false"
+            "VISIBLE_BROWSER_LAUNCHED=true"
         )
 
         return 0
@@ -250,11 +248,11 @@ def main() -> int:
     )
 
     print(
-        "CHROME_APPLICATION_HIDDEN=true"
+        "CHROME_APPLICATION_HIDDEN=false"
     )
 
     print(
-        "VISIBLE_BROWSER_LAUNCHED=false"
+        "VISIBLE_BROWSER_LAUNCHED=true"
     )
 
     return 0

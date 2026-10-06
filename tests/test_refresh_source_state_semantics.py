@@ -8,6 +8,9 @@ from pathlib import Path
 
 import scripts.run_latest_auction_refresh as refresh
 from auction_etl.services.refresh_jobs import (
+    COMPLETABLE_MARKETPLACE_STATES,
+    MARKETPLACE_STATES,
+    _marketplace_state,
     refresh_job_to_ui_status,
 )
 from tests.test_cloud_refresh_worker import load_worker
@@ -23,6 +26,14 @@ RUNNER = Path(
 WORKER = Path(
     "scripts/run_cloud_refresh_worker.py"
 )
+
+
+def test_completed_refresh_closes_marketplace_windows() -> None:
+    source = RUNNER.read_text(encoding="utf-8")
+    completed = source.split('"phase": "completed"', 1)[1]
+    before_return = completed.split("return 0", 1)[0]
+    assert "close_marketplace_browsers()" in before_return
+    assert 'if not status.get("authentication_required")' in before_return
 
 
 def ebay_idle_branch() -> str:
@@ -76,6 +87,31 @@ def test_buyee_exit_2_emits_authentication_required_with_message() -> None:
     assert "set_marketplace_diagnostic(" in branch
     assert "BUYEE_AUTHENTICATION_REQUIRED" in branch
     assert "Buyee authentication is required" in branch
+
+
+def test_saved_buyee_session_opens_a_sign_in_window() -> None:
+    """A rejected saved session opens the profile instead of skipping Buyee."""
+    source = RUNNER.read_text(encoding="utf-8")
+    start = source.index("Saved Buyee session needs sign-in")
+    block = source[start:start + 2200]
+    assert '"--skip-http-preflight"' in block
+    assert '"--headless"' not in block
+    assert '"8"' in block
+    assert "Buyee sign-in was saved" in block
+
+
+def test_durable_marketplace_states_accept_sign_in_and_handoff() -> None:
+    """Buyee sign-in and eBay handoff are saved states, not a worker crash."""
+    assert _marketplace_state("authentication_required") == (
+        "authentication_required"
+    )
+    assert _marketplace_state("awaiting_handoff") == "awaiting_handoff"
+    assert "authentication_required" in MARKETPLACE_STATES
+    assert "awaiting_handoff" in MARKETPLACE_STATES
+    assert "authentication_required" in COMPLETABLE_MARKETPLACE_STATES
+    assert "awaiting_handoff" in COMPLETABLE_MARKETPLACE_STATES
+    assert "failed" not in COMPLETABLE_MARKETPLACE_STATES
+    assert "running" not in COMPLETABLE_MARKETPLACE_STATES
 
 
 def test_worker_preserves_awaiting_handoff_and_authentication_required() -> None:

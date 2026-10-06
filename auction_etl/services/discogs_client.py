@@ -23,6 +23,10 @@ class DiscogsRateLimitError(RuntimeError):
     """Raised after a single 429 backoff instead of retry-storming."""
 
 
+class DiscogsUnavailableError(RuntimeError):
+    """Raised when a page search stops because Discogs did not answer."""
+
+
 class DiscogsClient:
     """Thin Discogs API wrapper. Never log Authorization headers."""
 
@@ -33,7 +37,7 @@ class DiscogsClient:
         secret: str | None = None,
         token: str | None = None,
         min_interval_seconds: float | None = None,
-        timeout: float = 30.0,
+        timeout: float = 12.0,
     ) -> None:
         auth = _resolve_auth(key=key, secret=secret, token=token)
         self._headers = {
@@ -66,6 +70,7 @@ class DiscogsClient:
         catno: str | None = None,
         artist: str | None = None,
         query: str | None = None,
+        title: str | None = None,
         format_name: str | None = "Vinyl",
     ) -> tuple[SearchHit, ...]:
         params: dict[str, str] = {"type": "release"}
@@ -73,12 +78,43 @@ class DiscogsClient:
             params["catno"] = catno
         if artist:
             params["artist"] = artist
+        if title:
+            params["title"] = title
         if query:
             params["q"] = query
         if format_name:
             params["format"] = format_name
-        payload = self._get("/database/search", params=params)
-        return parse_search_hits(payload.get("results") or [])
+        # Discogs returns one page unless asked. A title search is often
+        # several pages, and the later pages are the other pressings.
+        params["per_page"] = "100"
+        found: list[SearchHit] = []
+        seen: set[int] = set()
+        for page in range(1, 6):
+            params["page"] = str(page)
+            try:
+                payload = self._get("/database/search", params=params)
+            except DiscogsRateLimitError:
+                if found:
+                    break
+                raise
+            batch = parse_search_hits(payload.get("results") or [])
+            added = 0
+            for hit in batch:
+                if hit.discogs_id in seen:
+                    continue
+                seen.add(hit.discogs_id)
+                found.append(hit)
+                added += 1
+            if added == 0:
+                break
+            pagination = payload.get("pagination") or {}
+            try:
+                pages = int(pagination.get("pages") or page)
+            except (TypeError, ValueError):
+                pages = page
+            if page >= pages:
+                break
+        return tuple(found)
 
     def get_release(self, release_id: int) -> dict[str, Any]:
         return self._get(f"/releases/{int(release_id)}")
@@ -88,6 +124,7 @@ class DiscogsClient:
         path: str,
         *,
         params: dict[str, str] | None = None,
+        _server_retry: bool = True,
     ) -> dict[str, Any]:
         self._wait()
         url = f"{API_ROOT}{path}"
@@ -98,18 +135,26 @@ class DiscogsClient:
             timeout=self._timeout,
         )
         self._last_request_at = time.monotonic()
+        if response.status_code in {500, 502, 503} and _server_retry:
+            time.sleep(2.0)
+            return self._get(path, params=params, _server_retry=False)
         if response.status_code == 429:
             if self._retried_rate_limit:
                 raise DiscogsRateLimitError(
                     "Discogs rate limit persisted after one backoff."
                 )
-            self._retried_rate_limit = True
             retry_after = response.headers.get("Retry-After", "60")
             try:
                 delay = max(1.0, float(retry_after))
             except ValueError:
                 delay = 60.0
-            time.sleep(min(delay, 90.0))
+            # A long Retry-After must not freeze the review page for a minute.
+            if delay > 8:
+                raise DiscogsRateLimitError(
+                    "Discogs rate limit; retry after the window."
+                )
+            self._retried_rate_limit = True
+            time.sleep(delay)
             return self._get(path, params=params)
         response.raise_for_status()
         payload = response.json()

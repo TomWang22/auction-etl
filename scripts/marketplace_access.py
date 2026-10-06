@@ -123,9 +123,7 @@ def classify_ebay_page(
             ),
         )
 
-    error_markers = (
-        "error page | ebay",
-        "something went wrong on our end",
+    challenge_markers = (
         "access denied",
         "temporarily blocked",
         "verify you are human",
@@ -140,7 +138,7 @@ def classify_ebay_page(
     if any(
         marker in normalized_title
         or marker in normalized_body
-        for marker in error_markers
+        for marker in challenge_markers
     ):
         return MarketplacePageResult(
             state=MarketplaceAccessState.ACCESS_BLOCKED,
@@ -148,6 +146,20 @@ def classify_ebay_page(
                 "eBay returned an access/error page "
                 "to the deployed worker."
             ),
+        )
+
+    site_error_markers = (
+        "error page | ebay",
+        "something went wrong on our end",
+    )
+    if any(
+        marker in normalized_title
+        or marker in normalized_body
+        for marker in site_error_markers
+    ):
+        return MarketplacePageResult(
+            state=MarketplaceAccessState.UNKNOWN_ERROR,
+            message="eBay returned a site error page.",
         )
 
     required_normal_markers = (

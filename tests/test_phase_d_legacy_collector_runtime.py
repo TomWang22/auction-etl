@@ -70,12 +70,15 @@ def test_collector_view_verifier_uses_legacy_identity() -> None:
     ) >= 2
 
 
-def test_reclassifier_reads_and_updates_only_legacy_rows() -> None:
-    """Reclassification must never mutate account-private collector rows."""
+def test_reclassifier_reads_legacy_rows_and_refreshes_shared_auto_fields() -> None:
+    """Auto classification is shared; manual overrides stay account-private."""
     source = compact(
         inspect.getsource(
             reclassify_collector.main
         )
+    )
+    full = inspect.getsource(
+        reclassify_collector.main
     )
 
     assert (
@@ -86,16 +89,10 @@ def test_reclassifier_reads_and_updates_only_legacy_rows() -> None:
         in source
     )
 
-    assert (
-        "WHERE marketplace = :marketplace "
-        "AND listing_id = :listing_id "
-        "AND account_id IS NULL"
-        in source
-    )
-
-    assert '"account_id"' in inspect.getsource(
-        reclassify_collector.main
-    )
+    assert "auto_catalog_number" in full
+    assert "manual_catalog_number" not in full
+    assert "SET\n            manual_" not in full
+    assert '"account_id"' in full
 
 
 def test_global_review_import_updates_only_legacy_rows() -> None:
@@ -131,7 +128,7 @@ def test_global_status_duplicate_check_uses_legacy_identity() -> None:
 
 
 def test_refresh_parity_counts_only_legacy_collector_rows() -> None:
-    """Full refresh parity must ignore additional account-owned rows."""
+    """Full refresh parity must ignore Gripsweat leftovers and account-owned rows."""
     source = compact(
         inspect.getsource(
             run_latest_auction_refresh.database_state
@@ -139,9 +136,11 @@ def test_refresh_parity_counts_only_legacy_collector_rows() -> None:
     )
 
     assert (
-        "SELECT COUNT(*) "
-        "FROM warehouse.auction_collector "
-        "WHERE account_id IS NULL"
+        "FROM warehouse.auction AS auction "
+        "INNER JOIN warehouse.auction_collector AS collector "
+        "ON collector.marketplace::text = auction.marketplace::text "
+        "AND collector.listing_id::text = auction.listing_id::text "
+        "AND collector.account_id IS NULL"
         in source
     )
 

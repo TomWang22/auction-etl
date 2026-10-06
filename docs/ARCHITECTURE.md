@@ -27,9 +27,64 @@ Browser automation and marketplace crawling have a different lifecycle from HTTP
 
 ## 2. Architecture at a glance
 
-The Phase-C durable-refresh source has now been merged into `main`. The diagrams below distinguish the accepted staging runtime topology from the broader repository architecture.
+The Phase-C durable-refresh source has now been merged into `main`. The diagram below is the accepted **local** runtime. The historical Vercel + Neon staging topology is retained after it for migration context only.
 
-### 2.1 Accepted staging runtime topology
+### 2.1 Accepted local runtime topology
+
+```mermaid
+flowchart LR
+    Operator["Collector / operator"]
+
+    subgraph Review["Collector Review"]
+        UI["Streamlit HTTPS 127.0.0.1:8501"]
+    end
+
+    subgraph Data["Authoritative data plane"]
+        DB[("PostgreSQL 127.0.0.1:5544<br/>auction_warehouse")]
+    end
+
+    subgraph Execution["Local execution"]
+        EbayOp["scripts/run_ebay_external_handoff.py<br/>headed persistent facerecords profile"]
+        Refresh["scripts/run_latest_auction_refresh.py"]
+        BuyeeOwner["Headed Buyee owner"]
+        Gripsweat["Gripsweat probe / import"]
+    end
+
+    subgraph Sources["Marketplace sources"]
+        Buyee["Buyee"]
+        Ebay["eBay completed/sold"]
+        Grip["Gripsweat"]
+    end
+
+    Operator --> UI
+    UI --> DB
+    Operator --> EbayOp
+    EbayOp --> Ebay
+    EbayOp --> DB
+    Operator --> Refresh
+    Refresh --> BuyeeOwner
+    Refresh --> Gripsweat
+    BuyeeOwner --> Buyee
+    Gripsweat --> Grip
+    Refresh --> DB
+```
+
+Accepted local contracts:
+
+- Collector Review is Streamlit on `https://localhost:8501` with mkcert TLS.
+  Yahoo OIDC identifies the operator; local warehouse listings are attached to
+  that personal account in development.
+- Warehouse identity is `(marketplace, listing_id)` on `warehouse.auction`.
+- eBay acquisition is a generalized local sold+completed crawl (`LH_Sold=1`,
+  `LH_Complete=1`, `_sop=13`) driven by tracked artists, using hidden headed
+  Chrome. It must not set `_ipg` and is not a FaceRecords handoff.
+- After a structured eBay import, refresh consumes the exact raw-page ID and must not fall back to `crawl_ebay_sources.py`.
+- Buyee uses the headed owner; Gripsweat uses probe/import.
+- Vercel, Railway, and Neon must not connect to this loopback database.
+
+### 2.1b Historical Vercel + Neon staging topology
+
+The following diagram records the retired staging control-plane layout. It is **not** the current data authority.
 
 ```mermaid
 flowchart LR
@@ -49,7 +104,7 @@ flowchart LR
         Status["GET refresh status"]
     end
 
-    subgraph Data["Neon PostgreSQL — authoritative staging"]
+    subgraph Data["Neon PostgreSQL — historical staging"]
         Ops[("ops.refresh_job<br/>ops.refresh_marketplace")]
         Warehouse[("warehouse.*")]
         System[("system.*")]
@@ -94,8 +149,6 @@ flowchart LR
     Round --> System
 ```
 
-The source relationship shown above does not imply that every `main` commit automatically redeploys every runtime. Source promotion, Vercel deployment, database promotion, and worker deployment remain separately controlled operations.
-
 ### 2.2 Whole-repository functional map
 
 ```mermaid
@@ -122,7 +175,7 @@ flowchart TB
         Browser["browser + auth"]
     end
 
-    subgraph CloudControl["Cloud control plane"]
+    subgraph CloudControl["Deferred cloud shells"]
         CloudAPI["cloud_api.py"]
         Vercel["Vercel"]
     end
@@ -131,8 +184,10 @@ flowchart TB
         Worker["run_cloud_refresh_worker.py"]
         Multi["run_multisource_ingestion_round.py"]
         Latest["run_latest_auction_refresh.py"]
+        EbayOp["run_ebay_external_handoff.py<br/>headed facerecords profile"]
         Sync["sync_warehouse_incremental.py"]
         BuyeeOwner["Buyee Playwright owner"]
+        GripsweatProbe["Gripsweat probe / import"]
     end
 
     subgraph Sources["External marketplace sources"]
@@ -142,8 +197,8 @@ flowchart TB
     end
 
     subgraph PostgreSQL["PostgreSQL state"]
-        Neon[("Neon staging")]
-        Local[("Local PostgreSQL")]
+        Local[("Local 127.0.0.1:5544<br/>authoritative")]
+        Neon[("Neon — historical staging")]
         Ops["ops.* durable coordination"]
         Warehouse["warehouse.* canonical records"]
         System["system.* operational state"]
@@ -178,9 +233,9 @@ flowchart TB
     Discovery --> Crawlers
     Browser --> Crawlers
 
+    Collector -.-> Vercel
     Vercel --> CloudAPI
-    Collector --> Vercel
-    CloudAPI --> Ops
+    CloudAPI -.-> Ops
 
     Worker --> Ops
     Worker --> Multi
@@ -190,29 +245,33 @@ flowchart TB
     Latest --> Parsers
     Latest --> Sync
     Latest <--> BuyeeOwner
+    Latest --> GripsweatProbe
+    Latest --> EbayOp
 
     Crawlers --> Buyee
-    Crawlers --> Ebay
-    Discovery --> Ebay
-    Multi --> Gripsweat
+    EbayOp --> Ebay
+    GripsweatProbe --> Gripsweat
 
-    Database --> Neon
     Database --> Local
+    Database -.-> Neon
 
-    Neon --- Ops
-    Neon --- Warehouse
-    Neon --- System
+    Local --- Ops
+    Local --- Warehouse
+    Local --- System
 
     Sync --> Warehouse
     Services --> Warehouse
     Services --> System
+    EbayOp --> Warehouse
 
-    Alembic --> Neon
     Alembic --> Local
+    Alembic -.-> Neon
 
     Reporting --> Exports
     Services --> Evidence
 ```
+
+eBay listings enter this map through `run_ebay_external_handoff.py`, not through `crawlers` or `crawl_ebay_sources.py`. Buyee still uses the headed owner; Gripsweat uses probe/import. Dashed Vercel/Neon edges are historical shells, not the data plane.
 
 This repository therefore contains more than the cloud refresh path. It also contains the collector-facing review product, curation/reference workflows, normalization and classification rules, evidence handling, reporting/export logic, local development infrastructure, database migrations, browser/session management, and extensive acceptance/unit/integration tests.
 
@@ -220,13 +279,16 @@ This repository therefore contains more than the cloud refresh path. It also con
 
 | Component | Architectural role | Current accepted state |
 | --- | --- | --- |
-| Vercel | HTTP control plane | **Accepted / deployed** |
-| Neon PostgreSQL | Authoritative staging data + durable coordination | **Accepted / deployed** |
-| Refresh worker | Long-running marketplace execution | **Required logical role; persistent cloud host deferred** |
-| Buyee profile storage | Persistent browser/session state for worker | **Required by worker; permanent cloud storage deferred** |
-| Local PostgreSQL | Development / comparison / acceptance baseline | **Local only** |
-| Railway | Investigated worker-host option | **Deferred; not part of accepted milestone** |
+| Local PostgreSQL `127.0.0.1:5544` | Authoritative warehouse + durable coordination | **Accepted / local data plane** |
+| Collector Review HTTP `127.0.0.1:8501` | Review UI against the local warehouse | **Accepted / local** |
+| Headed eBay operator | External completed/sold acquire from persistent `profiles/facerecords` | **Accepted / required for eBay** |
+| Headed Buyee owner | Authenticated Buyee watchlist + detail fallback | **Accepted / local** |
+| Gripsweat probe/import | Artist search archive ingest | **Accepted / local** |
 | Git/GitHub | Source history and promotion boundary | **Authoritative source boundary** |
+| Vercel | Historical HTTP control-plane shell | **Deferred; not in the local data plane** |
+| Neon PostgreSQL | Historical staging database | **Deferred; not authoritative** |
+| Refresh worker | Long-running marketplace execution | **Local scripts fulfill this role** |
+| Railway | Investigated worker-host option | **Deferred; trial expired; do not redeploy** |
 
 ## 4. Known-good production baseline
 
@@ -772,27 +834,28 @@ Renaming those identifiers must be a separate migration because scripts, deploym
 
 ## 21. Architecture rules
 
-1. Neon is authoritative staging data.
-2. Vercel is the lightweight control plane.
-3. Marketplace execution belongs to a worker, not a Vercel request.
-4. The logical worker is required even though its permanent host is deferred.
-5. Railway is currently deferred and is not part of the accepted milestone.
-6. Buyee profile/session state is execution-plane state.
-7. Refresh coordination remains durable in PostgreSQL.
-8. Controlled V3 is not rerun for documentation or historical proof.
-9. Source-level route proof and runtime historical-job proof are different claims.
+1. Local PostgreSQL on `127.0.0.1:5544` is authoritative data.
+2. Collector Review on HTTP `127.0.0.1:8501` is the review UI against that warehouse.
+3. eBay is headed external-only: persistent `profiles/facerecords`, sold+completed newest-first, no `_ipg`, no anonymous Chromium fallback.
+4. Buyee uses the headed owner; Gripsweat uses probe/import; all three write the same local warehouse.
+5. Marketplace execution belongs to local operator scripts, not a Vercel request.
+6. Vercel, Railway, and Neon are deferred non-data shells and must not point at the loopback database.
+7. Buyee profile/session state and the eBay facerecords profile are execution-plane state.
+8. Refresh coordination remains durable in PostgreSQL.
+9. Controlled V3 is not rerun for documentation or historical proof.
 10. Production promotion is explicit.
 11. Infrastructure renames are separate migrations.
 
 ## 22. Short reference
 
 ```text
-Vercel        = accepted control plane
-Neon          = accepted authoritative staging DB + durable coordination
-Worker        = required execution role; permanent cloud host deferred
-Buyee profile = worker/browser session state; permanent cloud storage deferred
-Git/GitHub    = source and promotion boundary
-Railway       = deferred hosting experiment, not accepted runtime
+Local PostgreSQL 127.0.0.1:5544 = authoritative warehouse
+Collector Review HTTP 8501      = review UI
+eBay operator                   = headed persistent facerecords profile → exact raw-page refresh
+Buyee owner                     = headed Playwright owner + HTTPS watchlist
+Gripsweat                       = probe / import
+Git/GitHub                      = source and promotion boundary
+Vercel / Railway / Neon         = deferred non-data shells; do not attach to loopback
 ```
 
 <!-- COLLECTOR_LEDGER_PHASE_D_AUTH_ACCOUNTS -->

@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -355,6 +356,72 @@ def has_next_page(html: str) -> bool:
     return False
 
 
+def open_later_results_page(
+    page: Page,
+    url: str,
+    *,
+    page_number: int,
+) -> Any | None:
+    """Open the next sold-search page from the current results.
+
+    A direct ``_pgn`` address is the orange eBay error page. The next
+    control on the page that just loaded is the navigation eBay accepts.
+    """
+    locator = getattr(page, "locator", None)
+    if locator is not None:
+        for selector in NEXT_SELECTORS:
+            try:
+                link = page.locator(selector)
+                link = getattr(link, "first", link)
+                if link.count() < 1:
+                    continue
+                if not link.get_attribute("href"):
+                    continue
+            except Exception:
+                continue
+            print(
+                "EBAY_CRAWL_PHASE=next_click "
+                f"page={page_number}",
+                flush=True,
+            )
+            try:
+                link.click(
+                    timeout=EBAY_NAVIGATION_TIMEOUT_MS,
+                )
+            except PlaywrightTimeoutError:
+                print(
+                    "EBAY_CRAWL_PHASE=navigation_timeout_nonfatal "
+                    f"page={page_number}",
+                    flush=True,
+                )
+                return None
+            except PlaywrightError as exc:
+                if "ERR_ABORTED" not in str(exc):
+                    raise
+                print(
+                    "EBAY_CRAWL_PHASE=navigation_aborted_nonfatal "
+                    f"page={page_number}",
+                    flush=True,
+                )
+                return None
+            print(
+                "EBAY_CRAWL_PHASE=navigation_ready "
+                f"page={page_number}",
+                flush=True,
+            )
+            return None
+        print(
+            "EBAY_CRAWL_PHASE=next_missing "
+            f"page={page_number}",
+            flush=True,
+        )
+    return navigate_for_results(
+        page,
+        url,
+        page_number=page_number,
+    )
+
+
 def navigate_for_results(
     page: Page,
     url: str,
@@ -371,6 +438,15 @@ def navigate_for_results(
     except PlaywrightTimeoutError:
         print(
             "EBAY_CRAWL_PHASE=navigation_timeout_nonfatal "
+            f"page={page_number}",
+            flush=True,
+        )
+        return None
+    except PlaywrightError as exc:
+        if "ERR_ABORTED" not in str(exc):
+            raise
+        print(
+            "EBAY_CRAWL_PHASE=navigation_aborted_nonfatal "
             f"page={page_number}",
             flush=True,
         )
@@ -456,6 +532,34 @@ def persist_ebay_storage_state(context: Any) -> None:
     )
 
 
+def _save_ebay_page_evidence(
+    page: Page,
+    html: str,
+    *,
+    screenshot_path: Path,
+    html_path: Path,
+) -> None:
+    """Write HTML always. Screenshot is best-effort and must not fail the crawl.
+
+    A 403/Akamai stamp can hang Playwright's full-page screenshot on font
+    loading. That hang used to surface as ``Page.screenshot: Timeout 8000ms``
+    and the runner treated a real access block as ``EBAY_SOURCE_FAILED``.
+    """
+    html_path.write_text(html, encoding="utf-8")
+    try:
+        page.screenshot(
+            path=str(screenshot_path),
+            full_page=False,
+            timeout=4_000,
+        )
+    except Exception as exc:
+        print(
+            "EBAY_CRAWL_PHASE=evidence_skip "
+            f"reason={type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+
 def _empty_ebay_access_block(
     *,
     status: int | None,
@@ -488,8 +592,139 @@ def load_ebay_results_page(
     context: Any | None = None,
     profile: str | None = None,
 ) -> tuple[Page, Any | None, str, int | None, int, Any | None]:
-    """Load one sold-search page, continuing once after an empty HTTP block."""
+    """Load one sold-search page.
 
+    Page 1 uses the ebay.com handshake, then the sold-search URL. An empty
+    HTTP block there rebuilds the context once from the operator jar.
+    Later pages stay on that same results tab. A later-page error page
+    must not deep-link ``_pgn`` on a fresh session; that is the orange
+    jacket Teresa Teng sold-search failure.
+    """
+
+    if page_number == 1:
+        prepare_ebay_search_tab(
+            page,
+            page_number=page_number,
+        )
+        response = navigate_for_results(
+            page,
+            url,
+            page_number=page_number,
+        )
+    else:
+        response = open_later_results_page(
+            page,
+            url,
+            page_number=page_number,
+        )
+    wait_for_results(
+        page,
+        wait_seconds,
+    )
+    html = page.content()
+    count = listing_count(html)
+    status = (
+        response.status
+        if response is not None
+        else None
+    )
+    try:
+        title = page.title()
+    except Exception:
+        title = ""
+
+    if not _empty_ebay_access_block(
+        status=status,
+        html=html,
+        title=title,
+        count=count,
+    ):
+        return page, response, html, status, count, context
+
+    if page_number != 1:
+        go_back = getattr(page, "go_back", None)
+        if go_back is not None:
+            print(
+                "EBAY_CRAWL_PHASE=next_retry "
+                f"page={page_number}",
+                flush=True,
+            )
+            try:
+                go_back(
+                    wait_until="commit",
+                    timeout=EBAY_NAVIGATION_TIMEOUT_MS,
+                )
+            except Exception:
+                print(
+                    "EBAY_CRAWL_PHASE=navigation_timeout_nonfatal "
+                    f"page={page_number}",
+                    flush=True,
+                )
+            else:
+                response = open_later_results_page(
+                    page,
+                    url,
+                    page_number=page_number,
+                )
+                wait_for_results(
+                    page,
+                    wait_seconds,
+                )
+                html = page.content()
+                count = listing_count(html)
+                status = (
+                    response.status
+                    if response is not None
+                    else None
+                )
+                try:
+                    title = page.title()
+                except Exception:
+                    title = ""
+                if not _empty_ebay_access_block(
+                    status=status,
+                    html=html,
+                    title=title,
+                    count=count,
+                ):
+                    return (
+                        page,
+                        response,
+                        html,
+                        status,
+                        count,
+                        context,
+                    )
+        print(
+            "EBAY_CRAWL_PHASE=access_stop "
+            f"page={page_number} status={status}",
+            flush=True,
+        )
+        return page, response, html, status, count, context
+
+    print(
+        "EBAY_CRAWL_PHASE=access_continue "
+        f"page={page_number} status={status}",
+        flush=True,
+    )
+    if context is not None:
+        previous = page
+        print(
+            "EBAY_CRAWL_PHASE=context_replace "
+            f"page={page_number} "
+            f"profile={profile or 'ebay-public'}",
+            flush=True,
+        )
+        context = browser.replace_context(
+            profile or "ebay-public"
+        )
+        page = _configure_ebay_results_tab(
+            context.new_page()
+        )
+        try:
+            previous.close()
+        except Exception:
+            pass
     prepare_ebay_search_tab(
         page,
         page_number=page_number,
@@ -514,7 +749,6 @@ def load_ebay_results_page(
         title = page.title()
     except Exception:
         title = ""
-
     if _empty_ebay_access_block(
         status=status,
         html=html,
@@ -522,47 +756,13 @@ def load_ebay_results_page(
         count=count,
     ):
         print(
-            "EBAY_CRAWL_PHASE=access_continue "
+            "EBAY_CRAWL_PHASE=access_stop "
             f"page={page_number} status={status}",
             flush=True,
         )
-        if context is not None:
-            previous = page
-            print(
-                "EBAY_CRAWL_PHASE=context_replace "
-                f"page={page_number} "
-                f"profile={profile or 'ebay-public'}",
-                flush=True,
-            )
-            context = browser.replace_context(
-                profile or "ebay-public"
-            )
-            page = _configure_ebay_results_tab(
-                context.new_page()
-            )
-            try:
-                previous.close()
-            except Exception:
-                pass
         prepare_ebay_search_tab(
             page,
             page_number=page_number,
-        )
-        response = navigate_for_results(
-            page,
-            url,
-            page_number=page_number,
-        )
-        wait_for_results(
-            page,
-            wait_seconds,
-        )
-        html = page.content()
-        count = listing_count(html)
-        status = (
-            response.status
-            if response is not None
-            else None
         )
 
     return page, response, html, status, count, context
@@ -926,13 +1126,6 @@ def crawl_source(
                     1,
                     source.max_pages + 1,
                 ):
-                    if page_number > 1:
-                        previous = page
-                        page = _configure_ebay_results_tab(
-                            context.new_page()
-                        )
-                        previous.close()
-
                     url = page_url(
                         source.url,
                         page_number,
@@ -1024,15 +1217,11 @@ def crawl_source(
                             / f"ebay_block_{source.name}.html"
                         )
 
-                        page.screenshot(
-                            path=str(
-                                screenshot_path
-                            ),
-                            full_page=True,
-                        )
-                        html_path.write_text(
+                        _save_ebay_page_evidence(
+                            page,
                             html,
-                            encoding="utf-8",
+                            screenshot_path=screenshot_path,
+                            html_path=html_path,
                         )
 
                         if page_number == 1:
@@ -1167,13 +1356,11 @@ def crawl_source(
                             f"page_{page_number}.html"
                         )
 
-                        page.screenshot(
-                            path=str(screenshot_path),
-                            full_page=True,
-                        )
-                        html_path.write_text(
+                        _save_ebay_page_evidence(
+                            page,
                             html,
-                            encoding="utf-8",
+                            screenshot_path=screenshot_path,
+                            html_path=html_path,
                         )
 
                         link_count = page.locator(
@@ -1326,6 +1513,29 @@ def crawl_source(
 def main() -> int:
     args = parse_args()
     sources = load_sources(args.config)
+    try:
+        stats = _crawl_selected_sources(args, sources)
+    finally:
+        browser.close()
+
+    if isinstance(stats, int):
+        return stats
+
+    if (
+        stats.failed_sources
+        or stats.pages_processed == 0
+    ):
+        print(
+            "Crawl failed; reports will "
+            "not be refreshed.",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 0
+
+
+def _crawl_selected_sources(args, sources) -> CrawlStats | int:
 
     selected = [
         source
@@ -1434,18 +1644,15 @@ def main() -> int:
                 incremental_counters,
             )
 
-    if (
-        stats.failed_sources
-        or stats.pages_processed == 0
-    ):
+    if stats.failed_sources and stats.pages_processed:
         print(
-            "Crawl failed; reports will "
-            "not be refreshed.",
-            file=sys.stderr,
+            "EBAY_ARTIST_PARTIAL "
+            f"failed_sources={stats.failed_sources} "
+            f"pages_processed={stats.pages_processed}",
+            flush=True,
         )
-        return 1
 
-    return 0
+    return stats
 
 
 if __name__ == "__main__":

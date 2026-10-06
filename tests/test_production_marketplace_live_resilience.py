@@ -228,7 +228,7 @@ def test_review_surface_rerenders_live_account_visibility() -> None:
     assert "st.rerun()" in review
     assert "account.auction_listing" in review
     assert "@st.cache_data(" in review
-    assert "ttl=2" in review
+    assert "ttl=30" in review
 
 def test_ebay_failure_persists_child_output_without_cross_source_leak() -> None:
     """eBay diagnostics must retain the child error and stay source-scoped."""
@@ -606,7 +606,8 @@ def test_interrupted_marketplace_has_customer_facing_copy() -> None:
     assert "interrupted_stages" in render_block
     assert 'f"{interrupted_stages} interrupted"' in render_block
     assert "Records processed before stop:" in render_block
-    assert "discovered new records" in render_block
+    assert "new records" in render_block
+    assert "discovered new records" not in render_block
 
 
 def test_failed_marketplace_progress_is_monotonic() -> None:

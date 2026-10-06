@@ -12,6 +12,7 @@ from auction_etl.browser.defaults import (
     CHANNEL,
     COLOR_SCHEME,
     HEADLESS,
+    LOCAL_CHROME_IGNORE_DEFAULT_ARGS,
     LOCALE,
     TIMEZONE,
     USER_AGENT,
@@ -46,6 +47,28 @@ EBAY_SENSOR_COOKIE_NAMES = frozenset(
         "bm_so",
         "bm_sv",
         "bm_sz",
+        "tmx_guid",
+        "thx_guid",
+        "__ssds",
+    }
+)
+EBAY_SENSOR_COOKIE_PREFIXES = (
+    "bm_",
+    "__uzm",
+    "__ssuz",
+)
+EBAY_SESSION_COOKIE_NAMES = frozenset(
+    {
+        "ebay",
+        "ebaysid",
+        "nonsession",
+        "dp1",
+        "ds2",
+        "s",
+        "ns1",
+        "cid",
+        "totp",
+        "shs",
     }
 )
 
@@ -54,6 +77,26 @@ def is_ebay_storage_profile(profile: str) -> bool:
     """Return whether this profile loads eBay from a storage-state jar."""
     name = profile.strip().casefold()
     return name.startswith("ebay") or name in {"ebay-public"}
+
+
+def is_ebay_waf_cookie(name: str) -> bool:
+    """Return whether this cookie is an Akamai/Incapsula/ThreatMetrix stamp."""
+    folded = name.strip().casefold()
+    if folded in {
+        item.casefold()
+        for item in EBAY_SENSOR_COOKIE_NAMES
+    }:
+        return True
+    return any(
+        folded.startswith(prefix)
+        for prefix in EBAY_SENSOR_COOKIE_PREFIXES
+    )
+
+
+def is_ebay_first_party_cookie_domain(domain: str) -> bool:
+    """Return whether this cookie belongs on ebay.com itself."""
+    host = domain.strip().lstrip(".").casefold()
+    return host == "ebay.com" or host.endswith(".ebay.com")
 
 
 def ebay_storage_state_path() -> Path | None:
@@ -80,13 +123,24 @@ def ebay_context_storage_state(path: Path) -> dict[str, Any]:
     kept: list[dict[str, Any]] = []
     dropped_sensor = 0
     dropped_expired = 0
+    dropped_third_party = 0
 
     for cookie in cookies:
         if not isinstance(cookie, dict):
             continue
         name = str(cookie.get("name") or "")
-        if name in EBAY_SENSOR_COOKIE_NAMES:
+        domain = str(cookie.get("domain") or "")
+        if is_ebay_waf_cookie(name):
             dropped_sensor += 1
+            continue
+        if not is_ebay_first_party_cookie_domain(domain):
+            dropped_third_party += 1
+            continue
+        if name.strip().casefold() not in {
+            item.casefold()
+            for item in EBAY_SESSION_COOKIE_NAMES
+        }:
+            dropped_third_party += 1
             continue
         expires = cookie.get("expires")
         if (
@@ -101,12 +155,14 @@ def ebay_context_storage_state(path: Path) -> dict[str, Any]:
         "AUCTION_BROWSER_EBAY_STATE "
         f"kept={len(kept)} "
         f"sensor_dropped={dropped_sensor} "
+        f"third_party_dropped={dropped_third_party} "
         f"expired_dropped={dropped_expired}",
         flush=True,
     )
     return {
         **payload,
         "cookies": kept,
+        "origins": [],
     }
 
 
@@ -210,6 +266,9 @@ class BrowserManager:
                     channel="chrome",
                     headless=HEADLESS,
                     args=list(VISIBLE_CHROME_ARGS),
+                    ignore_default_args=list(
+                        LOCAL_CHROME_IGNORE_DEFAULT_ARGS
+                    ),
                 )
                 self._owned_browsers.append(owned_browser)
             context_options: dict[str, object] = {
@@ -241,6 +300,9 @@ class BrowserManager:
             "timezone_id": TIMEZONE,
             "color_scheme": COLOR_SCHEME,
             "args": list(VISIBLE_CHROME_ARGS),
+            "ignore_default_args": list(
+                LOCAL_CHROME_IGNORE_DEFAULT_ARGS
+            ),
         }
 
         if USER_AGENT is not None:

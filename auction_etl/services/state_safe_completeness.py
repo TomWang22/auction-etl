@@ -10,6 +10,11 @@ from typing import Any, Mapping
 from sqlalchemy import MetaData, Table, inspect, text
 from sqlalchemy.engine import Connection, Engine
 
+from auction_etl.services.tracked_listing_scope import (
+    enabled_tracked_artist_names,
+    listing_belongs_to_tracked_artists,
+)
+
 
 PRESENT_STATES = frozenset(
     {
@@ -392,6 +397,8 @@ def _damage_values(
 def list_assigned_listings(
     engine: Engine,
     search: str | None = None,
+    *,
+    account_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """List auction listings with exact-pressing assignments."""
     normalized_search = (
@@ -414,6 +421,7 @@ def list_assigned_listings(
                     assignment.listing_id,
                     assignment.pressing_id,
                     auction.title,
+                    auction.artist,
                     family.display_artist,
                     family.display_title,
                     pressing.catalog_number,
@@ -468,11 +476,26 @@ def list_assigned_listings(
             },
         ).mappings().all()
 
-    return [
+    listings = [
         dict(
             row
         )
         for row in rows
+    ]
+    tracked_names = enabled_tracked_artist_names(
+        engine,
+        account_id=account_id,
+    )
+    if not tracked_names:
+        return listings
+    return [
+        row
+        for row in listings
+        if listing_belongs_to_tracked_artists(
+            title=row.get("title"),
+            artist=row.get("artist"),
+            tracked_names=tracked_names,
+        )
     ]
 
 

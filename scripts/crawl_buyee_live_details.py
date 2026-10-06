@@ -24,6 +24,7 @@ from playwright.sync_api import (
 )
 from sqlalchemy import text
 
+from app.collector_review_support import condition_sheet_text
 from auction_etl.database.session import engine
 from auction_etl.browser.buyee_cdp import open_buyee_context
 
@@ -57,6 +58,7 @@ class BuyeeDetail:
     fetched_at: datetime
     detail_status: str
     error_message: str | None = None
+    description: str | None = None
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -433,6 +435,18 @@ def extract_detail(
     """Extract fields from a rendered Buyee listing page."""
 
     body_text = page.locator("body").inner_text(timeout=10_000)
+    sheet_source = body_text
+    for _ in range(8):
+        if any("/detail" in (frame.url or "") for frame in page.frames):
+            break
+        page.wait_for_timeout(500)
+    for frame in page.frames:
+        if "/detail" not in (frame.url or ""):
+            continue
+        try:
+            sheet_source += "\n" + frame.locator("body").inner_text(timeout=5_000)
+        except Exception:
+            continue
     lines = body_text.splitlines()
 
     title = first_heading(page)
@@ -551,6 +565,7 @@ def extract_detail(
         buyout_price_gross=parse_yen(buyout_text),
         bid_count=parse_integer(bid_text),
         condition_text=condition_text,
+        description=condition_sheet_text(sheet_source),
         currency=(
             "JPY"
             if "YEN" in body_text.upper()
@@ -817,6 +832,7 @@ def save_detail(detail: BuyeeDetail) -> None:
                     buyout_price_gross,
                     bid_count,
                     condition_text,
+                    description,
                     currency,
                     tax_included,
                     detail_status,
@@ -838,6 +854,7 @@ def save_detail(detail: BuyeeDetail) -> None:
                     :buyout_price_gross,
                     :bid_count,
                     :condition_text,
+                    :description,
                     :currency,
                     :tax_included,
                     :detail_status,
@@ -863,6 +880,10 @@ def save_detail(detail: BuyeeDetail) -> None:
                         EXCLUDED.buyout_price_gross,
                     bid_count = EXCLUDED.bid_count,
                     condition_text = EXCLUDED.condition_text,
+                    description = COALESCE(
+                        EXCLUDED.description,
+                        warehouse.auction_detail.description
+                    ),
                     currency = EXCLUDED.currency,
                     tax_included = EXCLUDED.tax_included,
                     detail_status = EXCLUDED.detail_status,
@@ -1181,6 +1202,50 @@ WATCHLIST_URL = (
 )
 
 
+def apply_saved_buyee_cookies(context: BrowserContext) -> None:
+    """Copy the HTTPS session into the open Buyee window before detail pages."""
+    raw_path = os.environ.get("AUCTION_BUYEE_STORAGE_STATE", "").strip()
+    if not raw_path:
+        return
+    path = Path(raw_path)
+    if not path.is_file():
+        return
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    cookies: list[dict[str, Any]] = []
+    for cookie in payload.get("cookies") or []:
+        if not isinstance(cookie, dict):
+            continue
+        domain = str(cookie.get("domain") or "")
+        name = str(cookie.get("name") or "")
+        value = cookie.get("value")
+        if "buyee" not in domain.casefold() or not name or value is None:
+            continue
+        item: dict[str, Any] = {
+            "name": name,
+            "value": str(value),
+            "domain": domain,
+            "path": str(cookie.get("path") or "/"),
+        }
+        expires = cookie.get("expires")
+        if expires not in (None, -1):
+            item["expires"] = float(expires)
+        if "httpOnly" in cookie:
+            item["httpOnly"] = bool(cookie["httpOnly"])
+        if "secure" in cookie:
+            item["secure"] = bool(cookie["secure"])
+        same_site = cookie.get("sameSite")
+        if same_site in {"Strict", "Lax", "None"}:
+            item["sameSite"] = same_site
+        cookies.append(item)
+    if not cookies:
+        return
+    context.add_cookies(cookies)
+    print(
+        f"BUYEE_DETAIL_SESSION restored={len(cookies)}",
+        flush=True,
+    )
+
+
 def authentication_required(
     url: str,
 ) -> bool:
@@ -1429,6 +1494,7 @@ def main() -> int:
         )
 
         try:
+            apply_saved_buyee_cookies(context)
             page = wait_for_authenticated_profile(
                 context,
                 headed=arguments.headed,

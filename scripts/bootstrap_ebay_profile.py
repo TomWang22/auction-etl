@@ -33,6 +33,13 @@ BLOCKED_HTTP_STATUSES = frozenset(
     }
 )
 
+DEFAULT_OPERATOR_STORAGE_STATE = (
+    Path.home()
+    / ".auction-etl"
+    / "private"
+    / "ebay-storage-state.json"
+)
+
 ITEM_LINK_SELECTOR = 'a[href*="/itm/"]'
 
 EBAY_HOST_PATTERN = re.compile(
@@ -129,6 +136,33 @@ def wait_for_operator_confirmation() -> None:
         raise RuntimeError(
             "The controlling terminal closed before operator confirmation."
         )
+
+
+def persist_operator_storage_state(
+    context: Any,
+) -> None:
+    """Export the validated persistent profile into operator storage-state."""
+
+    destination = DEFAULT_OPERATOR_STORAGE_STATE
+
+    if not destination.parent.is_dir():
+        raise RuntimeError(
+            "Operator storage-state directory is missing."
+        )
+
+    context.storage_state(
+        path=str(
+            destination
+        )
+    )
+
+    print(
+        f"EBAY_OPERATOR_STORAGE_STATE={destination}"
+    )
+    print(
+        "EBAY_OPERATOR_STORAGE_STATE_EXPORTED=true"
+    )
+
 
 def parse_args() -> argparse.Namespace:
     """Parse one bounded manual profile-validation request."""
@@ -583,6 +617,9 @@ def main() -> int:
             )
 
             if initial.state is BootstrapState.AVAILABLE:
+                persist_operator_storage_state(
+                    context
+                )
                 print()
                 print(
                     "EBAY_PROFILE_ACCESS_VALIDATED=PASS"
@@ -655,6 +692,9 @@ def main() -> int:
             )
 
             if final.state is BootstrapState.AVAILABLE:
+                persist_operator_storage_state(
+                    context
+                )
                 print()
                 print(
                     "EBAY_PROFILE_ACCESS_VALIDATED=PASS"

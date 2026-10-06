@@ -13,6 +13,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from app.collector_review_support import condition_sheet_text
 from scripts.buyee_http_session import (
     BLOCK_MARKERS,
     DEFAULT_USER_AGENT,
@@ -608,6 +609,7 @@ def extract_detail_from_html(
             bid_text
         ),
         condition_text=condition_text,
+        description=condition_sheet_text(body_text),
         currency=(
             "JPY"
             if (
@@ -690,6 +692,23 @@ def crawl_candidate(
         listing_id=listing_id,
         auction_url=final_url,
     )
+    if not detail.description:
+        detail_url = auction_url.split("#")[0].rstrip("/") + "/detail"
+        try:
+            _, _, detail_html = fetch_detail_html(
+                opener=opener,
+                url=detail_url,
+                timeout_seconds=timeout_seconds,
+            )
+        except BuyeeHttpDetailError:
+            detail_html = ""
+        if detail_html:
+            document = BuyeeHtmlDocument()
+            document.feed(detail_html)
+            document.close()
+            detail.description = condition_sheet_text(
+                "\n".join(document.text_fragments)
+            )
 
     (
         item_dir

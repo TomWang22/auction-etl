@@ -271,3 +271,22 @@ def test_unresolved_detail_still_fails_command() -> None:
         "return 0 if incomplete == 0 else 1"
         in segment
     )
+
+
+def test_accepted_offer_replaces_the_struck_asking_price() -> None:
+    import importlib.util
+    import sys
+    from decimal import Decimal
+
+    spec = importlib.util.spec_from_file_location("enrich_gripsweat_details", ENRICH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    price, currency = module.extract_offer(
+        None,
+        [{"offers": {"price": "299.99", "priceCurrency": "USD"}}],
+        "Final Price: $299.99 $250.00 (USD)",
+    )
+    assert price == Decimal("250.00")
+    assert currency == "USD"

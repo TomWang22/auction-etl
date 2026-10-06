@@ -83,6 +83,13 @@ def test_save_insert_is_conflict_safe() -> None:
     assert "WHERE NOT EXISTS" not in statement
 
 
+def test_save_maps_collection_fields_to_manual_purchase_columns() -> None:
+    source = APP_PATH.read_text(encoding="utf-8")
+    assert '"in_collection": "manual_purchased"' in source
+    assert '"purchase_price": "manual_purchase_price"' in source
+    assert "collector_manual_purchased" in source
+
+
 def test_closed_browser_diagnostics_are_safe() -> None:
     """A closed Chrome window must not mask an error."""
     source = ACCEPTANCE_PATH.read_text(

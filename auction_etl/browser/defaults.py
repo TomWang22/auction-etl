@@ -27,3 +27,8 @@ CHANNEL = None
 LOCALE = "en-US"
 TIMEZONE = "America/New_York"
 COLOR_SCHEME = "light"
+# Playwright injects --no-sandbox into Chrome; that belongs on Railway
+# Chromium only. Local headed Google Chrome must not carry the flag.
+LOCAL_CHROME_IGNORE_DEFAULT_ARGS = (
+    "--no-sandbox",
+)

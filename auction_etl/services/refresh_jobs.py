@@ -40,6 +40,18 @@ MARKETPLACE_STATES = frozenset(
         "done",
         "failed",
         "skipped",
+        "authentication_required",
+        "awaiting_handoff",
+    }
+)
+
+# A finished marketplace that does not fail the whole refresh.
+COMPLETABLE_MARKETPLACE_STATES = frozenset(
+    {
+        "done",
+        "skipped",
+        "authentication_required",
+        "awaiting_handoff",
     }
 )
 
@@ -1064,7 +1076,7 @@ def claim_next_refresh_job(
     engine: Engine,
     *,
     worker_id: str,
-    lease_seconds: int = 90,
+    lease_seconds: int = 1800,
 ) -> dict[str, Any] | None:
     """Claim the oldest queued job with a durable worker lease."""
     validated_worker_id = _worker_id(
@@ -1227,7 +1239,7 @@ def heartbeat_refresh_job(
     *,
     job_id: str | uuid.UUID,
     worker_id: str,
-    lease_seconds: int = 90,
+    lease_seconds: int = 1800,
 ) -> datetime:
     """Extend one running job lease owned by the worker."""
     validated_job_id = _job_uuid(
@@ -1420,7 +1432,9 @@ def update_marketplace_state(
                         WHEN :state IN (
                             'done',
                             'failed',
-                            'skipped'
+                            'skipped',
+                            'authentication_required',
+                            'awaiting_handoff'
                         )
                         THEN now()
                         WHEN :state = 'running'
@@ -1556,11 +1570,13 @@ def mark_refresh_job_completed(
             connection
         )
 
-        states = list(
+        marketplace_rows = list(
             connection.execute(
                 text(
                     """
-                    SELECT state
+                    SELECT
+                        marketplace,
+                        state
                     FROM ops.refresh_marketplace
                     WHERE job_id = :job_id
                     ORDER BY ordinal
@@ -1571,8 +1587,13 @@ def mark_refresh_job_completed(
                     "job_id":
                         validated_job_id,
                 },
-            ).scalars()
+            ).mappings()
         )
+
+        states = [
+            str(row["state"])
+            for row in marketplace_rows
+        ]
 
         if len(states) != len(
             MARKETPLACES
@@ -1582,15 +1603,43 @@ def mark_refresh_job_completed(
             )
 
         if any(
-            state not in {
-                "done",
-                "skipped",
-            }
+            state not in COMPLETABLE_MARKETPLACE_STATES
             for state in states
         ):
             raise RefreshCoordinationError(
                 "Cannot complete a refresh job while "
                 "marketplaces are non-terminal or failed."
+            )
+
+        sign_in = [
+            str(row["marketplace"])
+            for row in marketplace_rows
+            if str(row["state"]) == "authentication_required"
+        ]
+        handoff = [
+            str(row["marketplace"])
+            for row in marketplace_rows
+            if str(row["state"]) == "awaiting_handoff"
+        ]
+        if (
+            message == "Marketplace refresh completed."
+            and (sign_in or handoff)
+        ):
+            notes = []
+            if sign_in:
+                notes.append(
+                    ", ".join(sign_in)
+                    + " requires sign-in"
+                )
+            if handoff:
+                notes.append(
+                    ", ".join(handoff)
+                    + " is awaiting an external handoff"
+                )
+            message = (
+                "Refresh finished. "
+                + ". ".join(notes)
+                + "."
             )
 
         row = connection.execute(

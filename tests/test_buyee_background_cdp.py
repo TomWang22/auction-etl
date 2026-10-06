@@ -186,18 +186,19 @@ def test_browser_manager_does_not_close_borrowed_cdp_context() -> None:
     )
 
 
-def test_background_launcher_is_headed_but_hidden() -> None:
-    """Production browser must be hidden, not Chromium headless."""
+def test_background_launcher_pops_visible_google_chrome() -> None:
+    """Local testing Chrome must appear on screen, not hide behind -g/-j."""
 
     value = source(
         ENSURE
     )
 
     assert '"open",' in value
-    assert '"-g",' in value
-    assert '"-j",' in value
+    assert '"-g",' not in value
+    assert '"-j",' not in value
     assert '"-n",' in value
     assert '"Google Chrome",' in value
+    assert "--window-position=-32000,-32000" not in value
 
     assert (
         "--remote-debugging-port="
@@ -215,7 +216,7 @@ def test_background_launcher_is_headed_but_hidden() -> None:
     )
 
     assert (
-        "VISIBLE_BROWSER_LAUNCHED=false"
+        "VISIBLE_BROWSER_LAUNCHED=true"
         in value
     )
 

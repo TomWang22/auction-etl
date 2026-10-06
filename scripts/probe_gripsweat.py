@@ -366,10 +366,10 @@ def parse_price(
             continue
 
         for pattern in PRICE_PATTERNS:
-            match = pattern.search(value)
-
-            if match is None:
+            matches = list(pattern.finditer(value))
+            if not matches:
                 continue
+            match = matches[-1]
 
             amount_text = match.group("amount").replace(",", "")
             currency_text = re.sub(

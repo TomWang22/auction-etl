@@ -14,14 +14,22 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
-from auction_etl.browser.ebay_owner import owner_socket_path
+from auction_etl.browser.buyee_owner import (
+    BuyeeOwnerError,
+    request as request_buyee_owner,
+)
+from auction_etl.browser.ebay_owner import (
+    EbayOwnerError,
+    owner_socket_path,
+    request as request_ebay_owner,
+)
 from auction_etl.database.session import engine as warehouse_engine
 from auction_etl.runtime_authority import cloud_runtime_detected
 from auction_etl.services.discogs_fill import fill_unmatched_identities
@@ -64,6 +72,21 @@ BUYEE_SOURCE_UNAVAILABLE_MAINTENANCE = (
 
 class CommandFailure(RuntimeError):
     """Raised when a child command fails."""
+
+
+def close_marketplace_browsers() -> None:
+    """Close the headed Buyee and eBay windows after a finished refresh."""
+    log = logging.getLogger("latest-auction-refresh")
+    for ask, error_type, label in (
+        (request_ebay_owner, EbayOwnerError, "eBay"),
+        (request_buyee_owner, BuyeeOwnerError, "Buyee"),
+    ):
+        try:
+            ask("shutdown", timeout_seconds=5.0)
+        except error_type:
+            log.info("%s browser was already closed.", label)
+        except Exception:
+            log.info("%s browser window could not be closed.", label)
 
 
 BUYEE_PUBLIC_AUTHENTICATION_REDIRECT_MARKER = (
@@ -437,9 +460,26 @@ def run_discogs_identity_pass(
     status_file: Path,
     status: dict[str, Any],
 ) -> None:
-    """Fill Discogs identity after warehouse sync. Never a review popup."""
+    """Fill Discogs identities after marketplaces finish. Never a review popup.
+
+    Scraped titles, catalogs, and photos drive Discogs search for unmatched
+    and Need-a-decision sales so the operator can pick or auto-fill.
+    """
+    status.update(
+        {
+            "phase": "Matching new listings",
+            "message": "Filling Discogs identities for new sales.",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    write_json_atomic(status_file, status)
+    print("AUCTION_IDENTITY_FILL starting", flush=True)
     try:
-        stats = fill_unmatched_identities(warehouse_engine)
+        stats = fill_unmatched_identities(
+            warehouse_engine,
+            retune=False,
+            since=datetime.now(timezone.utc) - timedelta(hours=12),
+        )
     except Exception:
         logger.exception("Discogs identity fill failed")
         status["identity_fill"] = {
@@ -447,6 +487,7 @@ def run_discogs_identity_pass(
             "caption": "Identity fill did not finish",
         }
         write_json_atomic(status_file, status)
+        print("AUCTION_IDENTITY_FILL failed", flush=True)
         return
 
     logger.info(
@@ -456,6 +497,7 @@ def run_discogs_identity_pass(
         stats.unmatched,
         stats.searched,
     )
+    print(f"AUCTION_IDENTITY_FILL {stats.caption()}", flush=True)
     status["identity_fill"] = {
         "filled_auto": stats.filled_auto,
         "filled_manual": stats.filled_manual,
@@ -607,8 +649,11 @@ def database_state(
         connection,
         """
         SELECT COUNT(*)
-        FROM warehouse.auction_collector
-        WHERE account_id IS NULL
+        FROM warehouse.auction AS auction
+        INNER JOIN warehouse.auction_collector AS collector
+          ON collector.marketplace::text = auction.marketplace::text
+         AND collector.listing_id::text = auction.listing_id::text
+         AND collector.account_id IS NULL
         """,
     )
     effective = scalar(
@@ -1361,12 +1406,27 @@ def ebay_access_blocked(
             "ebay unexpectedly redirected the anonymous "
             "completed-search page to sign-in"
         ),
+        "ebay_crawl_phase=access_stop",
+        "status=403 listing_count=0",
     )
 
-    return any(
+    if any(
         signal in normalized
         for signal in blocked_signals
+    ):
+        return True
+
+    screenshot_hung = (
+        "page.screenshot: timeout" in normalized
+        or "waiting for fonts to load" in normalized
     )
+    saw_http_block = (
+        "status=403" in normalized
+        or "http 403" in normalized
+        or "http 401" in normalized
+        or "http 429" in normalized
+    )
+    return screenshot_hung and saw_http_block
 
 
 def staging_count(
@@ -1558,11 +1618,6 @@ def process_ebay_raw_pages(
         database_url=psql_url,
         logger=logger,
         source="eBay",
-    )
-    run_discogs_identity_pass(
-        logger=logger,
-        status_file=status_file,
-        status=status,
     )
 
 
@@ -2261,6 +2316,7 @@ def main() -> int:
         root / "scripts" / "crawl_buyee_public_sources.py",
         root / "config" / "buyee_sources.json",
         root / "scripts" / "crawl_ebay_sources.py",
+        root / "scripts" / "crawl_ebay_item_specifics.py",
         root / "scripts" / "setup_gripsweat_schema.py",
         root / "scripts" / "probe_gripsweat.py",
         root / "scripts" / "import_gripsweat_probe.py",
@@ -2568,6 +2624,41 @@ def main() -> int:
         status["buyee_verifier_exit_code"] = auth_status
         status["authentication_required"] = False
         status["degraded"] = False
+
+        if auth_status == BUYEE_AUTHENTICATION_REQUIRED_EXIT_CODE:
+            logger.info(
+                "Saved Buyee session needs sign-in. "
+                "Opening the Buyee profile for 8 minutes."
+            )
+            headed_status, _headed_output = run_command(
+                [
+                    sys.executable,
+                    "scripts/verify_buyee_session.py",
+                    "--storage-state",
+                    str(buyee_storage_state),
+                    "--profile-dir",
+                    str(buyee_profile_dir),
+                    "--skip-http-preflight",
+                    "--timeout-minutes",
+                    "8",
+                    "--evidence-dir",
+                    str(run_dir / "buyee-sign-in"),
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase="Open Buyee so the saved profile can be signed in",
+                status_file=status_file,
+                status=status,
+                allow_failure=True,
+            )
+            status["buyee_sign_in_exit_code"] = headed_status
+            if headed_status == 0:
+                auth_status = 0
+                status["buyee_verifier_exit_code"] = 0
+                status["message"] = (
+                    "Buyee sign-in was saved. Continuing the Buyee crawl."
+                )
 
         buyee_available = auth_status == 0
 
@@ -3061,11 +3152,6 @@ def main() -> int:
                 status_file=status_file,
                 status=status,
             )
-            run_discogs_identity_pass(
-                logger=logger,
-                status_file=status_file,
-                status=status,
-            )
 
             with psycopg.connect(
                 psql_url,
@@ -3352,6 +3438,9 @@ def main() -> int:
                         "--",
                         "--apply",
                         "--refresh",
+                        "--headed",
+                        "--authentication-timeout-minutes",
+                        "8",
                         "--profile-dir",
                         str(
                             buyee_profile_dir
@@ -3560,119 +3649,125 @@ def main() -> int:
                 environment["AUCTION_LOCAL_EBAY_STATE_FILE"] = str(
                     default_ebay_state
                 )
-            for source_name in enabled_ebay_sources(
+            ebay_incremental_stats = (
+                run_dir
+                / "ebay-incremental-tracked-artists.json"
+            )
+            tracked_ebay_sources = enabled_ebay_sources(
                 ebay_config_path
-            ):
-                ebay_incremental_stats = (
-                    run_dir
-                    / (
-                        "ebay-incremental-"
-                        + _safe_incremental_name(
-                            source_name
-                        )
-                        + ".json"
+            )
+
+            crawl_status, crawl_output = run_command(
+                [
+                    sys.executable,
+                    "scripts/run_with_process_watchdog.py",
+                    "--timeout-seconds",
+                    "600",
+                    "--kill-grace-seconds",
+                    "10",
+                    "--",
+                    sys.executable,
+                    "scripts/crawl_ebay_sources.py",
+                    "--config",
+                    str(ebay_config_path),
+                    "--incremental-newest-first",
+                    "--known-stop-threshold",
+                    str(
+                        EBAY_KNOWN_STOP_THRESHOLD
+                    ),
+                    "--incremental-stats-file",
+                    str(
+                        ebay_incremental_stats
+                    ),
+                ],
+                root=root,
+                environment=environment,
+                logger=logger,
+                phase=(
+                    "Crawl eBay tracked artists "
+                    + ", ".join(tracked_ebay_sources)
+                ),
+                status_file=status_file,
+                status=status,
+                allow_failure=True,
+            )
+
+            pages_processed_match = re.search(
+                r"Pages processed\s*:\s*(\d+)",
+                crawl_output,
+            )
+            pages_processed = (
+                int(pages_processed_match.group(1))
+                if pages_processed_match is not None
+                else 0
+            )
+            partial_ebay_crawl = (
+                crawl_status != 0
+                and pages_processed > 0
+            )
+
+            if crawl_status != 0 and not partial_ebay_crawl:
+                if ebay_access_blocked(
+                    crawl_status,
+                    crawl_output,
+                ):
+                    ebay_available = False
+
+                    blocked_message = (
+                        "eBay programmatic access is blocked; "
+                        "continuing Gripsweat refresh."
                     )
-                )
-
-                crawl_status, crawl_output = run_command(
-                    [
-                        sys.executable,
-                        "scripts/run_with_process_watchdog.py",
-                        "--timeout-seconds",
-                        "600",
-                        "--kill-grace-seconds",
-                        "10",
-                        "--",
-                        sys.executable,
-                        "scripts/crawl_ebay_sources.py",
-                        "--config",
-                        str(ebay_config_path),
-                        "--source",
-                        source_name,
-                        "--incremental-newest-first",
-                        "--known-stop-threshold",
-                        str(
-                            EBAY_KNOWN_STOP_THRESHOLD
+                    status["ebay_source_state"] = (
+                        "unavailable_access_blocked"
+                    )
+                    status["ebay_runtime_semantics"] = (
+                        "EBAY_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
+                    )
+                    status["degraded"] = True
+                    status["message"] = blocked_message
+                    set_marketplace_diagnostic(
+                        status,
+                        "ebay",
+                        message=blocked_message,
+                        return_code=crawl_status,
+                        command_output_tail=(
+                            bounded_command_output(
+                                crawl_output
+                            )
                         ),
-                        "--incremental-stats-file",
-                        str(
-                            ebay_incremental_stats
-                        ),
-                    ],
-                    root=root,
-                    environment=environment,
-                    logger=logger,
-                    phase=f"Crawl eBay source {source_name}",
-                    status_file=status_file,
-                    status=status,
-                    allow_failure=True,
-                )
+                    )
+                    status["updated_at"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
 
-                if crawl_status != 0:
-                    if ebay_access_blocked(
-                        crawl_status,
-                        crawl_output,
-                    ):
-                        ebay_available = False
+                    write_json_atomic(
+                        status_file,
+                        status,
+                    )
 
-                        blocked_message = (
-                            "eBay programmatic access is blocked; "
-                            "continuing Gripsweat refresh."
-                        )
-                        status["ebay_source_state"] = (
-                            "unavailable_access_blocked"
-                        )
-                        status["ebay_runtime_semantics"] = (
-                            "EBAY_SOURCE_UNAVAILABLE_ACCESS_BLOCKED"
-                        )
-                        status["degraded"] = True
-                        status["message"] = blocked_message
-                        set_marketplace_diagnostic(
-                            status,
-                            "ebay",
-                            message=blocked_message,
-                            return_code=crawl_status,
-                            command_output_tail=(
-                                bounded_command_output(
-                                    crawl_output
-                                )
-                            ),
-                        )
-                        status["updated_at"] = datetime.now(
-                            timezone.utc
-                        ).isoformat()
-
-                        write_json_atomic(
-                            status_file,
-                            status,
-                        )
-
-                        logger.warning("")
-                        emit_source_state(
-                            logger,
-                            "eBay",
-                            "unavailable",
-                            status_file=status_file,
-                            status=status,
-                        )
-                        logger.warning(
-                            "eBay source unavailable: "
-                            "programmatic access block."
-                        )
-                        logger.warning(
-                            "Skipping eBay parse, normalization, "
-                            "warehouse synchronization, and remaining "
-                            "eBay sources."
-                        )
-                        logger.warning(
-                            "Continuing Gripsweat refresh."
-                        )
-
-                        break
-
+                    logger.warning("")
+                    emit_source_state(
+                        logger,
+                        "eBay",
+                        "unavailable",
+                        status_file=status_file,
+                        status=status,
+                    )
+                    logger.warning(
+                        "eBay source unavailable: "
+                        "programmatic access block."
+                    )
+                    logger.warning(
+                        "Skipping eBay parse, normalization, "
+                        "and warehouse synchronization."
+                    )
+                    logger.warning(
+                        "Continuing Gripsweat refresh."
+                    )
+                else:
                     ebay_available = False
                     failure_message = (
-                        f"Crawl eBay source {source_name} "
+                        "Crawl eBay tracked artists "
                         f"exited with status {crawl_status}."
                     )
                     failure_output_tail = (
@@ -3721,9 +3816,13 @@ def main() -> int:
                             "eBay child output tail:\n%s",
                             failure_output_tail,
                         )
-
-                    break
-
+            else:
+                if partial_ebay_crawl:
+                    status["degraded"] = True
+                    status["message"] = (
+                        "eBay saved the sold pages that loaded. "
+                        "A later page or one artist was blocked."
+                    )
                 _merge_incremental_progress(
                     status,
                     status_file,
@@ -3740,7 +3839,7 @@ def main() -> int:
                     status_file=status_file,
                     status=status,
                     psql_url=psql_url,
-                    phase_label=source_name,
+                    phase_label="tracked artists",
                 )
 
         if ebay_available:
@@ -3817,6 +3916,60 @@ def main() -> int:
                 - ebay_new_count,
             )
 
+            ebay_specifics_saved = 0
+            if ebay_new_listing_ids:
+                logger.info("")
+                logger.info(
+                    "eBay new-only item specifics"
+                )
+                logger.info(
+                    "----------------------------"
+                )
+                logger.info(
+                    "New item pages : %s",
+                    ebay_new_count,
+                )
+                logger.info(
+                    "Existing item pages are not revisited "
+                    "by the normal latest refresh."
+                )
+                specifics_command = [
+                    sys.executable,
+                    "scripts/crawl_ebay_item_specifics.py",
+                    "--apply",
+                    "--delay",
+                    "2",
+                    "--timeout",
+                    "45",
+                ]
+                for listing_id in sorted(ebay_new_listing_ids):
+                    specifics_command.extend(
+                        [
+                            "--listing-id",
+                            listing_id,
+                        ]
+                    )
+                _specifics_status, specifics_output = run_command(
+                    specifics_command,
+                    root=root,
+                    environment=environment,
+                    logger=logger,
+                    phase=(
+                        "Read new eBay item specifics"
+                    ),
+                    status_file=status_file,
+                    status=status,
+                    allow_failure=True,
+                )
+                specifics_match = re.search(
+                    r"specifics_saved=(\d+)",
+                    specifics_output,
+                )
+                if specifics_match:
+                    ebay_specifics_saved = int(
+                        specifics_match.group(1)
+                    )
+
             _set_incremental_progress(
                 status,
                 status_file,
@@ -3829,7 +3982,7 @@ def main() -> int:
                     "new":
                         ebay_new_count,
                     "detail_scraped":
-                        ebay_new_count,
+                        ebay_specifics_saved,
                     "detail_skipped":
                         ebay_already_known,
                     "discovery_pages":
@@ -4615,6 +4768,11 @@ def main() -> int:
             status_file=status_file,
             status=status,
         )
+        run_discogs_identity_pass(
+            logger=logger,
+            status_file=status_file,
+            status=status,
+        )
 
         run_command(
             [
@@ -4826,13 +4984,20 @@ def main() -> int:
                 "updated_at": datetime.now(
                     timezone.utc
                 ).isoformat(),
-                "authentication_required": False,
+                "authentication_required": bool(
+                    status.get(
+                        "authentication_required"
+                    )
+                ),
                 "initial_state": initial_state,
                 "final_state": final_state,
                 "summary": summary,
             }
         )
         write_json_atomic(status_file, status)
+
+        if not status.get("authentication_required"):
+            close_marketplace_browsers()
 
         logger.info("")
         logger.info("Refresh completed")

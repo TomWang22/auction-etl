@@ -21,6 +21,13 @@ from auction_etl.auth.streamlit_auth import (
 )
 
 
+COMPLETED_AUCTION_PREDICATE = (
+    "gross_price IS NOT NULL",
+    "ended_at IS NOT NULL",
+    "COALESCE(bid_count, 0) > 0",
+)
+
+
 st.set_page_config(
     page_title="Pressing Analytics",
     page_icon="📈",
@@ -48,8 +55,7 @@ def load_catalog_options(search: str) -> pd.DataFrame:
     conditions = [
         "effective_catalog_number IS NOT NULL",
         "BTRIM(effective_catalog_number) <> ''",
-        "gross_price IS NOT NULL",
-        "ended_at IS NOT NULL",
+        *COMPLETED_AUCTION_PREDICATE,
     ]
     parameters: dict[str, Any] = {}
 
@@ -126,6 +132,7 @@ def load_filter_values(
           AND currency = :currency
           AND gross_price IS NOT NULL
           AND ended_at IS NOT NULL
+          AND COALESCE(bid_count, 0) > 0
         """,
         {
             "catalog_number": catalog_number,
@@ -174,6 +181,7 @@ def load_date_bounds(
           AND currency = :currency
           AND gross_price IS NOT NULL
           AND ended_at IS NOT NULL
+          AND COALESCE(bid_count, 0) > 0
         """,
         {
             "catalog_number": catalog_number,
@@ -215,8 +223,7 @@ def load_sales(
     conditions = [
         "effective_catalog_number = :catalog_number",
         "currency = :currency",
-        "gross_price IS NOT NULL",
-        "ended_at IS NOT NULL",
+        *COMPLETED_AUCTION_PREDICATE,
         "ended_at::date BETWEEN :start_date AND :end_date",
     ]
 
@@ -368,6 +375,17 @@ def currency_format(currency: str) -> str:
     return ",.2f"
 
 
+def streamlit_money_format(currency: str) -> str:
+    """Return a printf format Streamlit NumberColumn can render."""
+    if currency == "JPY":
+        return "¥%.0f"
+
+    if currency == "USD":
+        return "$%.2f"
+
+    return "%.2f"
+
+
 def render_metrics(
     sales: pd.DataFrame,
     currency: str,
@@ -435,18 +453,38 @@ def render_price_history(
         st.info("No dated completed sales are available.")
         return
 
+    chart_data["media_condition_label"] = (
+        chart_data["media_condition"]
+        .fillna("Unknown")
+        .astype(str)
+        .str.strip()
+        .replace("", "Unknown")
+    )
+    chart_data["cover_condition_label"] = (
+        chart_data["cover_condition"]
+        .fillna("Unknown")
+        .astype(str)
+        .str.strip()
+        .replace("", "Unknown")
+    )
+    chart_data["listing_label"] = (
+        chart_data["listing_id"]
+        .fillna("")
+        .astype(str)
+    )
+
     median_price = float(
         chart_data["gross_price"].median()
     )
 
     price_axis = alt.Axis(
-        title=f"Completed sale price ({currency})",
+        title=f"Sold for ({currency})",
         format=currency_format(currency),
     )
 
     x_encoding = alt.X(
         "completed_date:T",
-        title="Completed date",
+        title="Sale date",
         axis=alt.Axis(
             format="%b %Y",
             labelAngle=-30,
@@ -455,7 +493,7 @@ def render_price_history(
 
     y_encoding = alt.Y(
         "gross_price:Q",
-        title=f"Completed sale price ({currency})",
+        title=f"Sold for ({currency})",
         axis=price_axis,
         scale=alt.Scale(
             zero=False,
@@ -463,27 +501,9 @@ def render_price_history(
         ),
     )
 
-    trend_lines = (
-        alt.Chart(chart_data)
-        .mark_line(
-            opacity=0.45,
-            strokeWidth=2,
-        )
-        .encode(
-            x=x_encoding,
-            y=y_encoding,
-            color=alt.Color(
-                "marketplace_display:N",
-                title="Marketplace",
-            ),
-            detail="marketplace_display:N",
-        )
-    )
-
     sale_points = (
         alt.Chart(chart_data)
         .mark_circle(
-            size=120,
             opacity=0.9,
             stroke="white",
             strokeWidth=1,
@@ -492,12 +512,15 @@ def render_price_history(
             x=x_encoding,
             y=y_encoding,
             color=alt.Color(
-                "marketplace_display:N",
-                title="Marketplace",
+                "media_condition_label:N",
+                title="Media condition",
             ),
-            shape=alt.Shape(
-                "marketplace_display:N",
-                title="Marketplace",
+            size=alt.Size(
+                "bid_count:Q",
+                title="Bids",
+                scale=alt.Scale(
+                    range=[80, 280],
+                ),
             ),
             tooltip=[
                 alt.Tooltip(
@@ -511,12 +534,29 @@ def render_price_history(
                     format=currency_format(currency),
                 ),
                 alt.Tooltip(
+                    "media_condition_label:N",
+                    title="Media condition",
+                ),
+                alt.Tooltip(
+                    "cover_condition_label:N",
+                    title="Sleeve condition",
+                ),
+                alt.Tooltip(
+                    "bid_count:Q",
+                    title="Bids",
+                    format=".0f",
+                ),
+                alt.Tooltip(
                     "marketplace_display:N",
                     title="Marketplace",
                 ),
                 alt.Tooltip(
                     "seller_display:N",
                     title="Seller",
+                ),
+                alt.Tooltip(
+                    "listing_label:N",
+                    title="Listing",
                 ),
                 alt.Tooltip(
                     "title:N",
@@ -529,11 +569,6 @@ def render_price_history(
                 alt.Tooltip(
                     "region:N",
                     title="Region",
-                ),
-                alt.Tooltip(
-                    "bid_count:Q",
-                    title="Bids",
-                    format=".0f",
                 ),
             ],
         )
@@ -593,17 +628,17 @@ def render_price_history(
     )
 
     combined = (
-        trend_lines
-        + sale_points
+        sale_points
         + median_rule
         + median_label
     ).properties(
         height=480,
         title=alt.TitleParams(
-            "Completed-sale price history",
+            "Completed auctions with bids",
             subtitle=(
-                "Points are individual completed listings. "
-                "The dashed rule is the filtered median."
+                "Each dot is one sold listing with at least one bid. "
+                "Color is media condition. Size is bid count. "
+                "The dashed line is the median."
             ),
             anchor="start",
             fontSize=22,
@@ -819,19 +854,19 @@ def render_marketplace_summary(
             ),
             "minimum": st.column_config.NumberColumn(
                 f"Minimum ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "median": st.column_config.NumberColumn(
                 f"Median ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "average": st.column_config.NumberColumn(
                 f"Average ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "maximum": st.column_config.NumberColumn(
                 f"Maximum ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
         },
     )
@@ -876,15 +911,15 @@ def render_marketplace_summary(
             ),
             "median": st.column_config.NumberColumn(
                 f"Median ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "average": st.column_config.NumberColumn(
                 f"Average ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "latest": st.column_config.NumberColumn(
                 f"Latest ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
         },
     )
@@ -923,6 +958,8 @@ def render_comparable_sales(
         "poster_present",
         "bulk_lot",
         "bid_count",
+        "media_condition",
+        "cover_condition",
         "start_price",
         "final_price",
         "tax_amount",
@@ -978,21 +1015,27 @@ def render_comparable_sales(
                 "Bids",
                 format="%d",
             ),
+            "media_condition": st.column_config.TextColumn(
+                "Media condition"
+            ),
+            "cover_condition": st.column_config.TextColumn(
+                "Sleeve condition"
+            ),
             "start_price": st.column_config.NumberColumn(
                 f"Start ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "final_price": st.column_config.NumberColumn(
                 f"Hammer ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "tax_amount": st.column_config.NumberColumn(
                 f"Tax ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "gross_price": st.column_config.NumberColumn(
                 f"Gross ({currency})",
-                format=currency_format(currency),
+                format=streamlit_money_format(currency),
             ),
             "verdict": st.column_config.TextColumn(
                 "Verdict"
@@ -1037,7 +1080,8 @@ def main() -> None:
     st.title("📈 Pressing Analytics")
     st.caption(
         "Discogs-style completed-sale history using actual "
-        "auction results. Currencies remain completely separate."
+        "auction results with at least one bid. "
+        "Currencies remain completely separate."
     )
 
     search_column, refresh_column = st.columns(
@@ -1231,6 +1275,15 @@ def main() -> None:
             sales,
             currency,
         )
+        st.markdown("#### Sales history")
+        st.caption(
+            "Each row is one completed auction with at least one bid, "
+            "including Discogs-style media and sleeve condition."
+        )
+        render_comparable_sales(
+            sales,
+            currency,
+        )
 
     with distribution_tab:
         render_price_distribution(
@@ -1258,9 +1311,10 @@ def main() -> None:
     st.divider()
 
     st.caption(
-        "Only exact effective catalog-number matches are included. "
-        "Variants such as MR3166 and MR316-6 remain separate until "
-        "they are manually normalized in Collector Review."
+        "Only exact effective catalog-number matches with at least "
+        "one bid are included. Variants such as MR3166 and MR316-6 "
+        "remain separate until they are manually normalized in "
+        "Collector Review."
     )
 
 

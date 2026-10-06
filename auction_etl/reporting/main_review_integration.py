@@ -371,13 +371,12 @@ def load_gripsweat_records(
             ).fetchall()
         )
 
-        ebay_ids = {
+        warehouse_ids = {
             str(row["listing_id"])
             for row in connection.execute(
                 """
                 SELECT listing_id
                 FROM warehouse.auction
-                WHERE marketplace = 'ebay'
                 """
             ).fetchall()
         }
@@ -408,10 +407,19 @@ def load_gripsweat_records(
             )
         )
 
+        item_id = str(
+            sale.get("gripsweat_item_id")
+            or sale.get("gripsweat_item_key")
+            or ""
+        ).strip()
+
+        if not derived_listing_id:
+            derived_listing_id = item_id
+
         if not derived_listing_id:
             continue
 
-        if derived_listing_id in ebay_ids:
+        if derived_listing_id in warehouse_ids or item_id in warehouse_ids:
             continue
 
         sold_at = pd.to_datetime(
@@ -486,6 +494,7 @@ def load_gripsweat_records(
             ),
             "ended_at": sold_at,
             "closing_at": sold_at,
+            "opening_at": sale.get("first_seen_at"),
             "created_at": sale.get(
                 "created_at"
             ),
@@ -496,7 +505,7 @@ def load_gripsweat_records(
                 "updated_at"
             ),
             "auction_format": (
-                "ARCHIVE"
+                "AUCTION"
             ),
             "source_name": sale.get(
                 "source_name"

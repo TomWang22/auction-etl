@@ -272,7 +272,7 @@ def _main_once() -> int:
                 f"BUYEE_OWNER_SOCKET={socket_path}"
             )
             print(
-                "VISIBLE_BROWSER_LAUNCHED=false"
+                "VISIBLE_BROWSER_LAUNCHED=true"
             )
             print(
                 "NEW_BROWSER_PER_REFRESH=false"
@@ -382,7 +382,7 @@ def _main_once() -> int:
                     f"BUYEE_OWNER_LOG={log_path}"
                 )
                 print(
-                    "VISIBLE_BROWSER_LAUNCHED=false"
+                    "VISIBLE_BROWSER_LAUNCHED=true"
                 )
                 print(
                     "NEW_BROWSER_PER_REFRESH=false"

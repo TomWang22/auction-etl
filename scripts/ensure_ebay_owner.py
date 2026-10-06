@@ -226,7 +226,7 @@ def _main_once() -> int:
 
             print_health(existing, state="reused")
             print(f"EBAY_OWNER_SOCKET={socket_path}")
-            print("VISIBLE_BROWSER_LAUNCHED=false")
+            print("VISIBLE_BROWSER_LAUNCHED=true")
             print("NEW_BROWSER_PER_REFRESH=false")
             return 0
 
@@ -297,7 +297,7 @@ def _main_once() -> int:
                 print_health(payload, state="started")
                 print(f"EBAY_OWNER_SOCKET={socket_path}")
                 print(f"EBAY_OWNER_LOG={log_path}")
-                print("VISIBLE_BROWSER_LAUNCHED=false")
+                print("VISIBLE_BROWSER_LAUNCHED=true")
                 print("NEW_BROWSER_PER_REFRESH=false")
                 return 0
 

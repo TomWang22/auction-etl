@@ -19,6 +19,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from playwright.sync_api import Browser, Playwright, sync_playwright
 
+from auction_etl.browser.defaults import LOCAL_CHROME_IGNORE_DEFAULT_ARGS
 from auction_etl.browser.ebay_owner import OWNER_PROTOCOL_VERSION
 from auction_etl.runtime_authority import (
     LOCAL_DATABASE_TARGET,
@@ -279,6 +280,9 @@ def main() -> int:
                 "--window-position=80,80",
                 "--window-size=1200,900",
             ],
+            ignore_default_args=list(
+                LOCAL_CHROME_IGNORE_DEFAULT_ARGS
+            ),
         )
 
         try:

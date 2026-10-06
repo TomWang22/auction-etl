@@ -113,7 +113,13 @@ def test_local_dispatch_helper_is_not_a_browser_owner() -> None:
     assert "crawl_ebay_sources.py" not in source
     assert "cloud_runtime_detected" in source
     assert "create_refresh_job" in source
+    assert "ensure_local_refresh_worker" in source
+    assert "run_cloud_refresh_worker.py" in source
     assert "claim_next_refresh_job" not in source
+    assert "AUCTION_MARKETPLACE_BROWSER_MODE" in source
+    assert '"managed"' in source
+    assert 'setdefault("AUCTION_WORKER_LEASE_SECONDS", "1800")' in source
+    assert '"--lease-seconds"' in source
 
 
 def test_worker_still_claims_durable_jobs_locally() -> None:
@@ -162,6 +168,17 @@ def test_local_dispatch_returns_ui_status_from_create_refresh_job(
         "auction_etl.services.local_refresh_dispatch.create_refresh_job",
         fake_create,
     )
+    started: dict[str, object] = {}
+
+    def fake_ensure(*, database_url: str, environment=None) -> int:
+        started["database_url"] = database_url
+        started["environment"] = environment
+        return 4242
+
+    monkeypatch.setattr(
+        "auction_etl.services.local_refresh_dispatch.ensure_local_refresh_worker",
+        fake_ensure,
+    )
 
     context = AccountContext(
         user_id=UUID("11111111-1111-4111-8111-111111111111"),
@@ -184,9 +201,14 @@ def test_local_dispatch_returns_ui_status_from_create_refresh_job(
     assert captured["trigger"] == "streamlit-local"
     assert captured["account_id"] == context.account_id
     assert captured["requested_by_user_id"] == context.user_id
+    assert started["database_url"] == (
+        "postgresql://auction@127.0.0.1:5544/auction_warehouse"
+    )
 
 
-def test_local_enqueue_is_claimable_by_the_worker_without_scraping() -> None:
+def test_local_enqueue_is_claimable_by_the_worker_without_scraping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Create one local job and claim it. Do not run marketplace browsers."""
     if cloud_runtime_detected():
         pytest.skip("Cloud runtimes must not touch the local warehouse.")
@@ -300,6 +322,11 @@ def test_local_enqueue_is_claimable_by_the_worker_without_scraping() -> None:
             email=email,
             display_name="Queue Proof",
             is_system_admin=False,
+        )
+
+        monkeypatch.setattr(
+            "auction_etl.services.local_refresh_dispatch.ensure_local_refresh_worker",
+            lambda **kwargs: 0,
         )
 
         status, created = enqueue_refresh_via_local_worker(

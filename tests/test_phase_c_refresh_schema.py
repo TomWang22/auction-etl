@@ -86,3 +86,4 @@ def test_phase_c_service_uses_transactional_claiming() -> None:
     assert "heartbeat_refresh_job" in source
     assert "requeue_expired_refresh_jobs" in source
     assert "RefreshLeaseLost" in source
+    assert source.count("lease_seconds: int = 1800") == 2

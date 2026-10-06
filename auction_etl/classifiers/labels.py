@@ -48,7 +48,28 @@ KNOWN_RECORD_LABELS = (
     "BMG",
     "SMS",
     "Air",
-    "Yen",
+    "Yen Records",
+    "Kuopin",
+    "Kolin",
+    "Life Records",
+    "Stereo Sound",
+    "Space Record",
+    "太空唱片",
+)
+
+_LATIN_BAN_LABEL = re.compile(r"\b([A-Z]{3,})盤\b", re.IGNORECASE)
+_REGION_BAN_LABELS = frozenset(
+    {
+        "taiwan",
+        "japan",
+        "korea",
+        "hongkong",
+        "hong",
+        "china",
+        "domestic",
+        "korean",
+        "chinese",
+    }
 )
 
 
@@ -76,5 +97,9 @@ def extract_record_label(text: str) -> str | None:
         )
         if re.search(pattern, text, flags=re.IGNORECASE):
             return name
+
+    ban = _LATIN_BAN_LABEL.search(text)
+    if ban and ban.group(1).casefold() not in _REGION_BAN_LABELS:
+        return ban.group(1).title()
 
     return None

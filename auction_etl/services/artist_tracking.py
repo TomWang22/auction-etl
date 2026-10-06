@@ -13,7 +13,9 @@ from typing import Any
 from urllib.parse import parse_qs
 from urllib.parse import quote_plus
 from urllib.parse import unquote_plus
+from urllib.parse import urlencode
 from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -165,14 +167,89 @@ def build_ebay_search_url(
     return (
         "https://www.ebay.com/sch/i.html"
         f"?_nkw={encoded}"
-        "&_sacat=176985"
-        "&_from=R40"
-        "&rt=nc"
         "&LH_Complete=1"
         "&LH_Sold=1"
         "&_sop=13"
-        "&_ipg=240"
     )
+
+
+def strip_ebay_ipg(url: str) -> str:
+    """Remove any _ipg result-window override from an eBay URL."""
+
+    parsed = urlsplit(
+        url
+    )
+    query = parse_qs(
+        parsed.query,
+        keep_blank_values=True,
+    )
+    query.pop(
+        "_ipg",
+        None,
+    )
+    query.pop(
+        "_sacat",
+        None,
+    )
+
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(
+                query,
+                doseq=True,
+            ),
+            parsed.fragment,
+        )
+    )
+
+
+def strip_ebay_seller_scope(url: str) -> str:
+    """Remove FaceRecords-only seller query keys from an eBay URL."""
+    parsed = urlsplit(url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query.pop("_ssn", None)
+    query.pop("store_name", None)
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query, doseq=True),
+            parsed.fragment,
+        )
+    )
+
+
+def prepare_local_ebay_source(
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    """Force generated/legacy eBay sources onto the local browser crawl."""
+
+    source["acquisition_mode"] = "browser"
+
+    seller = str(source.get("seller") or "").strip()
+    if seller.casefold() == "facerecords":
+        source["seller"] = ""
+
+    profile = str(source.get("profile") or "").strip()
+    if not profile or profile.casefold() == "facerecords":
+        source["profile"] = "ebay-public"
+
+    raw_url = str(source.get("url") or "").strip()
+    if raw_url:
+        source["url"] = strip_ebay_seller_scope(strip_ebay_ipg(raw_url))
+
+    return source
+
+
+def require_external_ebay_source(
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    """Compatibility alias for the local eBay crawl source prep."""
+    return prepare_local_ebay_source(source)
 
 
 def build_gripsweat_search_url(
@@ -1657,7 +1734,7 @@ def _generated_ebay_source(
                 )
                 or ""
             ).strip()
-            or "facerecords"
+            or "ebay-public"
         )
 
         source[
@@ -1683,7 +1760,9 @@ def _generated_ebay_source(
             "query"
         ] = query
 
-    return source
+    return prepare_local_ebay_source(
+        source
+    )
 
 
 def _generated_gripsweat_source(
@@ -1815,6 +1894,11 @@ def _materialize_marketplace_sources(
             source[
                 "enabled"
             ] = True
+
+            if marketplace == "ebay":
+                source = prepare_local_ebay_source(
+                    source
+                )
 
             effective.append(
                 source

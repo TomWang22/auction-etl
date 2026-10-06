@@ -40,6 +40,7 @@ def fill(
     typer.echo(f"Need review      : {stats.needs_review}")
     typer.echo(f"Unmatched        : {stats.unmatched}")
     typer.echo(f"Images copied    : {stats.images_copied}")
+    typer.echo(f"Cover matched    : {stats.cover_matched}")
     typer.echo(stats.caption())
     if stats.stopped_reason:
         typer.secho(

@@ -8,8 +8,7 @@ from sqlalchemy.orm import Session
 from auction_etl.services.export import load_rows
 
 
-BUyee_TAX_RATE = Decimal("0.10")
-EBAY_TAX_RATE = Decimal("0.0625")
+from auction_etl.services.parse import EBAY_US_TAX_RATE as EBAY_TAX_RATE
 
 
 def _decimal(value: Any) -> Decimal | None:

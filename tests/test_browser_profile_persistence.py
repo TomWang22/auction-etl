@@ -66,10 +66,33 @@ def test_ebay_local_crawl_uses_installed_chrome_matching_storage_state() -> None
     assert "storage_state" in ebay_block
     assert "ebay_context_storage_state(" in ebay_block
     assert "self._owned_browsers[-1]" in ebay_block
+    assert "ignore_default_args" in ebay_block
+    assert "LOCAL_CHROME_IGNORE_DEFAULT_ARGS" in source
     assert "https://www.ebay.com/" in source
     assert "reuse_browser=1" in source
     assert "connect_buyee_cdp_context" in source
     assert "stealth" not in source.casefold()
+
+
+def test_local_chrome_strips_playwright_no_sandbox() -> None:
+    """Railway Chromium may use --no-sandbox; local headed Chrome must not."""
+    defaults = (
+        Path(__file__).resolve().parents[1]
+        / "auction_etl"
+        / "browser"
+        / "defaults.py"
+    ).read_text(encoding="utf-8")
+    runtime = (
+        Path(__file__).resolve().parents[1]
+        / "auction_etl"
+        / "services"
+        / "marketplace_browser_runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert "LOCAL_CHROME_IGNORE_DEFAULT_ARGS" in defaults
+    assert '"--no-sandbox"' in defaults
+    assert "--no-sandbox" in runtime
+    assert "_CLOUD_CHROMIUM_ARGS" in runtime
 
 
 def test_ebay_local_crawl_uses_storage_state_not_cdp() -> None:

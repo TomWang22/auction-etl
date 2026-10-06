@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
 
@@ -14,35 +14,99 @@ from auction_etl.parsers.ebay import parse_search as parse_ebay
 from auction_etl.services.dates import parse_ended_at
 
 
-_MONEY_RE = re.compile(r"([A-Z]{3}|[$£€¥])?\s*([0-9][0-9,]*(?:\.[0-9]{2})?)")
 _INT_RE = re.compile(r"([0-9][0-9,]*)")
+_SOLD_AMOUNT = (
+    r"([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)"
+)
+_SOLD_MONEY_PATTERNS = (
+    (re.compile(rf"\bAU\s*\$\s*{_SOLD_AMOUNT}", re.IGNORECASE), "AUD"),
+    (re.compile(rf"\bC(?:A)?\s*\$\s*{_SOLD_AMOUNT}", re.IGNORECASE), "CAD"),
+    (re.compile(rf"\bUS\s*\$\s*{_SOLD_AMOUNT}", re.IGNORECASE), "USD"),
+    (re.compile(rf"\bUSD\s*{_SOLD_AMOUNT}", re.IGNORECASE), "USD"),
+    (re.compile(rf"\bGBP\s*{_SOLD_AMOUNT}", re.IGNORECASE), "GBP"),
+    (re.compile(rf"£\s*{_SOLD_AMOUNT}"), "GBP"),
+    (re.compile(rf"\bEUR\s*{_SOLD_AMOUNT}", re.IGNORECASE), "EUR"),
+    (re.compile(rf"€\s*{_SOLD_AMOUNT}"), "EUR"),
+    (re.compile(rf"\bJPY\s*{_SOLD_AMOUNT}", re.IGNORECASE), "JPY"),
+    (re.compile(rf"¥\s*{_SOLD_AMOUNT}"), "JPY"),
+    (re.compile(rf"\$\s*{_SOLD_AMOUNT}"), None),
+)
+
+
+def parse_sold_money(value: object) -> tuple[Decimal | None, str | None]:
+    """Parse a sold-card amount and its currency.
+
+    Bare ``$`` is a display amount, not official USD. Explicit ``US $`` / ``USD``,
+    ``GBP`` / ``£``, ``EUR`` / ``€``, ``AU $``, and ``C $`` are local currencies.
+    """
+
+    if value is None or value == "":
+        return None, None
+
+    if isinstance(value, (int, float, Decimal)):
+        return Decimal(str(value)), None
+
+    text = str(value)
+    for pattern, currency in _SOLD_MONEY_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        return Decimal(match.group(1).replace(",", "")), currency
+
+    return None, None
+
+
+def _listing_image_url(listing: dict) -> str | None:
+    """Accept both Buyee `image` and eBay `image_url` parser keys."""
+    for key in ("image", "image_url"):
+        value = listing.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _parse_money(value):
+    return parse_sold_money(value)
+
+
+def sold_card_hammer(
+    sale_type: object,
+    price: object,
+) -> tuple[Decimal | None, str | None]:
+    """Hammer from a sold-search card.
+
+    Best Offer cards still print the ask. That is not the accepted offer.
+    """
+    amount, currency = parse_sold_money(price)
+    if str(sale_type or "") == "FIXED_PRICE_OBO":
+        return None, currency
+    return amount, currency
+
+
+EBAY_US_TAX_RATE = Decimal("0.0625")
+
+
+def apply_ebay_us_tax(
+    hammer: Decimal | None,
+    *,
+    currency: str | None,
+) -> tuple[Decimal | None, Decimal | None, Decimal | None, Decimal | None]:
+    """US eBay sales tax sits on the hammer. Missing hammers stay empty."""
+    if hammer is None:
+        return None, None, None, None
+    if str(currency or "").upper() != "USD":
+        return hammer, None, hammer, None
+    tax = (hammer * EBAY_US_TAX_RATE).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+    return hammer, tax, hammer + tax, EBAY_US_TAX_RATE
 
 
 @dataclass(slots=True)
 class ParseStats:
     pages: int = 0
     listings: int = 0
-
-
-def _parse_money(value):
-    if value is None:
-        return None, None
-
-    if isinstance(value, (int, float, Decimal)):
-        return Decimal(str(value)), None
-
-    match = _MONEY_RE.search(str(value))
-    if match is None:
-        return None, None
-
-    currency = {
-        "$": "USD",
-        "£": "GBP",
-        "€": "EUR",
-        "¥": "JPY",
-    }.get(match.group(1), match.group(1))
-
-    return Decimal(match.group(2).replace(",", "")), currency
 
 
 def _parse_int(value):
@@ -86,10 +150,21 @@ def parse_raw_page(session, raw: RawPage) -> int:
             Listing.listing_id == listing_id,
         ).delete(synchronize_session=False)
 
-        final_price, currency = _parse_money(listing.get("price"))
+        final_price, currency = sold_card_hammer(
+            listing.get("sale_type"),
+            listing.get("price"),
+        )
         shipping_price, shipping_currency = _parse_money(
             listing.get("shipping")
         )
+        payload = listing.get("payload", listing)
+        if not isinstance(payload, dict):
+            payload = {"value": payload}
+        else:
+            payload = dict(payload)
+        asking = listing.get("start_price")
+        if asking:
+            payload["start_price"] = asking
 
         session.add(
             Listing(
@@ -116,9 +191,9 @@ def parse_raw_page(session, raw: RawPage) -> int:
                 location=listing.get("location"),
                 seller=listing.get("seller"),
                 seller_feedback=listing.get("feedback"),
-                image_url=listing.get("image"),
+                image_url=_listing_image_url(listing),
                 condition_text=listing.get("condition"),
-                payload=listing.get("payload", listing),
+                payload=payload,
             )
         )
 

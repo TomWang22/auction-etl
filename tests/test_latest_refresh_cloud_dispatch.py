@@ -47,6 +47,9 @@ def test_latest_refresh_preserves_user_controls() -> None:
     assert "render_marketplace_progress" in source
     assert "if job_running:" in source
     assert "st.rerun()" in source
+    assert "eBay is external-acquisition only" not in source
+    assert "pending FaceRecords handoff" not in source
+    assert "local crawl" in source.casefold()
 
 def test_latest_refresh_preserves_explicit_confirmation_disable_contract() -> None:
     """Durable dispatch keeps the established explicit RUN safety gate."""

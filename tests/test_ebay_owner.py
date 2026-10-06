@@ -39,6 +39,8 @@ def test_owner_server_pops_visible_chrome_and_has_no_cdp() -> None:
     assert "connect_over_cdp" not in source
     assert "--remote-debugging-port" not in source
     assert 'channel="chrome"' in source
+    assert "ignore_default_args" in source
+    assert "LOCAL_CHROME_IGNORE_DEFAULT_ARGS" in source
     assert "launch_persistent_context" not in source
     assert "chromium.launch(" in source
     assert "headless=False" in source

@@ -137,12 +137,16 @@ def marketplace_row(
     rows: int,
     *,
     fx_rates: int | None = None,
+    final_prices: int | None = None,
     final_prices_usd: int | None = None,
+    gross_prices: int | None = None,
     gross_prices_usd: int | None = None,
     current_prices_usd: int = 0,
 ) -> dict[str, object]:
     """Build one marketplace coverage row."""
 
+    hammers = rows if final_prices is None else final_prices
+    gross = rows if gross_prices is None else gross_prices
     return {
         "marketplace":
             marketplace,
@@ -152,12 +156,16 @@ def marketplace_row(
             rows
             if fx_rates is None
             else fx_rates,
+        "final_prices":
+            hammers,
         "final_prices_usd":
-            rows
+            hammers
             if final_prices_usd is None
             else final_prices_usd,
+        "gross_prices":
+            gross,
         "gross_prices_usd":
-            rows
+            gross
             if gross_prices_usd is None
             else gross_prices_usd,
         "current_prices_usd":
@@ -194,8 +202,8 @@ def test_verify_results_accepts_dynamic_marketplace_row_counts() -> None:
     )
 
 
-def test_verify_results_rejects_incomplete_dynamic_fx_coverage() -> None:
-    """Require conversion coverage to match the marketplace's own row count."""
+def test_verify_results_rejects_incomplete_fx_rate_coverage() -> None:
+    """Require an FX rate on every marketplace row."""
 
     module = load_fx_module()
 
@@ -224,6 +232,76 @@ def test_verify_results_rejects_incomplete_dynamic_fx_coverage() -> None:
         match=(
             r"buyee: expected 138 fx_rates; "
             r"found 137\."
+        ),
+    ):
+        module.verify_results(
+            connection
+        )
+
+
+def test_verify_results_allows_unfinalized_obo_without_usd() -> None:
+    """Best Offer rows with no hammer must not fail FX coverage."""
+
+    module = load_fx_module()
+
+    connection = FakeConnection(
+        totals={
+            "total_rows":
+                1140,
+            "unique_rows":
+                1140,
+        },
+        marketplace_rows=[
+            marketplace_row(
+                "buyee",
+                513,
+            ),
+            marketplace_row(
+                "ebay",
+                1140,
+                final_prices=1049,
+                gross_prices=1048,
+            ),
+        ],
+    )
+
+    module.verify_results(
+        connection
+    )
+
+
+def test_verify_results_rejects_missing_usd_on_known_hammer() -> None:
+    """A stored hammer still has to convert when an FX rate exists."""
+
+    module = load_fx_module()
+
+    connection = FakeConnection(
+        totals={
+            "total_rows":
+                1140,
+            "unique_rows":
+                1140,
+        },
+        marketplace_rows=[
+            marketplace_row(
+                "buyee",
+                513,
+            ),
+            marketplace_row(
+                "ebay",
+                1140,
+                final_prices=1049,
+                final_prices_usd=1048,
+                gross_prices=1048,
+            ),
+        ],
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"ebay: expected 1049 final_prices_usd; "
+            r"found 1048\."
         ),
     ):
         module.verify_results(
