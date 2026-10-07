@@ -1,12 +1,20 @@
-# Collector Ledger
+# Auction ETL
 
-> **Compatibility name:** the repository, Python package, and existing infrastructure still use `auction-etl` / `auction_etl`.
+> **Name:** Auction ETL. Collector Ledger was the earlier hosted deployment. That deployment is retired. The repository and Python package stay `auction-etl` / `auction_etl`.
 >
 > **Current runtime authority:** local PostgreSQL at 127.0.0.1:5544/auction_warehouse. Vercel and Railway are non-data cloud shells and must not be pointed at the local database. Neon is retained only until a separate deletion gate. See [docs/LOCAL_AUTHORITY_CUTOVER.md](docs/LOCAL_AUTHORITY_CUTOVER.md).
 
-Collector Ledger is a collector-focused auction intelligence and ETL system for discovering marketplace sales, preserving source evidence, normalizing auction records, identifying pressings and completeness, reviewing uncertain records, coordinating durable refresh jobs, and exporting collector-ready research.
+Auction ETL is the local workspace for **one collector** reviewing completed sales of records, CDs, cassettes, and paper. The sales come from three places:
 
-The local loop integrates **Buyee, eBay, and Gripsweat** with PostgreSQL at `127.0.0.1:5544/auction_warehouse`, Streamlit Collector Review on HTTPS `localhost:8501`, headed eBay acquisition from a persistent browser profile, a headed Buyee owner, and Gripsweat probe/import. GitHub is the source/promotion boundary. Vercel and Railway are deferred non-data shells and must not point at the local database.
+| Source | What it is for this collector |
+| --- | --- |
+| Buyee | Closed watchlist. Prices are JPY. |
+| eBay | Completed and sold listings for the artists being tracked. The card shows that listing's own currency. |
+| Gripsweat | An archive of the same kind of sale. When it is the same eBay item, its USD amount is the official sold price. |
+
+There is no outside client list. Sign-in only identifies the collector. The warehouse stays on this machine.
+
+The local loop is that one collector's **Buyee, eBay, and Gripsweat** sales in PostgreSQL at `127.0.0.1:5544/auction_warehouse`, with Collector Review on HTTPS `localhost:8501`. eBay is acquired from a persistent browser profile, Buyee from the headed owner, and Gripsweat from probe/import. GitHub is the source boundary. Vercel and Railway must not point at the local database.
 
 ## Requirements
 
@@ -301,6 +309,8 @@ flowchart TD
 
 A mixed lot stores its counts as the first completeness-notes line, `Lot mix: LP 2, EP 2.` The disc count is the sum. A single-format lot keeps one number: records for an LP pile, CDs, EPs, cassettes, or magazines for the others.
 
+On the Lots chip there are two charts. The top one is every pile. A switch under it opens one type: CD, cassette, LP, EP, mixed, a generalized bulk lot, or magazines. Across is the piece count. Up is the sold price in yen, so a dollar sale sits on the same axis. Hover shows the price in the sale's own currency, and in USD when that amount is already stored. Click a point to open that sale under the listings table, where notes and the rest of the record are edited. A pile with no count is left off.
+
 ### Pressing, completeness, and catalog search
 
 A listing is one format. LP, EP / 7", and 12" stay vinyl. A CD has a booklet and no poster. A cassette has a lyric card and no obi or poster. A photo, print, or magazine is not a record. A CD box, including a title that says CD BOX or 全5巻, is one release and keeps the Discogs search. A lot is several copies and skips pressing identification. An LP lot counts records, a CD lot counts CDs, an EP lot counts EPs, a cassette lot counts cassettes, and a magazine lot is a Magazine bulk lot. A pile counted in 冊, or a DVDマガジン, is a magazine lot. A mixed lot is more than one of those formats: choose which formats are in the pile, then enter how many of each. The title LP 2 枚とEP 2 枚 opens as a mixed lot with 2 LPs and 2 EPs.
@@ -481,7 +491,7 @@ Current architecture status:
 <!-- COLLECTOR_LEDGER_PHASE_D_AUTH_ACCOUNTS -->
 ## Phase D — authentication and private accounts
 
-Collector Ledger's next milestone adds OIDC authentication, personal accounts,
+The earlier hosted deployment, then called Collector Ledger, added OIDC authentication, personal accounts,
 account-scoped marketplace visibility, private collector curation,
 account-owned tracked artists/refresh jobs, and isolated Buyee connection
 state.

@@ -3030,6 +3030,146 @@ def format_chart_bucket(media_display: Any, job_lot: bool = False) -> str:
     return "Other"
 
 
+def _lot_money_label(amount: float, currency: str) -> str:
+    """The amount as the sale wrote it, for the chart hover."""
+    code = clean_text(currency).upper()
+    symbol = {"JPY": "¥", "USD": "$", "GBP": "£", "EUR": "€"}.get(code, "")
+    if code == "JPY":
+        shown = f"{amount:,.0f}"
+    else:
+        shown = f"{amount:,.2f}"
+    if symbol:
+        return f"{symbol}{shown}"
+    if code:
+        return f"{shown} {code}"
+    return shown
+
+
+def lot_sale_points(
+    frame: pd.DataFrame,
+    *,
+    usd_to_jpy: float | None = None,
+) -> pd.DataFrame:
+    """One sold pile, placed in yen, with the sale's own price kept for the hover.
+
+    The chart axis is yen so a dollar pile and a yen pile share one picture.
+    A dollar or other sale is placed only when usd_to_jpy is a real rate.
+    The hover still shows the price in the sale's currency, and in USD when
+    that amount is already stored. A lot with no count stays off the chart.
+    """
+    columns = [
+        "Lot type",
+        "Pieces",
+        "Yen",
+        "Sold",
+        "USD",
+        "Title",
+        "Marketplace",
+        "Yen per piece",
+        "Identity",
+    ]
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=columns)
+    rate = safe_float(usd_to_jpy)
+    rows: list[dict[str, Any]] = []
+    for _, row in frame.iterrows():
+        if "no_bid_auction" in row.index and as_boolean(row.get("no_bid_auction")):
+            continue
+        media = clean_text(row.get("media_display"))
+        job = as_boolean(row.get("job_lot")) if "job_lot" in row.index else False
+        if not job and media not in BULK_LOT_MEDIA:
+            continue
+        pieces = safe_int(_row_value(row, "manual_disc_count"))
+        if not pieces or pieces <= 0:
+            pieces = safe_int(_row_value(row, "effective_disc_count"))
+        if not pieces or pieces <= 0:
+            continue
+        price = safe_float(row.get("hammer_local"))
+        if price is None or price <= 0:
+            price = safe_float(row.get("final_price"))
+        if price is None or price <= 0:
+            continue
+        kind = clean_text(row.get("lot_format")) or lot_format_name(media)
+        if not kind and media.casefold().endswith("bulk lot"):
+            kind = media[: -len("bulk lot")].strip()
+        if not kind or kind == "Bulk":
+            kind = "Bulk lot"
+        currency = (
+            clean_text(row.get("currency_display"))
+            or clean_text(row.get("currency"))
+            or "Local"
+        )
+        code = currency.upper()
+        usd_amount = safe_float(row.get("hammer_usd"))
+        if code == "USD" and (usd_amount is None or usd_amount <= 0):
+            usd_amount = price
+        if code == "JPY":
+            yen = price
+        elif usd_amount and rate:
+            yen = usd_amount * rate
+        else:
+            continue
+        rows.append(
+            {
+                "Lot type": kind,
+                "Pieces": int(pieces),
+                "Yen": round(float(yen), 2),
+                "Sold": _lot_money_label(price, code),
+                "USD": (
+                    _lot_money_label(usd_amount, "USD")
+                    if usd_amount and usd_amount > 0
+                    else ""
+                ),
+                "Title": clean_text(row.get("title")),
+                "Marketplace": (
+                    clean_text(row.get("source_display"))
+                    or clean_text(row.get("marketplace"))
+                ),
+                "Yen per piece": round(float(yen) / int(pieces), 2),
+                "Identity": listing_identity(
+                    row.get("marketplace"),
+                    row.get("listing_id"),
+                ),
+            }
+        )
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns)
+
+
+def chart_point_identity(selection: Any) -> str | None:
+    """The listing identity from one clicked chart point.
+
+    Altair sends the selection as a named parameter, a list of rows, or
+    a field map. The first identity wins. An empty click returns nothing.
+    """
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            if ":" in value and not value.startswith("http"):
+                found.append(value)
+            return
+        if isinstance(value, dict):
+            identity = value.get("Identity")
+            if isinstance(identity, str) and ":" in identity:
+                found.append(identity)
+                return
+            if isinstance(identity, (list, tuple)):
+                for item in identity:
+                    walk(item)
+                return
+            for item in value.values():
+                walk(item)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    walk(selection)
+    return found[0] if found else None
+
+
 def auction_outcome_chart(
     sales: pd.DataFrame,
     history: pd.DataFrame,

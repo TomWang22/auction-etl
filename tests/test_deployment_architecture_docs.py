@@ -19,15 +19,17 @@ def read(path: Path) -> str:
 
 
 def test_readme_contains_collector_ledger_architecture() -> None:
-    """README exposes the accepted Collector Ledger architecture."""
+    """README exposes Auction ETL and the local architecture."""
     value = read(README)
 
-    assert "# Collector Ledger" in value
+    assert "# Auction ETL" in value
+    assert "one collector" in value
+    assert "Buyee" in value
     assert "## Architecture overview" in value
     assert "```mermaid" in value
     assert "Vercel" in value
-    assert "Neon PostgreSQL" in value
-    assert "refresh worker" in value
+    assert "Neon" in value
+    assert "5544" in value
     assert "Railway" in value
 
 
@@ -89,10 +91,8 @@ def test_docs_keep_production_cutover_explicit() -> None:
     readme = read(README)
     deployment = read(DEPLOYMENT)
 
-    assert (
-        "Production runtime/data cutover remains a separate explicit operation."
-        in readme
-    )
+    assert "production runtime/data cutover" in readme
+    assert "does not represent production runtime/data cutover" in readme
     assert "Cloud production cutover is not yet approved." in deployment
     assert (
         "Cloud cutover is not complete until these are implemented and accepted:"

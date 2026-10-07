@@ -22,7 +22,7 @@ from scripts.accept_collector_hover_click import (
 
 DEFAULT_BASE_URL = "https://auction-scout-main-test.streamlit.app/"
 STREAMLIT_APP_FRAME_SELECTOR = 'iframe[title="streamlitApp"]'
-LOGIN_SCREEN_HEADING = "Collector Ledger"
+LOGIN_SCREEN_HEADING = "Auction ETL"
 LOGIN_BUTTON_NAME = "Sign in or create account"
 AUTHENTICATED_APPLICATION_HEADING = "Review marketplace sales"
 AUTHENTICATED_RESULTS_HEADING = "Search results"

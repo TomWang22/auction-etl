@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
         str(ROOT),
     )
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, JsCode
@@ -37,6 +38,7 @@ from auction_etl.auth.streamlit_auth import (
 )
 from auction_etl.services.account_scope import account_transaction
 from auction_etl.runtime_authority import cloud_runtime_detected
+from auction_etl.services.fx import latest_rate
 from auction_etl.services.tracked_listing_scope import (
     enabled_tracked_artist_names,
     listing_belongs_to_tracked_artists,
@@ -125,6 +127,8 @@ from app.collector_review_support import (
     listing_option_label,
     auction_outcome_chart,
     format_chart_bucket,
+    lot_sale_points,
+    chart_point_identity,
     marketplace_source_label,
     no_bid_auction_rows,
     omit_no_bid_auctions,
@@ -349,7 +353,7 @@ st.set_page_config(
 
 if cloud_runtime_detected():
     st.error(
-        "Collector Ledger's authoritative database is local. "
+        "Auction ETL keeps its database on this machine. "
         "The hosted database-backed UI is disabled."
     )
     st.caption(
@@ -3019,6 +3023,189 @@ def _render_identity_reflection(
     )
 
 
+# Per-type charts follow this order. "Bulk lot" is a pile with no
+# LP, CD, cassette, EP, magazine, or mixed format in the title.
+_LOT_CHART_TYPES = (
+    "CD",
+    "Cassette",
+    "LP",
+    "EP",
+    "Mixed",
+    "Bulk lot",
+    "Magazine",
+)
+
+
+def _usd_to_jpy() -> float | None:
+    """One USD→JPY reference rate for placing a foreign sale on the yen axis.
+
+    The hover still shows the sale's own currency. A missing rate leaves
+    those sales off the chart rather than inventing a conversion.
+    """
+    cached = st.session_state.get("_lot_chart_usd_jpy")
+    if isinstance(cached, (int, float)) and float(cached) > 0:
+        return float(cached)
+    try:
+        rate = float(latest_rate("USD", "JPY").rate)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if rate <= 0:
+        return None
+    st.session_state["_lot_chart_usd_jpy"] = rate
+    return rate
+
+
+def _remember_chart_point(event: Any, memory_key: str) -> None:
+    """Open the sale behind a clicked point, once per click."""
+    identity = chart_point_identity(getattr(event, "selection", None))
+    if not identity:
+        return
+    if st.session_state.get(memory_key) == identity:
+        return
+    st.session_state[memory_key] = identity
+    _set_listing_identity(identity, synchronize_jump=True)
+
+
+def _lot_scatter(
+    group: pd.DataFrame,
+    *,
+    domain_top: int,
+    color_by_type: bool,
+    height: int,
+    key: str,
+) -> Any:
+    """Pieces across, yen up. A click opens that sale."""
+    pick = alt.selection_point(
+        name="lot_point",
+        fields=["Identity"],
+        empty=False,
+        nearest=True,
+    )
+    encoding: dict[str, Any] = {
+        "x": alt.X(
+            "Pieces:Q",
+            scale=alt.Scale(domain=[0, domain_top]),
+            title="Pieces in the lot",
+        ),
+        "y": alt.Y("Yen:Q", title="Sold price (JPY)"),
+        "tooltip": [
+            "Title:N",
+            "Marketplace:N",
+            "Lot type:N",
+            alt.Tooltip("Pieces:Q", format=","),
+            alt.Tooltip("Sold:N", title="Sold"),
+            alt.Tooltip("Yen:Q", format=",.0f", title="Yen"),
+            alt.Tooltip("USD:N", title="USD"),
+            alt.Tooltip("Yen per piece:Q", format=",.0f", title="Yen per piece"),
+        ],
+    }
+    if color_by_type:
+        encoding["color"] = alt.Color("Lot type:N", title="Lot type")
+    chart = (
+        alt.Chart(group)
+        .mark_circle(size=90, opacity=0.85)
+        .encode(**encoding)
+        .add_params(pick)
+        .properties(height=height)
+    )
+    return st.altair_chart(
+        chart,
+        use_container_width=True,
+        on_select="rerun",
+        key=key,
+    )
+
+
+def _piece_axis_top(pieces: pd.Series, *, shared: bool) -> int:
+    """Shared charts keep the 2,000-piece scale when a pile is that large.
+
+    A type chart fits its own piles, so twenty cassettes are not drawn
+    on the same axis as 1,600 CDs.
+    """
+    observed = int(pieces.max()) if len(pieces) else 0
+    if shared and observed >= 200:
+        return max(2000, observed)
+    return max(int(observed * 1.15), observed + 1, 1)
+
+
+def _render_lot_size_chart(sales: pd.DataFrame) -> None:
+    """Two charts: every lot type, then the type the pills have open.
+
+    Both axes are yen. Hover shows the price in the sale's currency
+    and in USD when that amount is already stored.
+    """
+    points = lot_sale_points(sales, usd_to_jpy=_usd_to_jpy())
+    st.caption(
+        "Two charts. The first is every lot type. "
+        "The switch opens one type. "
+        "The axis is yen. Hover a point for the sale's own currency. "
+        "Click a point to open that sale, including its notes."
+    )
+    if points.empty:
+        st.caption(
+            "A lot appears here once it has a piece count and a sold price."
+        )
+        return
+    missing = max(len(sales) - len(points), 0)
+    if missing:
+        st.caption(
+            f"{format_count(missing)} lots on this chip have no count or no sold price, "
+            "so they are not on the chart."
+        )
+    st.markdown("**All lot types**")
+    all_event = _lot_scatter(
+        points,
+        domain_top=_piece_axis_top(points["Pieces"], shared=True),
+        color_by_type=True,
+        height=280,
+        key="lot_chart_all",
+    )
+    present = [
+        name
+        for name in _LOT_CHART_TYPES
+        if name in set(points["Lot type"])
+    ]
+    for name in points["Lot type"].drop_duplicates():
+        if name not in present:
+            present.append(str(name))
+    if not present:
+        _remember_chart_point(all_event, "lot_chart_all_identity")
+        return
+    chart_key = "collector_lot_chart_type"
+    if st.session_state.get(chart_key) not in present:
+        st.session_state[chart_key] = present[0]
+    chosen = st.pills(
+        "One lot type",
+        present,
+        key=chart_key,
+        label_visibility="collapsed",
+    ) or present[0]
+    subset = points.loc[points["Lot type"].eq(chosen)]
+    if subset.empty:
+        _remember_chart_point(all_event, "lot_chart_all_identity")
+        return
+    type_event = _lot_scatter(
+        subset,
+        domain_top=_piece_axis_top(subset["Pieces"], shared=False),
+        color_by_type=False,
+        height=240,
+        key=f"lot_chart_{chosen}",
+    )
+    _remember_chart_point(all_event, "lot_chart_all_identity")
+    _remember_chart_point(type_event, "lot_chart_type_identity")
+    opened = _current_listing_identity()
+    if opened:
+        match = points.loc[points["Identity"].eq(opened)]
+        if not match.empty:
+            sale = match.iloc[0]
+            st.caption(
+                f"Opened {sale['Title']}. "
+                f"{sale['Marketplace']} · {sale['Lot type']} · "
+                f"{int(sale['Pieces'])} pieces · {sale['Sold']}. "
+                "Notes and the rest of the record are under the listings table."
+            )
+
+
 def _render_sale_history_chart(
     sales: pd.DataFrame,
     history: pd.DataFrame,
@@ -3076,6 +3263,9 @@ def _render_media_view_charts(
         view_label=view_label,
         lot_count=lot_count,
     )
+    if view_label == MEDIA_GROUP_LOTS:
+        _render_lot_size_chart(identity_frame)
+        return
     _render_sale_history_chart(
         identity_frame,
         history if history is not None else pd.DataFrame(),
@@ -4975,7 +5165,7 @@ def render_listing_editor(
         is None
     ):
         st.caption(
-            "Select any table row or use the sidebar search to open its details."
+            "Select a table row, click a chart point, or use the sidebar search to open its details."
         )
         return
 

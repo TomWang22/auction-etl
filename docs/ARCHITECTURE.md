@@ -1,4 +1,4 @@
-# Collector Ledger Architecture
+# Auction ETL architecture
 
 > **Current authority:** local PostgreSQL at `127.0.0.1:5544/auction_warehouse` is the authoritative operational data plane.
 >
@@ -10,11 +10,11 @@
 >
 > **Neon:** retained pending a separate explicit deletion gate.
 >
-> **Product/documentation name:** Collector Ledger.
+> **Product name:** Auction ETL. Collector Ledger was the retired hosted deployment.
 
 ## 1. System purpose
 
-Collector Ledger collects, normalizes, reviews, and enriches marketplace auction records while preserving evidence, provenance, deterministic identity, and auditable user decisions.
+Auction ETL collects, normalizes, reviews, and enriches one collector's Buyee, eBay, and Gripsweat sales while preserving evidence, provenance, deterministic identity, and auditable user decisions.
 
 The system separates four responsibilities:
 

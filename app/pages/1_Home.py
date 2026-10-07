@@ -173,8 +173,9 @@ st.title(
 )
 
 st.write(
-    "Review marketplace sales, keep your data current, "
-    "and connect listings to the correct physical pressings."
+    "Auction ETL is this collector's review of Buyee, eBay, and Gripsweat sales. "
+    "Keep the warehouse current, and connect a listing to its pressing "
+    "or count the pieces in a bulk lot."
 )
 
 st.subheader(

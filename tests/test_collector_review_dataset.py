@@ -1118,6 +1118,98 @@ def test_zero_bid_auctions_leave_the_table_and_count_as_cycles() -> None:
     assert int(chart.loc[chart["Format"].eq("CD"), "0-bid auctions"].iloc[0]) == 1
 
 
+def test_lot_sale_points_keep_size_and_price_in_the_sale_currency() -> None:
+    from app.collector_review_support import lot_sale_points
+
+    points = lot_sale_points(
+        pd.DataFrame(
+            [
+                {
+                    "job_lot": True,
+                    "lot_format": "CD",
+                    "media_display": "CD bulk lot",
+                    "manual_disc_count": 1600,
+                    "hammer_local": 48000,
+                    "currency_display": "JPY",
+                    "title": "CD pile",
+                    "marketplace": "buyee",
+                    "listing_id": "c1600",
+                    "no_bid_auction": False,
+                },
+                {
+                    "job_lot": True,
+                    "lot_format": "LP",
+                    "media_display": "LP bulk lot",
+                    "manual_disc_count": 4,
+                    "hammer_local": 80,
+                    "currency_display": "USD",
+                    "title": "LP pile",
+                    "marketplace": "ebay",
+                    "listing_id": "lp4",
+                    "source_display": "eBay",
+                    "no_bid_auction": False,
+                },
+                {
+                    "job_lot": True,
+                    "lot_format": "EP",
+                    "manual_disc_count": None,
+                    "hammer_local": 20,
+                    "currency_display": "USD",
+                    "title": "No count",
+                    "no_bid_auction": False,
+                },
+                {
+                    "job_lot": True,
+                    "lot_format": "Cassette",
+                    "manual_disc_count": 12,
+                    "hammer_local": 30,
+                    "currency_display": "USD",
+                    "title": "Unsold",
+                    "no_bid_auction": True,
+                },
+                {
+                    "job_lot": False,
+                    "media_display": "LP",
+                    "manual_disc_count": 1,
+                    "hammer_local": 40,
+                    "currency_display": "USD",
+                    "title": "One LP",
+                },
+            ]
+        ),
+        usd_to_jpy=150,
+    )
+    assert list(points["Title"]) == ["CD pile", "LP pile"]
+    cd = points.iloc[0]
+    assert cd["Lot type"] == "CD"
+    assert int(cd["Pieces"]) == 1600
+    assert cd["Sold"] == "¥48,000"
+    assert float(cd["Yen"]) == 48000
+    assert float(cd["Yen per piece"]) == 30.0
+    dollar = points.iloc[1]
+    assert dollar["Marketplace"] == "eBay"
+    assert dollar["Sold"] == "$80.00"
+    assert dollar["USD"] == "$80.00"
+    assert float(dollar["Yen"]) == 12000
+    assert cd["Identity"] == "buyee:c1600"
+    assert dollar["Identity"] == "ebay:lp4"
+
+
+def test_chart_point_identity_reads_the_clicked_sale() -> None:
+    from app.collector_review_support import chart_point_identity
+
+    assert chart_point_identity(None) is None
+    assert chart_point_identity({}) is None
+    assert (
+        chart_point_identity({"lot_point": {"Identity": ["buyee:c1600"]}})
+        == "buyee:c1600"
+    )
+    assert (
+        chart_point_identity({"lot_point": [{"Identity": "ebay:lp4"}]})
+        == "ebay:lp4"
+    )
+
+
 def test_discogs_search_keeps_the_row_on_the_unmatched_list() -> None:
     from app.collector_review_support import rows_kept_after_search
 

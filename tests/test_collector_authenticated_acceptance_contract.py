@@ -187,7 +187,7 @@ class _Context:
 def _login_iframe() -> _Scope:
     return _Scope(
         headings=(
-            "Collector Ledger",
+            "Auction ETL",
         ),
         buttons=(
             "Sign in or create account",
@@ -305,7 +305,7 @@ def test_authenticated_heading_matches_current_collector_review() -> None:
     )
     assert (
         authenticated.LOGIN_SCREEN_HEADING
-        == "Collector Ledger"
+        == "Auction ETL"
     )
     assert (
         authenticated.STREAMLIT_APP_FRAME_SELECTOR
@@ -325,7 +325,7 @@ def test_authenticated_heading_matches_current_collector_review() -> None:
         in app_source
     )
     assert (
-        'st.title("Collector Ledger")'
+        'st.title("Auction ETL")'
         in auth_source
     )
     assert "st.login()" in auth_source
@@ -357,7 +357,7 @@ def test_acceptance_inspects_streamlit_app_iframe() -> None:
 
 
 def test_login_screen_in_iframe_is_not_authenticated() -> None:
-    """The Collector Ledger login shell must not satisfy authentication."""
+    """The Auction ETL login shell must not satisfy authentication."""
     page = _cloud_page(
         _login_iframe()
     )
@@ -560,7 +560,7 @@ def test_capture_timeout_writes_sanitized_diagnostics(
         assert forbidden not in payload
 
     assert "streamlit.app" in payload
-    assert "collector ledger" in payload
+    assert "auction etl" in payload
     assert "boom" in payload
     assert '"pages"' in payload
     assert '"frames"' in payload

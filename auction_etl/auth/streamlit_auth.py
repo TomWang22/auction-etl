@@ -98,8 +98,11 @@ def validate_streamlit_oidc_login() -> None:
 
 def render_login_screen() -> None:
     """Render the unauthenticated landing screen."""
-    st.title("Collector Ledger")
-    st.write("Your private marketplace-auction research workspace.")
+    st.title("Auction ETL")
+    st.write(
+        "Private review for one collector. "
+        "Sales come from Buyee, eBay, and Gripsweat."
+    )
     st.write(
         "Sign in to access your listings, tracked artists, "
         "refresh history, and collection decisions."
@@ -160,6 +163,6 @@ def require_system_admin(context: AccountContext) -> None:
     if context.is_system_admin:
         return
     st.error(
-        "This tool is restricted to Collector Ledger system administrators."
+        "This tool is restricted to Auction ETL administrators."
     )
     st.stop()

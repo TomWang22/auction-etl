@@ -2,7 +2,7 @@
 
 ## Status
 
-Collector Ledger's authoritative operational data plane is the local PostgreSQL
+Auction ETL's authoritative operational data plane is the local PostgreSQL
 database:
 
 ```text
