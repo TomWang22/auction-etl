@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -12,6 +13,8 @@ from urllib.parse import urlparse
 import pandas as pd
 import psycopg
 from psycopg.rows import dict_row
+
+from auction_etl.services.discogs_identity import catalog_token
 
 
 def _coalesce_duplicate_columns(
@@ -334,6 +337,48 @@ def parse_gripsweat_title(
         "",
         text,
     ).strip()
+
+
+_GRIPSWEAT_ARCHIVE_NOTE = re.compile(
+    r"none of the items are available for purchase\.?",
+    re.IGNORECASE,
+)
+_GRIPSWEAT_SELLER_END = re.compile(
+    r"(?i)check out my other auctions|related items|join gripsweat",
+)
+
+
+def gripsweat_seller_text(page_text: Any) -> str:
+    """The seller's item text, after the sold-price block.
+
+    Sold date, final price, bid count, and feedback stay out. Those numbers
+    are not catalog numbers. The catalog is in the description that follows,
+    as in Capital Artists Cal 04-1056.
+    """
+    raw = html.unescape(re.sub(r"<[^>]+>", " ", str(page_text or "")))
+    raw = raw.replace("\xa0", " ")
+    marker = _GRIPSWEAT_ARCHIVE_NOTE.search(raw)
+    if marker is None:
+        return ""
+    body = raw[marker.end() :]
+    end = _GRIPSWEAT_SELLER_END.search(body)
+    if end:
+        body = body[: end.start()]
+    return body.strip()
+
+
+def description_catalog(text: Any) -> str | None:
+    """A catalog printed in the seller's description.
+
+    A Gripsweat page is cut down to the seller text first, so the price and
+    the feedback count are not read as a catalog. A stored description that
+    is already just that text is read as-is.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    seller = gripsweat_seller_text(raw)
+    return catalog_token(title=seller or raw)
 
 
 def _collector_values(

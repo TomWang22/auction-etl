@@ -2903,3 +2903,59 @@ def test_typed_catalog_search_lists_the_listing_format_first() -> None:
         query="M",
         listing_media="LP",
     ) == []
+
+
+def test_catalog_search_finds_a_soundtrack_filed_under_another_artist() -> None:
+    """LFLP 269 is a Various soundtrack. Teresa Teng is a track credit."""
+    soundtrack = parse_search_hits(
+        [
+            {
+                "id": 5436423,
+                "type": "release",
+                "title": "左宏元, Various - 彩雲飛 電影原聲帶插曲",
+                "catno": "",
+                "year": "1973",
+                "country": "Singapore",
+                "format": ["Vinyl", "LP", "Album"],
+                "label": ["LIFE Records", "樂風"],
+                "thumb": "",
+                "uri": "/release/5436423",
+            },
+            {
+                "id": 99,
+                "type": "release",
+                "title": "Various - Something Else",
+                "catno": "",
+                "year": "1974",
+                "country": "Singapore",
+                "format": ["Vinyl", "LP", "Album"],
+                "label": ["LIFE Records"],
+                "thumb": "",
+                "uri": "/release/99",
+            },
+        ]
+    )
+
+    class CatalogDiscogs(FakeDiscogs):
+        def get_release(self, release_id: int) -> dict[str, object]:
+            if release_id == 5436423:
+                return {
+                    "id": 5436423,
+                    "labels": [{"name": "樂風", "catno": "LFLP 269"}],
+                }
+            return {"id": release_id, "labels": [{"name": "LIFE Records", "catno": "LFLP 370"}]}
+
+    client = CatalogDiscogs([(), (), soundtrack])
+    found = search_user_catalog(
+        client,
+        artist="Teresa Teng",
+        title="鄧麗君 彩雲飛 LP",
+        query="LFLP 269",
+        listing_media="LP",
+    )
+    assert client.calls[0]["artist"] == "Teresa Teng"
+    assert client.calls[0]["catno"] == "LFLP 269"
+    assert client.calls[2]["artist"] is None
+    assert client.calls[2]["catno"] == "LFLP 269"
+    assert [hit["id"] for hit in found] == [5436423]
+    assert found[0]["catno"] == "LFLP 269"

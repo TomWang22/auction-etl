@@ -1292,6 +1292,24 @@ def test_unique_japanese_search_title_promotes_with_release_artists() -> None:
     assert "lyric sheet" in (draft.notes_hint or "")
 
 
+def test_disc_count_comes_from_release_qty_or_the_format_name() -> None:
+    from auction_etl.services.discogs_identity import _map_formats
+
+    one, _detail, count, _generation = _map_formats(
+        [{"name": "Vinyl", "qty": "1", "descriptions": ["LP", "Album"]}]
+    )
+    assert one == "LP"
+    assert count == 1
+    _media, _detail, doubled, _generation = _map_formats(
+        [{"name": "2×Vinyl", "descriptions": ["LP", "Album"]}]
+    )
+    assert doubled == 2
+    _media, _detail, implied, _generation = _map_formats(
+        [{"name": "Vinyl", "descriptions": ["LP", "Album"]}]
+    )
+    assert implied == 1
+
+
 def test_two_label_entities_require_explicit_choice() -> None:
     payload = json.loads(
         RELEASE_FIXTURE.read_text(encoding="utf-8")

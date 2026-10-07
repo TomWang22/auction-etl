@@ -17,6 +17,7 @@ htmlcov/
 logs/
 backups/
 exports/
+output/
 
 data/raw/
 data/parsed/

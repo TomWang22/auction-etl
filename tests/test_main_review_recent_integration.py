@@ -187,6 +187,55 @@ def test_activity_sort_places_new_unclosed_rows_first() -> None:
     ] == "added"
 
 
+def test_gripsweat_description_catalog_ignores_the_sold_price() -> None:
+    from auction_etl.reporting.main_review_integration import (
+        description_catalog,
+        gripsweat_seller_text,
+    )
+    from app.collector_review_support import parse_seller_report
+
+    page = """
+    Final Price: $102.50 (USD)
+    Bid Count: 8
+    Seller Feedback: 1433
+    This item is not for sale. Gripsweat is an archive of past sales and auctions, none of the items are available for purchase.
+    Anita Mui Flaming Lips LP 1987 Hong Kong
+    Capital Artists Cal 04-1056
+    All Records are original press.
+    Condition:
+    Record is NM
+    Sleeve is NM
+    Insert is NM
+    Shipping:
+    USA $6.00
+    Check out my other auctions for more items.
+    """
+    seller = gripsweat_seller_text(page)
+    assert "Cal 04-1056" in seller
+    assert "1433" not in seller
+    assert "$102.50" not in seller
+    assert description_catalog(page) == "CAL-04-1056"
+    assert description_catalog(seller) == "CAL-04-1056"
+    soundtrack = """
+    This item is not for sale. Gripsweat is an archive of past sales and auctions, none of the items are available for purchase.
+    彩雲飛 LFLP269 Life Records
+    Condition:
+    Sleeve: EX-
+    Side A: EX 4 hairlines, playable
+    Side B: EX 4 hairlines, playable
+    Related Items
+    KILLING JOKE CAL-99
+    """
+    cut = gripsweat_seller_text(soundtrack)
+    assert "LFLP269" in cut
+    assert "CAL-99" not in cut
+    assert description_catalog(soundtrack) == "LFLP-269"
+    report = parse_seller_report(seller)
+    assert report["media"] == "NM"
+    assert report["cover"] == "NM"
+    assert report["insert"] is True
+
+
 def test_gripsweat_archive_parsing() -> None:
     """Archived Gripsweat card text yields stable sale fields."""
     raw_text = (

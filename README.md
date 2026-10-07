@@ -6,7 +6,7 @@
 
 Collector Ledger is a collector-focused auction intelligence and ETL system for discovering marketplace sales, preserving source evidence, normalizing auction records, identifying pressings and completeness, reviewing uncertain records, coordinating durable refresh jobs, and exporting collector-ready research.
 
-The local loop integrates **Buyee, eBay, and Gripsweat** with PostgreSQL at `127.0.0.1:5544/auction_warehouse`, Streamlit Collector Review on HTTP `127.0.0.1:8501`, headed eBay acquisition from a persistent browser profile, a headed Buyee owner, and Gripsweat probe/import. GitHub is the source/promotion boundary. Vercel and Railway are deferred non-data shells and must not point at the local database.
+The local loop integrates **Buyee, eBay, and Gripsweat** with PostgreSQL at `127.0.0.1:5544/auction_warehouse`, Streamlit Collector Review on HTTPS `localhost:8501`, headed eBay acquisition from a persistent browser profile, a headed Buyee owner, and Gripsweat probe/import. GitHub is the source/promotion boundary. Vercel and Railway are deferred non-data shells and must not point at the local database.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ flowchart LR
     Operator["Collector / operator"]
 
     subgraph Review["Collector Review"]
-        UI["Streamlit HTTP 8501<br/>app/collector_review.py"]
+        UI["Streamlit HTTPS localhost:8501<br/>app/collector_review.py"]
     end
 
     subgraph Local["Authoritative local runtime"]
@@ -81,7 +81,7 @@ flowchart LR
 The key architectural boundary is deliberate:
 
 - **Local PostgreSQL on 5544** is the authoritative warehouse.
-- **Collector Review on HTTP 8501** is the review UI against that warehouse.
+- **Collector Review on HTTPS localhost:8501** is the review UI against that warehouse. Yahoo login needs that TLS certificate.
 - **eBay** is a generalized local sold/completed crawl from tracked-artist
   searches, using hidden headed Google Chrome. It is not a FaceRecords
   seller handoff.
@@ -139,6 +139,25 @@ The table exposes `Opened`, `Closed`, `Added`, `Activity`, and
 `Date basis` independently.
 
 ### Start the application
+
+One command brings up the existing Postgres on port 5544 and Collector Review
+at `https://localhost:8501`. If either one stops, the watcher starts it again.
+It does not create a new database.
+
+```bash
+./scripts/start-local.sh
+```
+
+The log is `logs/collector-ui/start-local.log`. Stop the watcher with
+`kill "$(cat logs/collector-ui/start-local.pid)"`.
+
+Back up `auction_warehouse` to `output/backups/`. That folder is gitignored.
+
+```bash
+./scripts/backup-auction-warehouse.sh
+```
+
+The same app can be started by hand:
 
 ```bash
 cd ~/auction-etl
@@ -253,6 +272,54 @@ The editor preserves automatic classification while allowing explicit
 overrides for media type, catalog or matrix identity, pressing region,
 pressing type, completeness, condition, verdict, collection ownership,
 purchase information, and collector notes.
+
+### What a row means
+
+A sale is one record, a factory box, or a pile. The status mark says how far the review has gone. Lots have no Matched and All piles, so the mark is the way to see what is still open.
+
+```mermaid
+flowchart TD
+    Sale["One sale"]
+    Sale --> Kind{"What is in the sale?"}
+    Kind -->|"One record, or a CD box such as CD BOX or 全5巻"| Search["Discogs search stays open"]
+    Kind -->|"Photo, print, or a single magazine"| Paper["One condition. Discogs stays off"]
+    Kind -->|"One format in the pile"| OneCount["One count, up to 20000"]
+    Kind -->|"More than one format, such as LP 2 and EP 2"| Mixed["Choose each format, then a count for each"]
+    Kind -->|"Magazines, or a pile counted in 冊"| Mag["Magazine bulk lot"]
+    Search --> Mark["Status mark"]
+    Paper --> Mark
+    OneCount --> Mark
+    Mixed --> Mark
+    Mag --> Mark
+    Mark --> Blank["Blank. Not done"]
+    Mark --> Touched["● Touched. Opened or saved"]
+    Mark --> Edited["✎ Adjusted. A field was edited"]
+    Mark --> Done["✓ Processed. Identity is filled"]
+```
+
+● is the first mark, once the row has been opened or saved. ✎ means a grade, count, note, or other field was edited. ✓ means the Discogs identity is filled. A blank row has not been touched. On the Lots filter the pills are All lots, Not done, Touched, Adjusted, and Processed.
+
+A mixed lot stores its counts as the first completeness-notes line, `Lot mix: LP 2, EP 2.` The disc count is the sum. A single-format lot keeps one number: records for an LP pile, CDs, EPs, cassettes, or magazines for the others.
+
+### Pressing, completeness, and catalog search
+
+A listing is one format. LP, EP / 7", and 12" stay vinyl. A CD has a booklet and no poster. A cassette has a lyric card and no obi or poster. A photo, print, or magazine is not a record. A CD box, including a title that says CD BOX or 全5巻, is one release and keeps the Discogs search. A lot is several copies and skips pressing identification. An LP lot counts records, a CD lot counts CDs, an EP lot counts EPs, a cassette lot counts cassettes, and a magazine lot is a Magazine bulk lot. A pile counted in 冊, or a DVDマガジン, is a magazine lot. A mixed lot is more than one of those formats: choose which formats are in the pile, then enter how many of each. The title LP 2 枚とEP 2 枚 opens as a mixed lot with 2 LPs and 2 EPs.
+
+Obi is a Japanese pressing only. Hong Kong, Taiwan, Singapore, and any other set region save Obi as No.
+
+An LP is complete when this copy still has the paper the factory included. The insert control names that pack, and it names a missing insert separately:
+
+- **Yes.** The insert is here, with the obi and pin-up this pressing used.
+- **Missing the insert.** The pressing included an insert. This copy does not have it, so the copy is not complete. The obi and pin-up can still be here.
+- **Insert only.** That sheet is here, and it is all the factory included. Obi and pin-up lock to No.
+- **Pin-up is the insert.** The pin-up is the sheet. There is no separate poster.
+- **Factory no insert.** This pressing never included an insert. Pin-up is No. A Japanese pressing can still have an obi.
+
+A sealed copy locks the record and jacket, or the disc and case, to S. LP and EP grades are Goldmine. CD and cassette grades are the shop letters S–D and Goldmine.
+
+Disc count comes from the Discogs release. A single LP is 1. A double LP is 2. Use this keeps the grades and completeness already on the form. Save opens the next listing in the current pile.
+
+Catalog search takes a catalog number or an album name. A catalog number is searched across Discogs, including a soundtrack filed under another artist. An album name stays on the listing artist. The listing's format is listed first. A catalog printed in the seller's description is the pressing. On a Gripsweat page that number is in the item text under the sold price, as in Cal 04-1056, and the price and feedback count are not read as a catalog. Cover comparison uses the sleeve photo's pixels and colors. The same catalog can still be a different cover.
 
 ### Safety
 
@@ -370,20 +437,27 @@ modifies warehouse records.
 
 The authoritative architecture is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-The accepted runtime is local: Collector Review on HTTP `127.0.0.1:8501`, PostgreSQL at `127.0.0.1:5544/auction_warehouse`, and three marketplace ingest paths that all write that warehouse. Vercel, Railway, and Neon are deferred shells, not the data plane.
+The accepted runtime is local: Collector Review on HTTPS `localhost:8501`, PostgreSQL at `127.0.0.1:5544/auction_warehouse`, and three marketplace ingest paths that all write that warehouse. Vercel, Railway, and Neon are deferred shells, not the data plane.
 
 ```mermaid
 flowchart LR
-    Git["GitHub / main"]
-    UI["Collector Review HTTP 8501"]
-    DB[("Local PostgreSQL 5544")]
+    Start["./scripts/start-local.sh"]
+    Watch["Watcher. Restarts the app or the database if either stops"]
+    UI["Collector Review HTTPS localhost:8501"]
+    DB[("Local PostgreSQL 5544 auction_warehouse")]
+    Backup["./scripts/backup-auction-warehouse.sh"]
+    Out["output/backups. Gitignored"]
     EbayOp["Headed eBay operator"]
     Buyee["Headed Buyee owner"]
     Grip["Gripsweat probe / import"]
     Sources["Completed/sold marketplaces"]
 
-    Git -. source .-> UI
+    Start --> Watch
+    Watch --> UI
+    Watch --> DB
     UI --> DB
+    DB --> Backup
+    Backup --> Out
     EbayOp --> Sources
     Buyee --> Sources
     Grip --> Sources
@@ -397,7 +471,7 @@ Current architecture status:
   * eBay ingest is a generalized local sold/completed crawl from tracked
     artists (`LH_Sold=1`, `LH_Complete=1`, `_sop=13`) using hidden Chrome.
   * Buyee uses the headed owner; Gripsweat uses configured artist probe/import.
-  * Phase-D account tenancy remains in the product, with Collector Review login on the local HTTP UI.
+  * Phase-D account tenancy remains in the product, with Collector Review login on HTTPS localhost:8501.
   * Vercel/Railway/Neon must not be pointed at this loopback database.
 
 - Durable refresh coordination lives in local PostgreSQL.

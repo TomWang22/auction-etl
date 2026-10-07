@@ -290,3 +290,11 @@ def test_accepted_offer_replaces_the_struck_asking_price() -> None:
     )
     assert price == Decimal("250.00")
     assert currency == "USD"
+    sterling, sterling_code = module.extract_offer(
+        None,
+        [],
+        "Final Price:\n£32.99\n(GBP)\nBid Count:\n6\n"
+        "Fragma - Toca's Miracle\n$19.90\n(USD)\n",
+    )
+    assert sterling == Decimal("32.99")
+    assert sterling_code == "GBP"

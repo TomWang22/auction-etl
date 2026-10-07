@@ -18,6 +18,7 @@ from playwright.sync_api import BrowserContext, Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from sqlalchemy import text
 
+from auction_etl.reporting.main_review_integration import gripsweat_seller_text
 from auction_etl.services.marketplace_browser_runtime import browser
 from auction_etl.database.session import engine
 
@@ -53,6 +54,23 @@ PRICE_PATTERN = re.compile(
     r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)",
     re.IGNORECASE,
 )
+_MONEY_AMOUNT = re.compile(
+    r"(?:(?P<symbol>US\s*\$|USD|\$|£|GBP|€|EUR|¥|JPY)\s*)?"
+    r"(?P<amount>[0-9][0-9,]*(?:\.[0-9]{1,2})?)"
+    r"(?:\s*\((?P<paren>USD|GBP|EUR|JPY)\))?",
+    re.IGNORECASE,
+)
+_MONEY_CODE = {
+    "$": "USD",
+    "US$": "USD",
+    "USD": "USD",
+    "£": "GBP",
+    "GBP": "GBP",
+    "€": "EUR",
+    "EUR": "EUR",
+    "¥": "JPY",
+    "JPY": "JPY",
+}
 
 DATE_PATTERNS = (
     re.compile(
@@ -111,6 +129,7 @@ class DetailResult:
     error: str | None = None
     html_path: str | None = None
     screenshot_path: str | None = None
+    seller_text: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -443,24 +462,55 @@ def extract_image(
     return None
 
 
+def _currency_code(symbol: str | None, paren: str | None) -> str | None:
+    for raw in (paren, symbol):
+        if not raw:
+            continue
+        key = re.sub(r"\s+", "", raw).upper()
+        code = _MONEY_CODE.get(key)
+        if code:
+            return code
+    return None
+
+
+def _priced_amounts(text: str) -> list[tuple[Decimal, str | None]]:
+    found: list[tuple[Decimal, str | None]] = []
+    for match in _MONEY_AMOUNT.finditer(text):
+        amount = decimal_value(match.group("amount"))
+        if amount is None:
+            continue
+        found.append((amount, _currency_code(match.group("symbol"), match.group("paren"))))
+    return found
+
+
 def extract_offer(
     soup: BeautifulSoup,
     json_ld: list[dict[str, Any]],
     visible_text: str,
 ) -> tuple[Decimal | None, str | None]:
     # An accepted offer prints the asking price struck through, then the
-    # price that was paid. The last amount on that line is the sale.
-    final_line = re.search(
-        r"Final Price:\s*([^\n]{0,120})",
+    # price that was paid. The last amount in that block is the sale.
+    # The amount is often on the next line (£32.99), and a later $ on the
+    # page belongs to a related listing.
+    final_block = re.search(
+        r"Final Price:\s*(.{0,80})",
         visible_text,
-        re.IGNORECASE,
+        re.IGNORECASE | re.DOTALL,
     )
-    if final_line:
-        amounts = PRICE_PATTERN.findall(final_line.group(0))
+    if final_block:
+        block = re.split(
+            r"Bid Count|Seller Feedback|Related",
+            final_block.group(1),
+            maxsplit=1,
+        )[0]
+        amounts = _priced_amounts(block)
         if len(amounts) >= 2:
-            accepted = decimal_value(amounts[-1])
-            if accepted is not None:
-                return accepted, "USD"
+            accepted, code = amounts[-1]
+            return accepted, code or "USD"
+        if amounts:
+            amount, code = amounts[0]
+            return amount, code or "USD"
+        return None, None
 
     for payload in json_ld:
         offers = payload.get("offers")
@@ -1263,6 +1313,8 @@ def inspect_sale(
         )
         json_ld = list(iter_json_ld(soup))
         visible_text = visible_body_text(page)
+        seller_text = gripsweat_seller_text(visible_text)
+        result.seller_text = seller_text or None
 
         result.title = extract_title(
             soup,
@@ -1416,6 +1468,42 @@ def apply_result(result: DetailResult) -> None:
                 "detail_error": result.error,
             },
         )
+        if result.seller_text:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO warehouse.auction_detail (
+                        marketplace,
+                        listing_id,
+                        source_url,
+                        description,
+                        fetched_at,
+                        updated_at
+                    )
+                    VALUES (
+                        'gripsweat',
+                        :listing_id,
+                        :source_url,
+                        :description,
+                        now(),
+                        now()
+                    )
+                    ON CONFLICT ON CONSTRAINT uq_auction_detail_marketplace_listing
+                    DO UPDATE SET
+                        description = EXCLUDED.description,
+                        source_url = COALESCE(
+                            EXCLUDED.source_url,
+                            warehouse.auction_detail.source_url
+                        ),
+                        updated_at = now()
+                    """
+                ),
+                {
+                    "listing_id": result.gripsweat_item_id,
+                    "source_url": result.final_url or result.requested_url,
+                    "description": result.seller_text,
+                },
+            )
 
 
 def print_result(

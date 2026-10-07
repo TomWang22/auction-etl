@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from auction_etl.reporting.main_review_integration import (
+    description_catalog,
     gripsweat_original_listing_id,
     parse_gripsweat_title,
 )
@@ -1355,12 +1356,16 @@ def research_listing_identity(
                     a.bulk_lot,
                     a.image_url,
                     a.label,
-                    a.identity_status
+                    a.identity_status,
+                    d.description
                 FROM warehouse.auction AS a
                 LEFT JOIN warehouse.auction_collector AS c
                   ON c.marketplace = a.marketplace
                  AND c.listing_id = a.listing_id
                  AND c.account_id IS NULL
+                LEFT JOIN warehouse.auction_detail AS d
+                  ON d.marketplace = a.marketplace
+                 AND d.listing_id = a.listing_id
                 WHERE a.marketplace = :marketplace
                   AND a.listing_id = :listing_id
                 """
@@ -1413,6 +1418,18 @@ def upsert_pressing(
         {"release_id": draft.discogs_release_id},
     ).scalar()
     if existing is not None:
+        if draft.disc_count:
+            connection.execute(
+                text(
+                    """
+                    UPDATE warehouse.pressing_identity
+                    SET disc_count = :disc_count
+                    WHERE id = :id
+                      AND disc_count IS NULL
+                    """
+                ),
+                {"id": int(existing), "disc_count": draft.disc_count},
+            )
         return int(existing)
 
     label_id = _upsert_label(connection, draft)
@@ -2840,7 +2857,9 @@ def _fill_one_row(
 ) -> str:
     marketplace = str(row["marketplace"])
     listing_id = str(row["listing_id"])
-    if bool(row.get("bulk_lot")) or is_job_lot(str(row.get("title") or "")):
+    title_text = str(row.get("title") or "")
+    stored_lot = bool(row.get("bulk_lot")) and classify_media_details(title_text).bulk_lot
+    if is_job_lot(title_text) or stored_lot:
         _set_auction_identity(
             connection,
             marketplace=marketplace,
@@ -2896,6 +2915,11 @@ def _fill_one_row(
     if inferred and fold_catalog(token) != fold_catalog(inferred):
         if not catalog_printed_on_listing(token, row.get("title")):
             token = inferred
+    # A number in the seller description is the copy. Cal 04-1056 is not
+    # the Taiwan album that shares the English title.
+    printed_description = description_catalog(row.get("description"))
+    if printed_description:
+        token = printed_description
     persist_catalog = token
     if persist_catalog != stored_catalog and (
         persist_catalog
@@ -2992,6 +3016,18 @@ def _fill_one_row(
             hits = local_hits
             require_catalog_token = False
     hits = _hits_agree_with_listing_volume(row.get("title"), hits)
+    if printed_description and hits:
+        # The description named this catalog. A same-title pressing with
+        # another number, such as Taiwan RR-164 for Flaming Lips, stays out.
+        locked_hits = tuple(
+            hit
+            for hit in hits
+            if catno_locks_listing(hit.catno, printed_description)
+            or catalog_identity_key(hit.catno) == catalog_identity_key(printed_description)
+        )
+        if locked_hits:
+            hits = locked_hits
+            require_catalog_token = True
     # The review panel has a short clock. A finished 7" search with no
     # match is "not in the catalog", not a hung Discogs call. Timeouts
     # and a batch fill that ran out of clock still keep the old shortlist.
@@ -6158,12 +6194,16 @@ def _load_leftover_identities(
             a.image_url,
             a.identity_status,
             a.discogs_thumb_url,
-            a.discogs_shortlist
+            a.discogs_shortlist,
+            d.description
         FROM warehouse.auction AS a
         LEFT JOIN warehouse.auction_collector AS c
           ON c.marketplace = a.marketplace
          AND c.listing_id = a.listing_id
          AND c.account_id IS NULL
+        LEFT JOIN warehouse.auction_detail AS d
+          ON d.marketplace = a.marketplace
+         AND d.listing_id = a.listing_id
         WHERE a.identity_status IN ('unmatched', 'needs_review')
           AND COALESCE(a.bulk_lot, false) IS NOT TRUE
           AND (

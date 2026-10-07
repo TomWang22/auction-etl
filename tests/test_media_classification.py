@@ -59,6 +59,13 @@ def test_job_lots_are_not_individual_discogs_pieces() -> None:
     assert classify_media_details(official_va).bulk_lot is False
     assert is_job_lot(official_2cd) is False
     assert classify_media_details(official_2cd).bulk_lot is False
+    cd_box = (
+        "大人のムード歌謡 CD BOX オムニバス 男と女のラブソング集 "
+        "全集 全5巻セット 昭和歌謡 テレサテン"
+    )
+    assert is_job_lot(cd_box) is False
+    assert classify_media_details(cd_box).bulk_lot is False
+    assert classify_media_details(cd_box).format == "CD_BOX_SET"
     assert classify_media_details(
         "「夜の乗客」テレサ・テン レコード 1枚｜LP"
     ).bulk_lot is False
@@ -203,6 +210,7 @@ def test_counted_records_open_as_a_bulk_lot() -> None:
         automatic_media_type,
         condition_grade_options,
         condition_profile,
+        grades_when_sealed,
         place_review_media,
     )
 
@@ -239,6 +247,121 @@ def test_counted_records_open_as_a_bulk_lot() -> None:
     )
     assert placed.loc[0, "media_display"] == "BULK_LOT"
     assert bool(placed.loc[0, "job_lot"]) is True
+    formats = place_review_media(
+        pd.DataFrame(
+            [
+                {
+                    "title": "24 Vinyl Records, Teresa Teng lot",
+                    "manual_media_type": None,
+                    "effective_media_type": None,
+                    "media_type": None,
+                    "manual_bulk_lot": True,
+                },
+                {
+                    "title": "10 cassette lot Anita Mui",
+                    "manual_media_type": None,
+                    "effective_media_type": None,
+                    "media_type": None,
+                    "manual_bulk_lot": True,
+                },
+                {
+                    "title": "8 CD lot Teresa Teng",
+                    "manual_media_type": None,
+                    "effective_media_type": None,
+                    "media_type": None,
+                    "manual_bulk_lot": True,
+                },
+                {
+                    "title": "6 x 7\" EP lot Momoe Yamaguchi",
+                    "manual_media_type": None,
+                    "effective_media_type": None,
+                    "media_type": None,
+                    "manual_bulk_lot": True,
+                },
+                {
+                    "title": "12 magazines Teresa Teng lot",
+                    "manual_media_type": None,
+                    "effective_media_type": None,
+                    "media_type": None,
+                    "manual_bulk_lot": True,
+                },
+                {
+                    "title": "5 USB lot Teresa Teng",
+                    "manual_media_type": None,
+                    "effective_media_type": None,
+                    "media_type": None,
+                    "manual_bulk_lot": True,
+                },
+                {
+                    "title": "帯付きLP盤★テレサテン★LP 2 枚とEP 2 枚セット",
+                    "manual_media_type": None,
+                    "effective_media_type": None,
+                    "media_type": None,
+                    "manual_bulk_lot": True,
+                },
+            ]
+        )
+    )
+    assert list(formats["lot_format"]) == [
+        "LP",
+        "Cassette",
+        "CD",
+        "EP",
+        "Magazine",
+        "",
+        "Mixed",
+    ]
+    assert list(formats["media_display"]) == [
+        "LP_BULK_LOT",
+        "CASSETTE_BULK_LOT",
+        "CD_BULK_LOT",
+        "EP_BULK_LOT",
+        "MAGAZINE_BULK_LOT",
+        "BULK_LOT",
+        "MIXED_BULK_LOT",
+    ]
+    from app.collector_review_support import (
+        lot_mix_from_notes,
+        lot_mix_from_title,
+        notes_with_lot_mix,
+        notes_without_lot_mix,
+    )
+
+    mix_title = "帯付きLP盤★テレサテン★LP 2 枚とEP 2 枚セット"
+    assert lot_mix_from_title(mix_title) == {"LP": 2, "EP": 2}
+    assert lot_mix_from_title("帯付きLP盤★テレサテン★LP２枚とEP２枚セット") == {
+        "LP": 2,
+        "EP": 2,
+    }
+    assert lot_mix_from_title("LP 3973 Teresa Teng") == {}
+    assert lot_mix_from_title("2 LPs and 3 CDs") == {"LP": 2, "CD": 3}
+    stored = notes_with_lot_mix("obi is torn", {"LP": 2, "EP": 2})
+    assert lot_mix_from_notes(stored) == {"LP": 2, "EP": 2}
+    assert notes_without_lot_mix(stored) == "obi is torn"
+    assert notes_with_lot_mix(stored, None) == "obi is torn"
+    from app.collector_review_support import format_chart_bucket
+
+    assert format_chart_bucket("LP_BULK_LOT", job_lot=True) == "LP bulk lot"
+    assert format_chart_bucket("CD_BULK_LOT", job_lot=True) == "CD bulk lot"
+    assert format_chart_bucket("EP_BULK_LOT", job_lot=True) == "EP bulk lot"
+    assert format_chart_bucket("CASSETTE_BULK_LOT", job_lot=True) == "Cassette bulk lot"
+    assert format_chart_bucket("BULK_LOT", job_lot=True) == "Bulk lot"
+    assert format_chart_bucket("MIXED_BULK_LOT", job_lot=True) == "Mixed bulk lot"
+    assert format_chart_bucket("MAGAZINE_BULK_LOT", job_lot=True) == "Magazine bulk lot"
+    from app.collector_review_support import lot_count_noun
+
+    assert lot_count_noun("CD_BULK_LOT") == "CDs"
+    assert lot_count_noun("EP_BULK_LOT") == "EPs"
+    assert lot_count_noun("CASSETTE_BULK_LOT") == "Cassettes"
+    assert lot_count_noun("LP_BULK_LOT") == "Records"
+    assert lot_count_noun("BULK_LOT") == "Pieces"
+    assert lot_count_noun("MAGAZINE_BULK_LOT") == "Magazines"
+    assert "records" not in condition_profile("MAGAZINE_BULK_LOT")["caption"]
+    assert classify_media_details("★2冊★プチセブン★山口百恵").format == "MAGAZINE"
+    assert classify_media_details(
+        "山口百恵 赤いシリーズ DVDマガジン 55冊"
+    ).format == "MAGAZINE"
+    assert is_job_lot("★2冊★プチセブン★山口百恵") is True
     assert condition_profile("CD")["cover_label"] == "Jewel case"
     assert condition_profile("CD")["scale"] == "both"
     assert condition_profile("CASSETTE")["media_label"] == "Tape"
@@ -273,6 +396,10 @@ def test_counted_records_open_as_a_bulk_lot() -> None:
     assert "F" not in letter_grades and "S" in letter_grades
     lp_grades = condition_grade_options("vinyl")
     assert "F" in lp_grades and "S" not in lp_grades
+    sealed_lp = grades_when_sealed(lp_grades)
+    assert sealed_lp[1] == "S"
+    assert "NM" in sealed_lp
+    assert grades_when_sealed(cd_grades) == cd_grades
 
 
 def test_a_photo_leaves_the_unmatched_record_pile() -> None:
@@ -388,14 +515,26 @@ def test_factory_pack_says_what_complete_means() -> None:
     factory = factory_pack_sentence("No", "Factory no insert", "No")
     assert "never included an insert" in factory
     assert "sleeve and the record" in factory
+    assert "no pin-up" in factory
+    factory_default = factory_pack_sentence(
+        "Automatic / unset",
+        "Factory no insert",
+        "No",
+    )
+    assert "no pin-up" in factory_default
 
     factory_pin = factory_pack_sentence("Yes", "Factory no insert", "Pin-up is the poster")
     assert "never included an insert" in factory_pin
     assert "the obi and the pin-up" in factory_pin
 
-    missing = factory_pack_sentence("Yes", "No", "No")
-    assert "missing" in missing
+    missing = factory_pack_sentence("Yes", "Missing the insert", "No")
+    assert "missing the insert" in missing
+    assert "not complete" in missing
+    assert "Insert only" in missing
     assert "Factory no insert" in missing
+    assert "no pin-up" in missing
+    legacy = factory_pack_sentence("Yes", "No", "No")
+    assert "missing the insert" in legacy
 
 
 def test_pinup_in_the_insert_stays_with_the_notes() -> None:

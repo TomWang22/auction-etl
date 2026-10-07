@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
@@ -3006,6 +3006,55 @@ def user_search_format(media_type: str | None) -> str | None:
     return discogs_search_format(media_type)
 
 
+def _label_catno_for_query(payload: Mapping[str, Any], typed: str) -> str | None:
+    """Label catalog that is the number the user typed.
+
+    Discogs search often returns a soundtrack with a blank catno. The number
+    is on the release label, as with 樂風 LFLP 269.
+    """
+    for label in payload.get("labels") or []:
+        if not isinstance(label, Mapping):
+            continue
+        catno = str(label.get("catno") or "").strip()
+        if catno and catno_locks_listing(catno, typed):
+            return catno
+    return None
+
+
+def _confirm_typed_catalog_hits(
+    client: Any,
+    hits: Sequence[SearchHit],
+    typed: str,
+) -> list[SearchHit]:
+    """Keep rows whose release label is this catalog.
+
+    A catno search can match a Various soundtrack the listing artist only
+    appears on. Those search rows omit catno, so the release label decides.
+    """
+    confirmed: list[SearchHit] = []
+    fetches = 0
+    getter = getattr(client, "get_release", None)
+    for hit in hits:
+        if catno_locks_listing(hit.catno, typed):
+            confirmed.append(hit)
+            continue
+        if getter is None or fetches >= 15:
+            continue
+        fetches += 1
+        try:
+            payload = getter(hit.discogs_id)
+        except Exception as exc:
+            if exc.__class__.__name__ == "DiscogsRateLimitError":
+                raise
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        catno = _label_catno_for_query(payload, typed)
+        if catno:
+            confirmed.append(replace(hit, catno=catno))
+    return confirmed
+
+
 def search_user_catalog(
     client: Any,
     *,
@@ -3018,6 +3067,9 @@ def search_user_catalog(
 
     Same-format releases come first. A catalog that only exists in another
     format is still returned, so the user can override the listing media.
+    A typed catalog is also searched with no artist, because Discogs files
+    some copies under Appearances: the soundtrack artist is Various, and
+    the listing artist is only a track credit.
     """
     typed = re.sub(r"\s+", " ", str(query or "")).strip()
     if len(typed) < 2:
@@ -3063,6 +3115,15 @@ def search_user_catalog(
                     format_name=None,
                 )
             )
+        # Artist + catalog misses a soundtrack filed under Various.
+        # LFLP 269 is 彩雲飛, credited to 左宏元, with Teresa Teng on a track.
+        if not any(catno_locks_listing(hit.catno, typed) for hit in found):
+            bare = client.search_releases(
+                catno=typed,
+                artist=None,
+                format_name=None,
+            )
+            found.extend(_confirm_typed_catalog_hits(client, bare, typed))
     else:
         # SSAR is a catalog prefix. title=SSAR matches unrelated words
         # and never the Stereo Sound LPs the Discogs site returns for ssar.
@@ -3106,8 +3167,16 @@ def search_user_catalog(
                         format_name=None,
                     )
                 )
+    typed_catalog = query_looks_like_catalog(typed)
     if artist_name:
-        found = [hit for hit in found if release_belongs_to_artist(hit, artist_name)]
+        found = [
+            hit
+            for hit in found
+            if (
+                typed_catalog and catno_locks_listing(hit.catno, typed)
+            )
+            or release_belongs_to_artist(hit, artist_name)
+        ]
     ordered: list[SearchHit] = []
     seen: set[int] = set()
     catalog_match: list[SearchHit] = []
@@ -3121,6 +3190,8 @@ def search_user_catalog(
         same_format = listing_media_compatible(listing_media, " ".join(hit.formats))
         catno_key = fold_catalog(hit.catno)
         if known_catno and catno_locks_listing(hit.catno, known_catno) and same_format:
+            catalog_match.append(hit)
+        elif typed_catalog and catno_locks_listing(hit.catno, typed) and same_format:
             catalog_match.append(hit)
         elif stem and catno_key.startswith(stem) and same_format:
             catalog_match.append(hit)
@@ -4383,6 +4454,33 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
+_LEADING_QTY = re.compile(r"^(\d+)\s*[x×]\s*", re.IGNORECASE)
+_ONE_DISC_FORMATS = {
+    "vinyl",
+    "cd",
+    "cassette",
+    "dvd",
+    "dvd-video",
+    "blu-ray",
+    "shellac",
+    "flexi-disc",
+}
+
+
+def _disc_count_from_format(primary: dict[str, Any]) -> int | None:
+    """Release qty when Discogs sent it. Otherwise 2×Vinyl, or one disc."""
+    qty = _optional_int(primary.get("qty"))
+    if qty:
+        return qty
+    name = str(primary.get("name") or "").strip()
+    match = _LEADING_QTY.match(name)
+    if match:
+        return int(match.group(1))
+    if name.casefold() in _ONE_DISC_FORMATS:
+        return 1
+    return None
+
+
 def _optional_int(value: Any) -> int | None:
     if value in {None, "", 0, "0"}:
         return None
@@ -4493,7 +4591,7 @@ def _map_formats(
     elif folded_name == "vinyl":
         media_type = "LP"
 
-    qty = _optional_int(primary.get("qty"))
+    qty = _disc_count_from_format(primary)
     detail_parts = [name, *descriptions]
     format_detail = ", ".join(part for part in detail_parts if part)
     return media_type, format_detail, qty, generation

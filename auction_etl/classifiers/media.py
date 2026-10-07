@@ -33,9 +33,11 @@ _BULK_PATTERNS = (
     r"箱壳",
 )
 _OFFICIAL_MULTI_DISC = re.compile(
-    r"(?:\d+\s*枚組|\(\s*\d+\s*CDs?\s*\)|\b\d+\s*cd\s*box\b|\bbox\s*set\b)",
+    r"(?:\d+\s*枚組|\(\s*\d+\s*CDs?\s*\)|\b\d+\s*cd\s*box\b|\bcd\s*box\b|\bbox\s*set\b)",
     re.IGNORECASE,
 )
+_VOLUME_BOX = re.compile(r"全\s*\d{1,2}\s*巻")
+_TITLE_CD = re.compile(r"(?i)(?<![A-Za-z])cds?(?![A-Za-z])|ＣＤ")
 
 _QUANTITY_UNIT_RE = re.compile(
     r"(?<!\d)(\d{1,3})\s*(pcs\b|枚|点|箱|壳|冊|本)",
@@ -58,6 +60,7 @@ _MAGAZINE_LOT_RE = re.compile(
 _MAGAZINE_PATTERNS = (
     r"\bmagazines?\b",
     r"雑誌",
+    r"マガジン",
     r"週刊",
     r"月刊",
     r"週刊誌",
@@ -380,6 +383,13 @@ def _records_quantity_lot(text: str) -> bool:
     return False
 
 
+def _official_multi_disc(text: str) -> bool:
+    """A factory box, not a leftover pile. CD BOX and 全5巻 are one release."""
+    if _OFFICIAL_MULTI_DISC.search(text):
+        return True
+    return bool(_VOLUME_BOX.search(text) and _TITLE_CD.search(text))
+
+
 def _quantity_implies_bulk(text: str) -> bool:
     if _records_quantity_lot(text):
         return True
@@ -501,7 +511,7 @@ def classify_media_details(
     ) or _quantity_implies_bulk(text)
     if (
         bulk_lot
-        and _OFFICIAL_MULTI_DISC.search(text)
+        and _official_multi_disc(text)
         and not re.search(r"\blot\b", text, re.IGNORECASE)
     ):
         bulk_lot = False
@@ -592,6 +602,15 @@ def classify_media_details(
     else:
         media_format = None
 
+    if (
+        media_format in {None, "DVD"}
+        and re.search(r"マガジン|雑誌", text)
+        and re.search(r"\d+\s*[冊巻]", text)
+    ):
+        media_format = "MAGAZINE"
+    elif media_format not in _AUDIO_MEDIA and re.search(r"\d+\s*冊", text):
+        media_format = "MAGAZINE"
+
     if media_format not in _AUDIO_MEDIA:
         if _matches_any(text, _MAGAZINE_PATTERNS):
             media_format = "MAGAZINE"
@@ -658,7 +677,7 @@ def is_job_lot(title: str | None) -> bool:
         return False
     text = re.sub(r"\s+", " ", title).strip()
     leftover = _matches_any(text, _JOB_LOT_PATTERNS)
-    official = bool(_OFFICIAL_MULTI_DISC.search(text))
+    official = _official_multi_disc(text)
     leftover_box = bool(re.search(r"まとめ|大量|一括|箱売り|ジャンク", text))
     if leftover:
         if leftover_box:

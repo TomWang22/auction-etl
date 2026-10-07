@@ -502,6 +502,60 @@ def test_first_pressing_follows_the_earliest_release_year() -> None:
     assert later["effective_pressing_type"] == "REISSUE"
 
 
+def test_gripsweat_side_grades_and_runout_fill_the_copy() -> None:
+    from app.collector_review_support import automatic_catalog, parse_seller_report
+
+    body = """
+彩雲飛 LFLP269 Life Records
+Condition:
+Sleeve: EX-
+Vinyl:
+Side A: EX 4 hairlines, playable
+Side B: EX 4 hairlines, playable
+My grading: EX > VG > G > P
+Matrix / runout: LFLP-269-A 1S
+"""
+    report = parse_seller_report(body)
+    assert report["cover"] == "EX-"
+    assert report["media"] == "EX"
+    assert "hairlines" in report["side_notes"][0]
+    split = parse_seller_report(
+        "Sleeve: EX-\nSide A: EX 4 hairlines, playable\nSide B: VG+"
+    )
+    assert "media" not in split
+    assert "matrix" not in parse_seller_report(
+        "Sleeve: EX-\nSide A: EX 4 hairlines, playable\nSide B: EX 4 hairlines, playable"
+    )
+    assert parse_seller_report("Side A: EX-\nSide B: EX-")["media"] == "EX-"
+    flat = parse_seller_report(
+        "Sleeve: EX- Vinyl: Side A: EX 4 hairlines, playable "
+        "Side B: EX 4 hairlines, playable My grading: EX > VG > G > P"
+    )
+    assert flat["cover"] == "EX-" and flat["media"] == "EX"
+    assert len(flat["side_notes"]) == 2
+    assert report["matrix"] == "LFLP-269-A 1S"
+    shown = automatic_catalog(
+        {
+            "effective_catalog_number": "LFLP 269",
+            "effective_matrix_number": "",
+            "seller_report_text": body,
+            "title": "彩雲飛 LFLP269",
+        }
+    )
+    assert shown == "LFLP 269 · LFLP-269-A 1S"
+    assert (
+        automatic_catalog(
+            {
+                "effective_catalog_number": "LFLP 269",
+                "effective_matrix_number": "LFLP 269 A",
+                "seller_report_text": body,
+                "title": "彩雲飛",
+            }
+        )
+        == "LFLP 269 · LFLP 269 A"
+    )
+
+
 def test_seller_report_fills_obi_and_grades_for_a_seven_inch() -> None:
     from app.collector_review_support import (
         apply_pressing_copy_facts,
@@ -762,6 +816,30 @@ def test_seller_report_fills_obi_and_grades_for_a_seven_inch() -> None:
         now="2026-10-03T18:00:00Z",
     )
     assert old == "" and old_detail == ""
+    from app.collector_review_support import review_progress
+
+    assert review_progress({}) == ("", "", "")
+    assert review_progress({"collector_updated_at": "2026-10-01T00:00:00Z"})[:2] == (
+        "●",
+        "Touched",
+    )
+    assert review_progress({"identity_status": "filled_auto"})[:2] == (
+        "✓",
+        "Processed",
+    )
+    assert review_progress(
+        {
+            "collector_updated_at": "2026-10-01T00:00:00Z",
+            "collector_manual_disc_count": 4,
+            "manual_bulk_lot": True,
+        }
+    )[:2] == ("✎", "Adjusted")
+    assert review_progress(
+        {
+            "identity_status": "filled_manual",
+            "collector_manual_condition_media": "VG+",
+        }
+    )[:2] == ("✓", "Processed")
 
 
 def test_catalog_reference_compares_a_complete_copy_with_one_that_never_said() -> None:
@@ -1038,6 +1116,137 @@ def test_zero_bid_auctions_leave_the_table_and_count_as_cycles() -> None:
     assert set(chart["Format"]) == {'7"', "LP", "CD"}
     assert int(chart.loc[chart["Format"].eq("LP"), "0-bid auctions"].iloc[0]) == 1
     assert int(chart.loc[chart["Format"].eq("CD"), "0-bid auctions"].iloc[0]) == 1
+
+
+def test_discogs_search_keeps_the_row_on_the_unmatched_list() -> None:
+    from app.collector_review_support import rows_kept_after_search
+
+    queue = pd.DataFrame(
+        [
+            {
+                "marketplace": "buyee",
+                "listing_id": "q1223793143",
+                "identity_status_display": "Needs review",
+                "closing_display": "2026-10-04 13:28",
+                "identity_status_changed_at": "2026-10-06 14:54:20+00:00",
+            },
+            {
+                "marketplace": "buyee",
+                "listing_id": "h1217018342",
+                "identity_status_display": "Unmatched",
+                "closing_display": "2026-10-04 12:16",
+            },
+            {
+                "marketplace": "ebay",
+                "listing_id": "198515230023",
+                "identity_status_display": "Needs review",
+                "closing_display": "2026-10-04 11:00",
+                "identity_status_changed_at": "2026-10-06 14:54:07+00:00",
+            },
+            {
+                "marketplace": "ebay",
+                "listing_id": "filled",
+                "identity_status_display": "Filled",
+                "closing_display": "2026-10-04 15:00",
+                "identity_status_changed_at": "2026-10-06 14:54:20+00:00",
+            },
+            {
+                "marketplace": "ebay",
+                "listing_id": "earlier",
+                "identity_status_display": "Needs review",
+                "closing_display": "2026-10-03 09:00",
+                "identity_status_changed_at": "2026-10-06 14:40:00+00:00",
+            },
+        ]
+    )
+    queue = queue.reset_index(drop=True)
+    unmatched = (
+        queue.loc[queue["identity_status_display"].eq("Unmatched")]
+        .reset_index(drop=True)
+    )
+    kept, pins = rows_kept_after_search(
+        unmatched,
+        queue,
+        previous_identities=["buyee:q1223793143", "buyee:h1217018342"],
+        selected_identity="ebay:198515230023",
+        pinned=set(),
+        identity_queue="Unmatched",
+    )
+    assert list(kept["listing_id"]) == [
+        "q1223793143",
+        "h1217018342",
+        "198515230023",
+    ]
+    assert kept.index.is_unique
+    assert pins == {"buyee:q1223793143", "ebay:198515230023"}
+    stayed, still = rows_kept_after_search(
+        unmatched,
+        queue,
+        previous_identities=["buyee:h1217018342"],
+        selected_identity=None,
+        pinned=pins,
+        identity_queue="Unmatched",
+    )
+    assert set(stayed["listing_id"]) == {
+        "q1223793143",
+        "h1217018342",
+        "198515230023",
+    }
+    assert still == pins
+    untouched, cleared = rows_kept_after_search(
+        unmatched,
+        queue,
+        previous_identities=["buyee:q1223793143"],
+        selected_identity="buyee:q1223793143",
+        pinned=pins,
+        identity_queue="All identities",
+    )
+    assert list(untouched["listing_id"]) == ["h1217018342"]
+    assert cleared == set()
+
+
+def test_mark_matched_does_not_require_discogs() -> None:
+    source = REVIEW.read_text(encoding="utf-8")
+    body = source.split("def mark_listing_matched", 1)[1].split("\ndef ", 1)[0]
+    assert "identity_status = 'filled_manual'" in body
+    assert "identity_source = COALESCE(identity_source, 'listing')" in body
+    assert "discogs_release" not in body
+    assert "Mark matched" in source
+    assert '"LP_BULK_LOT"' in source
+    assert '"PRINT"' not in source.split("MEDIA_OPTIONS = (", 1)[1].split(")", 1)[0]
+    assert '"STAMP"' not in source.split("MEDIA_OPTIONS = (", 1)[1].split(")", 1)[0]
+    assert '"USB"' not in source.split("MEDIA_OPTIONS = (", 1)[1].split(")", 1)[0]
+
+
+def test_a_finished_pile_row_opens_the_listing_below() -> None:
+    from app.collector_review_support import (
+        neighbor_listing_identity,
+        next_open_listing,
+    )
+
+    pile = ["buyee:1", "ebay:2", "gripsweat:3"]
+    assert neighbor_listing_identity(pile, "buyee:1") == "ebay:2"
+    assert neighbor_listing_identity(pile, "ebay:2") == "gripsweat:3"
+    assert neighbor_listing_identity(pile, "gripsweat:3") == "ebay:2"
+    assert neighbor_listing_identity(["buyee:1"], "buyee:1") is None
+    assert neighbor_listing_identity(pile, "missing") is None
+    still = {"ebay:2", "gripsweat:3"}
+    assert next_open_listing(pile, "buyee:1", still) == "ebay:2"
+    assert next_open_listing(pile, "gripsweat:3", still) == "ebay:2"
+    assert next_open_listing(pile, "ebay:2", {"gripsweat:3"}) == "gripsweat:3"
+    source = REVIEW.read_text(encoding="utf-8")
+    commit = source.split("def _commit_discogs_choice", 1)[1].split(
+        "\ndef ",
+        1,
+    )[0]
+    assert "_advance_to_neighbor" not in commit
+    assert "_keep_open:" in commit
+    assert "_editor_revision:" not in commit
+    assert "_advance_to_neighbor(identity)" in source.split(
+        "changed_rows = save_collector_record",
+        1,
+    )[1]
+    assert "Opened the listing below." in source
 
 
 def test_use_this_keeps_the_editor_open_for_condition() -> None:
