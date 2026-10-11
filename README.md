@@ -41,7 +41,11 @@ Identity is `(marketplace, listing_id)`. eBay sold URLs are `https://www.ebay.co
 
 **Duplicates:** if the same `{id}` exists on eBay and Gripsweat, Collector Review keeps the native eBay row. **Gripsweat's sold amount on `sold_at` is the official transaction-day USD** for that duplicate, even if the eBay card shows `$` / GBP / EUR. The eBay local display amount stays on the eBay row.
 
+**Offers:** when Gripsweat shows a struck asking price and a lower accepted price, the struck amount is the original price and the accepted amount is the sale, before shipping. US sales tax is 6.25% of the accepted price. The review labels those fields Original price and Accepted price for every best-offer sale.
+
 **Buyee completeness:** every closed-watchlist identity must be in the warehouse with a listing ID, title, and JPY sold price. Live item-detail pages are extra enrichment, not the identity itself.
+
+**My collection bills:** on My collection, drag and drop a Buyee invoice PDF (or paste the text) onto a copy already on the shelf. The album title and item price stay as they are. The bill is labeled yen charges only. Shipping, tax, and fees stay in yen; landed adds their dollar value from the printed USD pair on that copy.
 
 ## Architecture overview
 
@@ -299,13 +303,13 @@ flowchart TD
     OneCount --> Mark
     Mixed --> Mark
     Mag --> Mark
-    Mark --> Blank["Blank. Not done"]
-    Mark --> Touched["● Touched. Opened or saved"]
-    Mark --> Edited["✎ Adjusted. A field was edited"]
-    Mark --> Done["✓ Processed. Identity is filled"]
+    Mark --> Blank["Blank. A lot still missing media, count, condition, or verdict"]
+    Mark --> Done["✓ Processed. Those four are filled"]
 ```
 
-● is the first mark, once the row has been opened or saved. ✎ means a grade, count, note, or other field was edited. ✓ means the Discogs identity is filled. A blank row has not been touched. On the Lots filter the pills are All lots, Not done, Touched, Adjusted, and Processed.
+A bulk lot is processed when its media type, piece count, condition, and verdict are filled. A pile whose title states the count (枚, 点, 冊, 本, 個, コ, or an English count such as “lot of 6”), and already names the format, starts at VG+ and Reference only, so that past sale is processed without typing the same pair again. A title with no count stays for a manual piece count. Any one of those four still empty leaves the mark blank. On the Lots filter the pills are All lots, Not done, and Processed.
+
+Each open sale shows its auction clock under the price: when it opened, when it closed, and how long it ran. Buyee times are Japan time. A sale that only has a date shows that date. A sale with no clock says so.
 
 A mixed lot stores its counts as the first completeness-notes line, `Lot mix: LP 2, EP 2.` The disc count is the sum. A single-format lot keeps one number: records for an LP pile, CDs, EPs, cassettes, or magazines for the others.
 
