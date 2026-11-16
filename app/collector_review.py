@@ -5150,6 +5150,10 @@ def _commit_discogs_choice(
         listing_id=listing_id,
     )
     set_notification(f"Filled {subject} from Discogs.")
+    # Use this lives inside an editor fragment. A fragment-only rerun would
+    # keep the stale empty `selected` closure — force a full app rerun so
+    # merge_discogs_fill_into_row and the pressing fields refresh.
+    st.rerun(scope="app")
 
 
 _DISCOGS_JOBS: dict[str, str] = {}
@@ -5862,6 +5866,36 @@ def _render_listing_editor_body(
     def _collector_editor_fragment() -> None:
         # Media type lives inside the fragment so changing LP/cassette/lot
         # does not rebuild AgGrid + charts on every pick (full-page lag).
+        # Re-merge Use-this fills here: fragment reruns do not re-enter the
+        # parent, so a closed-over `selected` would stay empty after Discogs.
+        row = merge_discogs_fill_into_row(selected, identity)
+        catalog_auto = automatic_catalog(row)
+        region_auto = automatic_region(row, REGION_OPTIONS)
+        disc_auto = automatic_disc_count(row)
+        pressing_type_auto = automatic_pressing_type(
+            row,
+            PRESSING_TYPE_OPTIONS,
+        )
+        pressing_group_auto = derive_pressing_token(
+            override=clean_text(
+                collector_value(row, "manual_pressing_group")
+            )
+            or None,
+            catalog_number=clean_text(row.get("catalog_number"))
+            or clean_text(row.get("effective_catalog_number"))
+            or None,
+            title=clean_text(row.get("title")) or None,
+        ) or automatic_pressing_group(row)
+        sale_auto = automatic_sale_type(row, SALE_TYPE_OPTIONS)
+        # Shadow parent closures so pressing widgets and Save use the fill.
+        selected = row
+        catalog_automatic = catalog_auto
+        region_automatic = region_auto
+        disc_automatic = disc_auto
+        pressing_type_automatic = pressing_type_auto
+        pressing_group_automatic = pressing_group_auto
+        sale_automatic = sale_auto
+
         media_key = key_prefix + "manual_media_type"
         if not saved_media_type:
             media_key += ":" + (media_automatic_choice or "auto")
@@ -5888,7 +5922,7 @@ def _render_listing_editor_body(
         )
 
         render_identity_shortlist(
-            selected,
+            row,
             account_context=account_context,
             identity=identity,
             chosen_media=manual_media_type,

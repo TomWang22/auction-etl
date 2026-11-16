@@ -1542,6 +1542,7 @@ def test_a_finished_pile_row_opens_the_listing_below() -> None:
     assert "_keep_open:" in commit
     assert "_editor_revision:" not in commit
     assert "invalidate_review_records()" not in commit
+    assert 'st.rerun(scope="app")' in commit
     assert "merge_discogs_fill_into_row" in source
     assert "_discogs_fill:" in source
     assert "_advance_to_neighbor(identity)" in source.split(
