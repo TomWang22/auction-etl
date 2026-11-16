@@ -309,6 +309,22 @@ def test_verify_results_rejects_missing_usd_on_known_hammer() -> None:
         )
 
 
+def test_apply_rate_defaults_blank_buyee_and_ebay_currency() -> None:
+    """Collection stubs without currency still have to convert."""
+
+    source = FX_SCRIPT.read_text(
+        encoding="utf-8"
+    )
+
+    compact = " ".join(source.split())
+    assert "marketplace = 'buyee'" in compact
+    assert "THEN 'JPY'" in compact
+    assert "marketplace = 'ebay'" in compact
+    assert "THEN 'USD'" in compact
+    assert "currency IS NULL" in compact
+    assert "BTRIM(currency) = ''" in compact
+
+
 def test_verify_results_requires_each_expected_marketplace() -> None:
     """Reject a table that completely loses an expected marketplace."""
 

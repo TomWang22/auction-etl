@@ -18,12 +18,15 @@ from auction_etl.services.discogs_fill import (
     _hit_matches_title_tokens,
     _local_album_search_hits,
     _local_hits_cover_listing,
+    _one_displayed_pressing,
     _search_hits_for_row,
+    printed_catalog_on_release,
     _title_query,
     _title_queries,
     _unique_review_candidate,
 )
 from auction_etl.services.discogs_identity import (
+    LabelChoice,
     SearchHit,
     classify_search_hits,
     discogs_format_label,
@@ -31,6 +34,7 @@ from auction_etl.services.discogs_identity import (
     parse_search_hits,
     query_looks_like_catalog,
     search_user_catalog,
+    shortlist_field,
 )
 
 
@@ -52,6 +56,36 @@ SOLL_HIT = parse_search_hits(
 )[0]
 
 
+def test_export_catalog_is_the_same_discogs_pressing() -> None:
+    class _Draft:
+        labels = (
+            LabelChoice(None, "Polydor", "MRM 1003"),
+            LabelChoice(None, "Polydor", "2488 447"),
+        )
+
+    assert printed_catalog_on_release(_Draft(), "2488 447") is True
+    assert printed_catalog_on_release(_Draft(), "2488 656") is False
+    hits = parse_search_hits(
+        [
+            {
+                "id": 37034811,
+                "title": "鄧麗君* - 絲絲小雨",
+                "catno": "MRM 1003",
+                "year": "1977",
+                "format": ["Vinyl", "LP"],
+            },
+            {
+                "id": 10712019,
+                "title": "鄧麗君* - 絲絲小雨",
+                "catno": "MRM 1003",
+                "year": "1977",
+                "format": ["Vinyl", "LP"],
+            },
+        ]
+    )
+    assert _one_displayed_pressing(hits) is True
+
+
 class FakeDiscogs:
     def __init__(self, responses: list[tuple[SearchHit, ...]]) -> None:
         self.responses = list(responses)
@@ -64,6 +98,7 @@ class FakeDiscogs:
         artist: str | None = None,
         query: str | None = None,
         title: str | None = None,
+        year: str | None = None,
         format_name: str | None = "Vinyl",
     ) -> tuple[SearchHit, ...]:
         self.calls.append(
@@ -72,6 +107,7 @@ class FakeDiscogs:
                 "artist": artist,
                 "query": query,
                 "title": title,
+                "year": year,
                 "format_name": format_name,
             }
         )
@@ -99,6 +135,7 @@ def test_catno_search_includes_artist_and_format() -> None:
         "artist": "Momoe Yamaguchi",
         "query": None,
         "title": None,
+        "year": None,
         "format_name": "Vinyl",
     }
 
@@ -717,6 +754,8 @@ def test_ingest_fill_combs_leftover_unmatched_and_review() -> None:
     assert "created_after" in load
     assert "INGEST_IDENTITY_LOOKBACK" in source
     assert "INGEST_IDENTITY_BUDGET_SECONDS" in source
+    assert "budget_seconds" in source
+    assert "identity_budget" in source
     assert leftover_at != -1
     assert unique_retune_at != -1
     assert unique_at > unique_retune_at
@@ -904,6 +943,26 @@ def test_bilingual_cd_album_agrees_without_catalog() -> None:
             "catalog_number": "DICD 12002",
         },
     ) is False
+
+
+def test_self_titled_listing_agrees_with_the_artist_named_album() -> None:
+    from auction_etl.services.discogs_fill import _pressing_agrees_with_listing
+
+    assert _pressing_agrees_with_listing(
+        {
+            "title": (
+                "Gripsweat - MOMOE YAMAGUCHI *Self Titled* 1977 "
+                "Near Mint Vinyl w/OBI CBS Sony Japan LP"
+            ),
+            "artist": "Momoe Yamaguchi",
+            "catalog_number": None,
+        },
+        {
+            "display_title": "山口百恵 = Momoe Yamaguchi",
+            "display_artist": "山口百恵",
+            "catalog_number": "38AH217~8",
+        },
+    ) is True
 
 
 def test_title_token_match_ignores_spaces_in_discogs_titles() -> None:
@@ -2736,6 +2795,35 @@ def test_operator_research_keeps_unmatched_shortlist_for_use_this() -> None:
     assert "shortlist_format_options" in fill_source
 
 
+def test_hong_kong_pressing_marker_does_not_hide_the_discogs_album() -> None:
+    """☆香港盤☆LP is the pressing, not the artist. 鄧麗君 15週年 is on Discogs."""
+
+    release = SearchHit(
+        discogs_id=817131,
+        title="鄧麗君 - 鄧麗君 15週年",
+        catno="817 131-1",
+        year="1983",
+        country="Hong Kong",
+        formats=("Vinyl", "LP", "Compilation", "Gatefold"),
+        labels=("Polydor",),
+        thumb_url=None,
+        uri=None,
+    )
+    client = FakeDiscogs([(release,)])
+    title = "【希少品】☆香港盤☆LP/鄧麗君 テレサ・テン/鄧麗君十五週年/817 132/817 133/見開き/2LP"
+    found = search_user_catalog(
+        client,
+        artist=None,
+        title=title,
+        query="鄧麗君 15週年",
+        listing_media=None,
+    )
+    assert client.calls[0]["artist"] == "Teresa Teng"
+    assert client.calls[0]["title"] == "鄧麗君 15週年"
+    assert found[0]["catno"] == "817 131-1"
+    assert found[0]["title"] == "鄧麗君 - 鄧麗君 15週年"
+
+
 def test_typed_catalog_search_lists_the_listing_format_first() -> None:
     lp = SearchHit(
         discogs_id=2,
@@ -2905,6 +2993,89 @@ def test_typed_catalog_search_lists_the_listing_format_first() -> None:
     ) == []
 
 
+def test_year_search_includes_compilation_appearances() -> None:
+    """A year search keeps compilations and appearances filed under another artist."""
+    own = SearchHit(
+        discogs_id=2,
+        title="Anita Mui - In Brasil",
+        catno="CAL-04-1090",
+        year="1989",
+        country="Hong Kong",
+        formats=("Vinyl", "LP", "Album"),
+        labels=("Capital Artists",),
+        thumb_url=None,
+        uri=None,
+    )
+
+    class Credits(FakeDiscogs):
+        def find_artist_id(self, name: str) -> int | None:
+            assert name == "Anita Mui"
+            return 267132
+
+        def artist_credits(
+            self,
+            artist_id: int,
+            *,
+            stop_after_year: str | None = None,
+        ) -> tuple[dict[str, object], ...]:
+            assert artist_id == 267132
+            assert stop_after_year == "1989"
+            return (
+                {
+                    "id": 10,
+                    "type": "release",
+                    "title": "華星金曲精裝集 2",
+                    "year": "1989",
+                    "role": "TrackAppearance",
+                    "artist": "Various",
+                    "format": "Vinyl, LP, Compilation",
+                    "label": "Huaxing",
+                },
+                {
+                    "id": 11,
+                    "type": "release",
+                    "title": "Later Collection",
+                    "year": "1991",
+                    "role": "Appearance",
+                    "artist": "Various",
+                    "format": "Vinyl, LP, Compilation",
+                },
+                {
+                    "id": 90,
+                    "type": "master",
+                    "title": "Golden Songs Collection",
+                    "year": "1989",
+                    "role": "Appearance",
+                    "artist": "Various",
+                    "format": "Vinyl, LP, Compilation",
+                },
+            )
+
+        def master_main_release(self, master_id: int) -> int | None:
+            assert master_id == 90
+            return 91
+
+    client = Credits([(own,)])
+    found = search_user_catalog(
+        client,
+        artist="Anita Mui",
+        title="Huaxing Hardcover Collection of Golden Songs Anita Mui Cantopop Hong Kong 1989",
+        query="1989",
+        listing_media="LP",
+    )
+    assert client.calls[0]["year"] == "1989"
+    assert client.calls[0]["title"] is None
+    assert client.calls[0]["artist"] == "Anita Mui"
+    ids = [hit["id"] for hit in found]
+    assert 2 in ids
+    assert 10 in ids
+    assert 91 in ids
+    assert 11 not in ids
+    appearance = next(hit for hit in found if hit["id"] == 10)
+    assert appearance["title"] == "Various - 華星金曲精裝集 2"
+    assert "Compilation" in appearance["format"]
+
+
 def test_catalog_search_finds_a_soundtrack_filed_under_another_artist() -> None:
     """LFLP 269 is a Various soundtrack. Teresa Teng is a track credit."""
     soundtrack = parse_search_hits(
@@ -2959,3 +3130,16 @@ def test_catalog_search_finds_a_soundtrack_filed_under_another_artist() -> None:
     assert client.calls[2]["catno"] == "LFLP 269"
     assert [hit["id"] for hit in found] == [5436423]
     assert found[0]["catno"] == "LFLP 269"
+
+
+def test_shortlist_field_reads_a_format_list() -> None:
+    hit = {
+        "id": 123,
+        "title": "Teresa Teng - With Love From...",
+        "catno": "248X-358",
+        "format": ["Vinyl", "LP"],
+        "thumb": "https://example/cover.jpg",
+    }
+    assert shortlist_field(hit, "format", "formats") == ["Vinyl", "LP"]
+    assert shortlist_field(hit, "thumb", "thumb_url") == "https://example/cover.jpg"
+    assert shortlist_field(hit, "year") is None

@@ -71,7 +71,9 @@ class DiscogsClient:
         artist: str | None = None,
         query: str | None = None,
         title: str | None = None,
+        year: str | None = None,
         format_name: str | None = "Vinyl",
+        page_limit: int = 5,
     ) -> tuple[SearchHit, ...]:
         params: dict[str, str] = {"type": "release"}
         if catno:
@@ -80,6 +82,8 @@ class DiscogsClient:
             params["artist"] = artist
         if title:
             params["title"] = title
+        if year:
+            params["year"] = year
         if query:
             params["q"] = query
         if format_name:
@@ -89,7 +93,7 @@ class DiscogsClient:
         params["per_page"] = "100"
         found: list[SearchHit] = []
         seen: set[int] = set()
-        for page in range(1, 6):
+        for page in range(1, max(1, page_limit) + 1):
             params["page"] = str(page)
             try:
                 payload = self._get("/database/search", params=params)
@@ -115,6 +119,96 @@ class DiscogsClient:
             if page >= pages:
                 break
         return tuple(found)
+
+    def find_artist_id(self, name: str) -> int | None:
+        """Discogs artist id for this name. Exact title wins over a fuzzy hit."""
+        payload = self._get(
+            "/database/search",
+            params={"q": name, "type": "artist", "per_page": "5"},
+        )
+        results = [
+            row for row in (payload.get("results") or []) if isinstance(row, dict)
+        ]
+        wanted = name.casefold()
+        ordered = sorted(
+            results,
+            key=lambda row: str(row.get("title") or "").casefold() != wanted,
+        )
+        for row in ordered:
+            try:
+                return int(row["id"])
+            except (TypeError, ValueError, KeyError):
+                continue
+        return None
+
+    def artist_credits(
+        self,
+        artist_id: int,
+        *,
+        stop_after_year: str | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Releases credited to this artist, including compilations and appearances.
+
+        Discogs files those under Various or another main artist, so a
+        discography search never returns them. Pages run oldest-first and
+        stop once a year search has passed that year.
+        """
+        target: int | None = None
+        if stop_after_year and str(stop_after_year).isdigit():
+            target = int(stop_after_year)
+        found: list[dict[str, Any]] = []
+        seen_target = False
+        # Oldest first. A year search stops once that year is past.
+        # An album-name search reads the earlier credits, where these
+        # compilations and appearances are filed.
+        page_limit = 12 if target is not None else 8
+        for page in range(1, page_limit + 1):
+            try:
+                payload = self._get(
+                    f"/artists/{int(artist_id)}/releases",
+                    params={
+                        "per_page": "100",
+                        "page": str(page),
+                        "sort": "year",
+                        "sort_order": "asc",
+                    },
+                )
+            except DiscogsRateLimitError:
+                if found:
+                    break
+                raise
+            batch = [
+                row for row in (payload.get("releases") or []) if isinstance(row, dict)
+            ]
+            if not batch:
+                break
+            found.extend(batch)
+            page_years: list[int] = []
+            for row in batch:
+                try:
+                    page_years.append(int(row.get("year")))
+                except (TypeError, ValueError):
+                    continue
+            if target is not None and target in page_years:
+                seen_target = True
+            if target is not None and seen_target and page_years and max(page_years) > target:
+                break
+            pagination = payload.get("pagination") or {}
+            try:
+                pages = int(pagination.get("pages") or page)
+            except (TypeError, ValueError):
+                pages = page
+            if page >= pages:
+                break
+        return tuple(found)
+
+    def master_main_release(self, master_id: int) -> int | None:
+        """Release id Discogs treats as the main pressing of this master."""
+        payload = self._get(f"/masters/{int(master_id)}")
+        try:
+            return int(payload["main_release"])
+        except (TypeError, ValueError, KeyError):
+            return None
 
     def get_release(self, release_id: int) -> dict[str, Any]:
         return self._get(f"/releases/{int(release_id)}")

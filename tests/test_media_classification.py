@@ -6,10 +6,12 @@ import pandas as pd
 
 from auction_etl.classifiers.media import classify_media_details, is_job_lot
 from app.collector_review_support import (
+    MEDIA_GROUP_ALL_MUSIC,
     SCENE_ALL,
     SCENE_MAGAZINES,
     SCENE_MAIN_RECORDS,
     SCENE_PRINTS,
+    media_matches_group,
     media_matches_scene,
 )
 
@@ -66,6 +68,20 @@ def test_job_lots_are_not_individual_discogs_pieces() -> None:
     assert is_job_lot(cd_box) is False
     assert classify_media_details(cd_box).bulk_lot is False
     assert classify_media_details(cd_box).format == "CD_BOX_SET"
+    memorial = (
+        "テレサ・テン 鄧麗君 ザ・ヒストリー・オブ・テレサ・テン 120曲 "
+        "CDセット メモリアルボックス ブックレット @80(7)"
+    )
+    assert is_job_lot(memorial) is False
+    assert classify_media_details(memorial).format == "CD_BOX_SET"
+    assert classify_media_details(memorial).bulk_lot is False
+    assert is_job_lot("ジャンク CD メモリアルボックス まとめ") is True
+    cassette_box = (
+        "【カセットテープ6巻BOX】テレサテン 鄧麗君 TERESA TENG "
+        "精選全集 TATL-9001～6 帯付き 1万セット限定"
+    )
+    assert is_job_lot(cassette_box) is False
+    assert classify_media_details(cassette_box).format == "CASSETTE_BOX_SET"
     assert classify_media_details(
         "「夜の乗客」テレサ・テン レコード 1枚｜LP"
     ).bulk_lot is False
@@ -99,6 +115,17 @@ def test_job_lots_are_not_individual_discogs_pieces() -> None:
     assert is_job_lot("4 records by Teresa Teng") is True
     assert is_job_lot("2 records Momoe Yamaguchi") is True
     assert is_job_lot("1 record by Teresa Teng") is False
+    gatefold = (
+        "Gripsweat - 鄧麗君 Teresa Teng 演唱會實況錄音 "
+        "Concert Live Recording Vinyl LP 2 Record Set KL-1240"
+    )
+    assert is_job_lot(gatefold) is False
+    assert classify_media_details(gatefold).format == "LP"
+    assert classify_media_details(gatefold).disc_count == 2
+    assert classify_media_details(gatefold).bulk_lot is False
+    assert is_job_lot(
+        "Gripsweat - Momoe Yamaguchi - The Best / VG+ / 2xLP, Comp, Gat"
+    ) is False
 
 
 def test_weekly_magazine_is_not_main_record_media() -> None:
@@ -125,6 +152,40 @@ def test_named_kayo_magazines_and_autograph_prints_leave_all_music() -> None:
     assert autograph.format == "PRINT"
     assert media_matches_scene(magazine.format, SCENE_MAIN_RECORDS) is False
     assert media_matches_scene(autograph.format, SCENE_PRINTS) is True
+
+
+def test_paper_video_and_stamps_leave_the_music_pile() -> None:
+    cases = {
+        "2x Anita Mui Music Special Collection Karaoke VCD": "DVD",
+        "100 WAYS TO MURDER YOUR WIFE HK 3 lobbycards Anita Mui": "PRINT",
+        "DRUNKEN MASTER II Japanese Souvenir Program 1994 Anita Mui": "PRINT",
+        "Momoe Yamaguchi Whisper Card Part 1": "PRINT",
+        "2017 NIGER MOMOE YAMAGUCHI JAPANESE IDOL MUSIC MNH": "STAMP",
+        "ピアノ・ソロ テレサ・テン ケイ・エム・ピー": "SHEET_MUSIC",
+        "Furimukeba Ai Japan Movie Program 1978 Momoe Yamaguchi": "PRINT",
+        "Teresa Teng autograph signed EP photoframe 1978": "PHOTO",
+        "楽譜 カラオケCD付き オカリナ 山口百恵": "SHEET_MUSIC",
+        "The Legend of Drunken Master Jackie Chan Anita Mui": "DVD",
+    }
+    for title, expected in cases.items():
+        media = classify_media_details(title).format
+        assert media == expected, title
+        assert media_matches_group(media, MEDIA_GROUP_ALL_MUSIC) is False
+    eight_cm = classify_media_details(
+        "テレサ・テン つぐない 8cmCDシングル 10TX-5007 短冊型 8cm ８センチ 3 inch"
+    )
+    assert eight_cm.format == "CD"
+    lp = classify_media_details(
+        "Momoe Yamaguchi Face J-Pop Idol Japan LP Obi Sexy Photo Book"
+    )
+    assert lp.format == "LP"
+    assert (
+        classify_media_details(
+            "MOMOE YAMAGUCHI / FUSHICHO DENSETSU / CBS SONY JAPAN OBI 2LPS"
+        ).format
+        == "LP"
+    )
+    assert media_matches_group(lp.format, MEDIA_GROUP_ALL_MUSIC) is True
 
 
 def test_video_and_empty_media_are_not_main_records() -> None:
@@ -364,6 +425,12 @@ def test_counted_records_open_as_a_bulk_lot() -> None:
     assert is_job_lot("★2冊★プチセブン★山口百恵") is True
     assert condition_profile("CD")["cover_label"] == "Jewel case"
     assert condition_profile("CD")["scale"] == "both"
+    assert condition_profile("DVD")["media_label"] == "Disc"
+    assert condition_profile("DVD")["cover_label"] == "Case"
+    assert condition_profile("DVD")["show_poster"] == "no"
+    assert condition_profile("LASERDISC")["media_label"] == "Disc"
+    assert condition_profile("LASERDISC")["cover_label"] == "Jacket"
+    assert condition_profile("LASERDISC")["show_poster"] == "no"
     assert condition_profile("CASSETTE")["media_label"] == "Tape"
     assert condition_profile("CASSETTE")["cover_label"] == "Shell"
     assert condition_profile("EP_7_INCH")["cover_label"] == "Sleeve"
@@ -400,6 +467,95 @@ def test_counted_records_open_as_a_bulk_lot() -> None:
     assert sealed_lp[1] == "S"
     assert "NM" in sealed_lp
     assert grades_when_sealed(cd_grades) == cd_grades
+
+
+def test_a_corrected_format_leaves_the_bulk_lot_count() -> None:
+    from app.collector_review_support import (
+        MEDIA_GROUP_CD,
+        MEDIA_GROUP_LOTS,
+        MEDIA_GROUP_LP,
+        media_matches_group,
+        place_review_media,
+    )
+
+    pile = "【01】テレサ・テン 10枚まとめ アーティスト様々 レコード"
+    single = "帯付/テレサ・テン「つぐない」LP レコード Taurus Records(28TR-2032)"
+    placed = place_review_media(
+        pd.DataFrame(
+            [
+                {
+                    "title": pile,
+                    "manual_media_type": None,
+                    "collector_manual_media_type": "LP",
+                    "effective_media_type": None,
+                    "media_type": "LP",
+                    "manual_bulk_lot": None,
+                    "collector_manual_bulk_lot": True,
+                    "identity_status": "unmatched",
+                    "catalog_display": "28TR-2032",
+                },
+                {
+                    "title": pile,
+                    "manual_media_type": None,
+                    "collector_manual_media_type": None,
+                    "effective_media_type": None,
+                    "media_type": None,
+                    "manual_bulk_lot": None,
+                    "collector_manual_bulk_lot": None,
+                    "identity_status": "unmatched",
+                    "catalog_display": "",
+                },
+                {
+                    "title": single,
+                    "manual_media_type": None,
+                    "collector_manual_media_type": "CD_BOX_SET",
+                    "effective_media_type": None,
+                    "media_type": "CD_BOX_SET",
+                    "manual_bulk_lot": True,
+                    "collector_manual_bulk_lot": None,
+                    "identity_status": "needs_review",
+                    "catalog_display": "TAT-1",
+                },
+            ]
+        )
+    )
+    assert int(placed["job_lot"].sum()) == 1
+    assert list(placed["identity_status_display"]) == [
+        "Unmatched",
+        "Lot",
+        "Needs review",
+    ]
+    assert media_matches_group(
+        placed.loc[0, "media_display"],
+        MEDIA_GROUP_LP,
+        job_lot=bool(placed.loc[0, "job_lot"]),
+    )
+    assert media_matches_group(
+        placed.loc[0, "media_display"],
+        MEDIA_GROUP_LOTS,
+        job_lot=bool(placed.loc[0, "job_lot"]),
+    ) is False
+    assert media_matches_group(
+        placed.loc[2, "media_display"],
+        MEDIA_GROUP_CD,
+        job_lot=bool(placed.loc[2, "job_lot"]),
+    )
+    assert placed.loc[2, "catalog_display"] == "TAT-1"
+    assert placed.loc[1, "catalog_display"] == ""
+
+
+def test_a_real_format_is_searched_even_when_the_title_is_a_lot() -> None:
+    from auction_etl.services.discogs_fill import reviewer_left_the_lot
+
+    assert reviewer_left_the_lot("CASSETTE") is True
+    assert reviewer_left_the_lot("CD_BOX_SET") is True
+    assert reviewer_left_the_lot("LP") is True
+    assert reviewer_left_the_lot("CASSETTE_BULK_LOT") is False
+    assert reviewer_left_the_lot("BULK_LOT") is False
+    assert reviewer_left_the_lot(None) is False
+    source = open("auction_etl/services/discogs_fill.py", encoding="utf-8").read()
+    assert "reviewer_left_the_lot(review_media)" in source
+    assert "media_type: str | None = None" in source
 
 
 def test_a_photo_leaves_the_unmatched_record_pile() -> None:
@@ -496,13 +652,21 @@ def test_factory_pack_says_what_complete_means() -> None:
     assert "obi, an insert, and a pin-up" in full
     assert "Complete means the obi, the insert, and the pin-up" in full
 
+    abroad = factory_pack_sentence("No", "Yes", "Yes")
+    assert "Complete means the insert and the poster are here" in abroad
+    assert "no obi" in abroad
+
     obi_insert = factory_pack_sentence("Yes", "Yes", "No")
     assert "the obi and the insert" in obi_insert
     assert "no pin-up" in obi_insert
 
-    insert_only = factory_pack_sentence("Yes", "Insert only", "Pin-up is the poster")
-    assert "insert only" in insert_only
-    assert "no obi and no pin-up" in insert_only
+    insert_only = factory_pack_sentence("Yes", "Insert only", "No")
+    assert "an obi and the insert" in insert_only
+    assert "no poster and no pin-up" in insert_only
+    assert "no obi" not in insert_only
+    insert_only_abroad = factory_pack_sentence("No", "Insert only", "No")
+    assert "insert only" in insert_only_abroad
+    assert "no obi, no poster, and no pin-up" in insert_only_abroad
 
     pinup = factory_pack_sentence("Yes", "Pin-up is the insert", "No")
     assert "pin-up that is the insert" in pinup

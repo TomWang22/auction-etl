@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timezone
+
 import typer
 
 from auction_etl.database.session import engine
@@ -7,6 +10,9 @@ from auction_etl.services.discogs_fill import (
     fill_unmatched_identities,
     identity_counts,
 )
+
+BACKLOG_SINCE = datetime(2000, 1, 1, tzinfo=timezone.utc)
+BACKLOG_BUDGET_SECONDS = 20 * 60.0
 
 
 app = typer.Typer(help="Discogs pressing identity fill")
@@ -26,12 +32,29 @@ def fill(
         "-n",
         help="Fill at most this many unmatched warehouse rows.",
     ),
+    backlog: bool = typer.Option(
+        False,
+        "--backlog",
+        help=(
+            "Search the older unmatched pile without retuning fills that "
+            "are already in. A clear Discogs catalog match is saved. "
+            "An ambiguous one stays for review."
+        ),
+    ),
 ) -> None:
     """Search Discogs and auto-fill dead-on catalog matches."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+    )
     stats = fill_unmatched_identities(
         engine,
         marketplace=marketplace,
         limit=limit,
+        retune=not backlog,
+        since=BACKLOG_SINCE if backlog else None,
+        budget_seconds=BACKLOG_BUDGET_SECONDS if backlog else None,
+        fail_fast=False if backlog else None,
     )
     typer.echo(f"Scanned          : {stats.scanned}")
     typer.echo(f"Discogs searches : {stats.searched}")

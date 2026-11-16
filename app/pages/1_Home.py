@@ -1,14 +1,19 @@
-"""Product-facing start page for the auction workspace."""
+"""Product-facing start page for Auction ETL."""
 
 from __future__ import annotations
 
+import importlib
+
 import streamlit as st
 
-from app.navigation import render_navigation
+import app.navigation as app_navigation
+
+importlib.reload(app_navigation)
+render_navigation = app_navigation.render_navigation
 
 
 st.set_page_config(
-    page_title="Auction workspace",
+    page_title="Auction ETL",
     page_icon="🏠",
     layout="wide",
 )
@@ -133,7 +138,7 @@ def task_card(
         )
 
     label = (
-        f"{icon} **{title}**  \\n"
+        f"{icon} **{title}**\n\n"
         f"{description}"
     )
 
@@ -169,17 +174,46 @@ def workflow_step(
 render_task_card_styles()
 
 st.title(
-    "🏠 Auction workspace"
+    "Auction ETL"
 )
 
 st.write(
-    "Auction ETL is this collector's review of Buyee, eBay, and Gripsweat sales. "
-    "Keep the warehouse current, and connect a listing to its pressing "
-    "or count the pieces in a bulk lot."
+    "Auction ETL is the sales desk for collectors and record shops. "
+    "Completed sales from Buyee, eBay, and Gripsweat sit in one place, "
+    "with the price that was paid, the pressing, and the shape of the lot."
 )
+
+left_who, right_who = st.columns(2)
+
+with left_who:
+    st.subheader("Collectors")
+    st.write(
+        "A sale is one record or a pile. An offer keeps the original ask "
+        "and the price that was accepted, before shipping. A bulk lot stays "
+        "open until its media type, piece count, condition, and verdict are filled."
+    )
+
+with right_who:
+    st.subheader("Record shops")
+    st.write(
+        "The shop can see what a pressing sold for, in the sale's own currency, "
+        "and which piles are still to count. That is the stock and pricing "
+        "record behind the counter, not a second storefront."
+    )
 
 st.subheader(
     "What do you want to do?"
+)
+
+task_card(
+    icon="💿",
+    title="My collection",
+    description=(
+        "Bring in what you bought on eBay, Buyee, and Record City, "
+        "then see what is still missing."
+    ),
+    destination="pages/17_My_Collection.py",
+    key="home-task-card-my-collection",
 )
 
 left_top, right_top = st.columns(
@@ -244,13 +278,23 @@ st.subheader(
     "Typical workflow"
 )
 
-step_one, step_two, step_three, step_four = st.columns(
-    4
+step_one, step_two, step_three, step_four, step_five = st.columns(
+    5
 )
 
 with step_one:
     workflow_step(
         number=1,
+        icon="💿",
+        title="Bring in",
+        description=(
+            "Add the copies you bought on eBay, Buyee, and Record City."
+        ),
+    )
+
+with step_two:
+    workflow_step(
+        number=2,
         icon="🔄",
         title="Refresh",
         description=(
@@ -258,9 +302,9 @@ with step_one:
         ),
     )
 
-with step_two:
+with step_three:
     workflow_step(
-        number=2,
+        number=3,
         icon="📥",
         title="Match",
         description=(
@@ -268,9 +312,9 @@ with step_two:
         ),
     )
 
-with step_three:
+with step_four:
     workflow_step(
-        number=3,
+        number=4,
         icon="💿",
         title="Maintain",
         description=(
@@ -278,9 +322,9 @@ with step_three:
         ),
     )
 
-with step_four:
+with step_five:
     workflow_step(
-        number=4,
+        number=5,
         icon="🔎",
         title="Review",
         description=(
@@ -289,6 +333,6 @@ with step_four:
     )
 
 st.caption(
-    "You do not need to follow every step every time. "
-    "Start with the task you need."
+    "Start with the copies you bought. "
+    "Refresh when new sales should come in, then review what is still open."
 )

@@ -29,6 +29,7 @@ _SOLD_MONEY_PATTERNS = (
     (re.compile(rf"€\s*{_SOLD_AMOUNT}"), "EUR"),
     (re.compile(rf"\bJPY\s*{_SOLD_AMOUNT}", re.IGNORECASE), "JPY"),
     (re.compile(rf"¥\s*{_SOLD_AMOUNT}"), "JPY"),
+    (re.compile(rf"{_SOLD_AMOUNT}\s*YEN\b", re.IGNORECASE), "JPY"),
     (re.compile(rf"\$\s*{_SOLD_AMOUNT}"), None),
 )
 
@@ -154,6 +155,8 @@ def parse_raw_page(session, raw: RawPage) -> int:
             listing.get("sale_type"),
             listing.get("price"),
         )
+        if raw.source == "buyee" and not currency:
+            currency = "JPY"
         shipping_price, shipping_currency = _parse_money(
             listing.get("shipping")
         )

@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 
 
 FRANKFURTER_URL = (
-    "https://api.frankfurter.dev/v1/latest"
+    "https://api.frankfurter.dev/v1/{when}"
     "?base={base}&symbols={quote}"
 )
 
@@ -29,23 +29,44 @@ def latest_rate(
     *,
     timeout: float = 15.0,
 ) -> FxQuote:
+    return rate_on(
+        base,
+        date.today(),
+        quote,
+        timeout=timeout,
+        when="latest",
+    )
+
+
+def rate_on(
+    base: str,
+    on: date,
+    quote: str = "USD",
+    *,
+    timeout: float = 15.0,
+    when: str = "",
+) -> FxQuote:
+    """Dollars per one unit of ``base`` on ``on``.
+
+    ``when`` defaults to that date. ``latest`` asks for the current rate.
+    """
+
     base = base.upper()
     quote = quote.upper()
-
     if base == quote:
         return FxQuote(
             base=base,
             quote=quote,
             rate=Decimal("1"),
-            rate_date=date.today(),
+            rate_date=on,
             source="identity",
         )
 
     url = FRANKFURTER_URL.format(
+        when=when or on.isoformat(),
         base=base,
         quote=quote,
     )
-
     request = Request(
         url,
         headers={
@@ -53,12 +74,8 @@ def latest_rate(
             "User-Agent": "auction-etl/0.1",
         },
     )
-
     try:
-        with urlopen(
-            request,
-            timeout=timeout,
-        ) as response:
+        with urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
     except (OSError, URLError, ValueError) as exc:
         raise RuntimeError(
@@ -66,17 +83,9 @@ def latest_rate(
         ) from exc
 
     try:
-        rate = Decimal(
-            str(payload["rates"][quote])
-        )
-        rate_date = date.fromisoformat(
-            payload["date"]
-        )
-    except (
-        KeyError,
-        TypeError,
-        ValueError,
-    ) as exc:
+        rate = Decimal(str(payload["rates"][quote]))
+        rate_date = date.fromisoformat(payload["date"])
+    except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(
             f"Invalid FX response for {base}/{quote}."
         ) from exc

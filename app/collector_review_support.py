@@ -6,7 +6,9 @@ import json
 import importlib
 import math
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -289,6 +291,189 @@ def notes_with_lot_mix(notes: Any, counts: dict[str, int] | None) -> str:
     return f"{line}\n{body}"
 
 
+_TITLE_PIECE_COUNT = re.compile(
+    r"(?<!\d)(\d{1,4})\s*(枚|点|冊|本|個|コ|巻)"
+)
+_TITLE_BARE_SET = re.compile(
+    r"(?<!\d)(?<!万)(\d{1,4})\s*セット"
+)
+_TITLE_LOT_OF_PAREN = re.compile(
+    r"\blot of\s+\w+\s+\((\d{1,4})\)",
+    re.IGNORECASE,
+)
+_TITLE_LOT_PAREN = re.compile(
+    r"\blot\s*\((\d{1,4})\)",
+    re.IGNORECASE,
+)
+_TITLE_LOT_OF = re.compile(
+    r"\blot of\s+\(?(\d{1,4})\b",
+    re.IGNORECASE,
+)
+_TITLE_BUNDLE = re.compile(
+    r"\bbundle\s+(\d{1,4})\b",
+    re.IGNORECASE,
+)
+_TITLE_COUNT_TIMES_KIND = re.compile(
+    r"(?<!\d)(\d{1,4})\s*x\s*(?:lot|cds?|lps?|eps?|cassettes?|records?|vinyl|singles?|discs?|magazines?)\b",
+    re.IGNORECASE,
+)
+_TITLE_KIND_TIMES_COUNT = re.compile(
+    r"\b(?:lot|cds?|lps?|eps?|cassettes?|records?|vinyl|singles?|discs?|magazines?)\s*x\s*(\d{1,4})\b",
+    re.IGNORECASE,
+)
+_TITLE_SET_COUNT = re.compile(
+    r"(?<!\d)(\d{1,4})\s*-\s*(?:disc|record|single)s?\s+set\b",
+    re.IGNORECASE,
+)
+_TITLE_MEDIA_LOT = re.compile(
+    r"(?<!\d\s)(?<!\d)(\d{1,4})\s+(?:cds?|lps?|eps?|cassettes?|magazines?)\s+lot\b",
+    re.IGNORECASE,
+)
+_TITLE_VINYL_RECORDS = re.compile(
+    r"(?<!\d)(\d{1,4})\s+vinyl records\b",
+    re.IGNORECASE,
+)
+_TITLE_RECORDS = re.compile(
+    r"(?<!best )(?<!\d)(\d{1,4})\s+records?\b",
+    re.IGNORECASE,
+)
+_TITLE_MAGAZINE_GAP = re.compile(
+    r"(?<!\d)(\d{1,4})(?!\d)\b(?:\s+\S+){0,6}\s+magazines?\b",
+    re.IGNORECASE,
+)
+_TITLE_ENGLISH_PIECE = (
+    _TITLE_LOT_OF_PAREN,
+    _TITLE_LOT_PAREN,
+    _TITLE_LOT_OF,
+    _TITLE_BUNDLE,
+    _TITLE_COUNT_TIMES_KIND,
+    _TITLE_KIND_TIMES_COUNT,
+    _TITLE_SET_COUNT,
+    _TITLE_MEDIA_LOT,
+    _TITLE_VINYL_RECORDS,
+    _TITLE_RECORDS,
+    _TITLE_MAGAZINE_GAP,
+)
+_AUCTION_CLOCK = ZoneInfo("Asia/Tokyo")
+
+
+def title_piece_count(title: Any) -> int:
+    """Pieces the title itself counts.
+
+    Japanese piles add 枚, 点, 冊, 本, 個, コ, and 巻. 枚組, 本組, and
+    巻組 are one factory set. An English pile uses the first clear count,
+    such as “lot of 6”, “Lot(3)”, or “6-Disc Set”. A catalog fragment
+    such as 4A is not a count. A title with no count stays 0 so the lot
+    can be filled by hand.
+    """
+    text = clean_text(title)
+    total = 0
+    for match in _TITLE_PIECE_COUNT.finditer(text):
+        follower = text[match.end(): match.end() + 1]
+        if follower in {"組", "目"}:
+            continue
+        count = int(match.group(1))
+        if count > 0:
+            total += count
+    if total == 0:
+        for match in _TITLE_BARE_SET.finditer(text):
+            count = int(match.group(1))
+            if count > 0:
+                total += count
+    if total > 0:
+        return total
+    for pattern in _TITLE_ENGLISH_PIECE:
+        for match in pattern.finditer(text):
+            count = int(next(group for group in match.groups() if group))
+            if pattern is _TITLE_MAGAZINE_GAP and 1900 <= count <= 2099:
+                continue
+            if count > 0:
+                return count
+    return 0
+
+
+def auction_timeline_caption(
+    opening: Any,
+    closing: Any,
+    marketplace: Any = None,
+) -> str:
+    """When this sale opened and closed, and how long that auction ran.
+
+    Buyee clocks are Japan time, matching the auction page. A sale date
+    with no clock stays a date. An opening that falls after the sale is
+    the day we first saved the row, so it is not shown as the auction start.
+    """
+    opened = _clock_timestamp(opening)
+    closed = _clock_timestamp(closing)
+    buyee = clean_text(marketplace).casefold() == "buyee"
+    zone = _AUCTION_CLOCK if buyee else timezone.utc
+    zone_name = "JST" if buyee else "UTC"
+    if opened is not None and closed is not None and opened <= closed:
+        return (
+            f"Opened {_format_auction_clock(opened, zone, zone_name)}"
+            f" · Closed {_format_auction_clock(closed, zone, zone_name)}"
+            f" · {_auction_ran(closed - opened)}"
+        )
+    if closed is not None:
+        if _date_only_timestamp(closed):
+            return f"Sold {_format_auction_date(closed)}"
+        return f"Sold {_format_auction_clock(closed, zone, zone_name)}"
+    return "Auction clock is not on this sale yet."
+
+
+def _clock_timestamp(value: Any) -> datetime | None:
+    timestamp = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(timestamp):
+        return None
+    return timestamp.to_pydatetime()
+
+
+def _date_only_timestamp(value: datetime) -> bool:
+    clock = value.astimezone(timezone.utc)
+    return (
+        clock.hour == 0
+        and clock.minute == 0
+        and clock.second == 0
+        and clock.microsecond == 0
+    )
+
+
+def _format_auction_clock(
+    value: datetime,
+    zone: timezone | ZoneInfo,
+    zone_name: str,
+) -> str:
+    local = value.astimezone(zone)
+    if local.second:
+        clock = local.strftime("%-d %b %Y %H:%M:%S")
+    else:
+        clock = local.strftime("%-d %b %Y %H:%M")
+    return f"{clock} {zone_name}"
+
+
+def _format_auction_date(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%-d %b %Y")
+
+
+def _auction_ran(span: timedelta) -> str:
+    total_seconds = int(span.total_seconds())
+    if total_seconds < 0:
+        total_seconds = 0
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _seconds = divmod(remainder, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days} day" if days == 1 else f"{days} days")
+    if hours:
+        parts.append(f"{hours} hour" if hours == 1 else f"{hours} hours")
+    if minutes and not days:
+        parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
+    if not parts:
+        parts.append("under a minute")
+    return "Ran " + " ".join(parts)
+
+
 def lot_count_noun(media: Any, lot_format: Any = None) -> str:
     """What to count in a pile. Only an LP lot is records."""
     kind = lot_format_name(media) or clean_text(lot_format)
@@ -388,10 +573,42 @@ def review_lot_flag(title: Any, manual_bulk: Any) -> bool:
     return as_boolean(manual_bulk)
 
 
+def listing_counts_as_lot(title: Any, manual_bulk: Any, media: Any) -> bool:
+    """Whether this sale is one of the bulk-lot numbers.
+
+    A saved format that is not a bulk-lot type leaves the lot count.
+    With no format yet, the saved lot flag or the title decides.
+    """
+    chosen = clean_text(media)
+    if chosen and chosen.casefold() != "automatic / unset":
+        return bulk_lot_media(chosen)
+    return review_lot_flag(title, manual_bulk)
+
+
 def _frame_column(frame: pd.DataFrame, name: str) -> pd.Series:
     if name in frame.columns:
         return frame[name]
     return pd.Series([None] * len(frame), index=frame.index)
+
+
+def _apply_lot_identity(frame: pd.DataFrame) -> pd.DataFrame:
+    """The Lot mark and the lot count use the same rows."""
+    if frame is None or frame.empty or "identity_status" not in frame.columns:
+        return frame
+    labels = {
+        "filled_auto": "Filled",
+        "filled_manual": "Filled",
+        "needs_review": "Needs review",
+        "unmatched": "Unmatched",
+    }
+    frame["identity_status_display"] = [
+        labels.get(clean_text(value), clean_text(value) or "Unmatched")
+        for value in frame["identity_status"]
+    ]
+    if "job_lot" in frame.columns:
+        lots = frame["job_lot"].fillna(False).astype(bool)
+        frame.loc[lots, "identity_status_display"] = "Lot"
+    return frame
 
 
 def place_review_media(frame: pd.DataFrame) -> pd.DataFrame:
@@ -402,28 +619,32 @@ def place_review_media(frame: pd.DataFrame) -> pd.DataFrame:
     shared = _frame_column(frame, "manual_media_type")
     stored = _frame_column(frame, "effective_media_type")
     auction_media = _frame_column(frame, "media_type")
-    manual_lots = _frame_column(frame, "manual_bulk_lot")
+    account_lots = _frame_column(frame, "collector_manual_bulk_lot")
+    shared_lots = _frame_column(frame, "manual_bulk_lot")
     media_display: list[str] = []
     job_lots: list[bool] = []
     lot_formats: list[str] = []
-    for title, account_media, shared_media, effective, auction, manual_lot in zip(
+    for title, account_media, shared_media, effective, auction, account_lot, shared_lot in zip(
         frame["title"],
         saved,
         shared,
         stored,
         auction_media,
-        manual_lots,
+        account_lots,
+        shared_lots,
         strict=True,
     ):
         chosen = clean_text(account_media) or clean_text(shared_media)
         fact = clean_text(effective) or clean_text(auction)
-        lot = review_lot_flag(title, manual_lot)
+        bulk_flag = shared_lot if is_missing(account_lot) else account_lot
+        titled_lot = review_lot_flag(title, bulk_flag)
         slot = review_media_slot(chosen, title, fact)
         mix = lot_mix_from_title(title)
-        if lot and not chosen and len(mix) >= 2:
+        if titled_lot and not chosen and len(mix) >= 2:
             slot = "MIXED_BULK_LOT"
-        elif lot and not chosen:
+        elif titled_lot and not chosen:
             slot = bulk_lot_choice(lot_format_name(review_media_slot(None, title, fact)))
+        lot = listing_counts_as_lot(title, bulk_flag, chosen)
         media_display.append(slot)
         job_lots.append(lot)
         format_slot = review_media_slot(None, title, fact)
@@ -435,7 +656,10 @@ def place_review_media(frame: pd.DataFrame) -> pd.DataFrame:
     placed["media_display"] = media_display
     placed["job_lot"] = job_lots
     placed["lot_format"] = lot_formats
-    return placed
+    if "catalog_display" in placed.columns:
+        lots = placed["job_lot"].fillna(False).astype(bool)
+        placed.loc[lots, "catalog_display"] = ""
+    return _apply_lot_identity(placed)
 
 
 def title_classification(
@@ -966,6 +1190,24 @@ def condition_profile(media: str | None) -> dict[str, str]:
             "show_poster": "no",
             "poster_label": "",
         }
+    if shown in {"DVD", "LASERDISC"}:
+        video = "DVD" if shown == "DVD" else "laserdisc"
+        return {
+            "kind": "video",
+            "scale": "both",
+            "media_label": "Disc",
+            "cover_label": "Case" if shown == "DVD" else "Jacket",
+            "help": letter_help,
+            "caption": (
+                f"A {video} is a disc and a "
+                f"{'case' if shown == 'DVD' else 'jacket'}. "
+                "Sellers grade it on the shop scale or on Goldmine."
+            ),
+            "insert_label": "Insert",
+            "show_obi": "yes",
+            "show_poster": "no",
+            "poster_label": "",
+        }
     if shown == "EP_7_INCH":
         return {
             "kind": "ep",
@@ -988,7 +1230,8 @@ def condition_profile(media: str | None) -> dict[str, str]:
             "help": "",
             "caption": (
                 "A Japanese LP can have an obi. "
-                "An LP can have an insert and a poster or pin-up. "
+                "An LP can have an insert and a poster together. "
+                "A pressing from outside Japan has no obi. "
                 "A sealed copy can still be insert only, pin-up in the insert, "
                 "or factory no insert."
             ),
@@ -1043,6 +1286,22 @@ def condition_grade_options(scale: str) -> tuple[str, ...]:
 
 
 SEALED_GRADE = "S"
+_SEALED_GRADES = frozenset({SEALED_GRADE, "M"})
+
+
+def sealed_allowed_for_grades(media: object, cover: object) -> bool:
+    """Sealed only when both grades are mint: S or M."""
+
+    return str(media or "").strip() in _SEALED_GRADES and str(cover or "").strip() in _SEALED_GRADES
+
+
+def sealed_choice_for_grades(media: object, cover: object, sealed: object) -> str:
+    """Force Sealed to No when the copy is not graded mint."""
+
+    choice = str(sealed or "").strip() or "Automatic / unset"
+    if sealed_allowed_for_grades(media, cover):
+        return choice
+    return "No"
 
 
 def grades_when_sealed(options: tuple[str, ...]) -> tuple[str, ...]:
@@ -1095,6 +1354,50 @@ def notes_with_insert_fact(notes: Any, fact: str | None) -> str:
     return f"{fact}\n{body}"
 
 
+def insert_owns_poster(insert: str) -> bool:
+    """These packs have no extra poster or pin-up."""
+    return insert in {
+        "Pin-up is the insert",
+        "Insert only",
+        "Factory no insert",
+    }
+
+
+def edition_values_from_form(
+    *,
+    insert: str,
+    poster: str,
+    notes: str = "",
+) -> dict[str, Any]:
+    """Persist insert/poster the way Review Save does for this copy's pack."""
+
+    fact = {
+        "Pin-up is the insert": PINUP_INSERT_NOTE,
+        "Insert only": INSERT_ONLY_NOTE,
+        "Factory no insert": FACTORY_NO_INSERT_NOTE,
+    }.get(insert)
+    if insert in {"Yes", "Insert only", "Pin-up is the insert"}:
+        insert_present: bool | None = True
+    elif insert in {MISSING_INSERT, "No", "Factory no insert"}:
+        insert_present = False
+    else:
+        insert_present = None
+    if insert_owns_poster(insert):
+        poster_present: bool | None = False
+    elif poster in {"Yes", "Pin-up is the poster"}:
+        poster_present = True
+    elif poster == "No":
+        poster_present = False
+    else:
+        poster_present = None
+    stored_notes = notes_with_insert_fact(notes, fact)
+    return {
+        "manual_insert_present": insert_present,
+        "manual_poster_present": poster_present,
+        "manual_completeness_notes": stored_notes or None,
+    }
+
+
 def notes_pinup_is_insert(notes: Any) -> bool:
     """True when this copy's pin-up is the insert, not a separate poster."""
     return notes_insert_fact(notes) == PINUP_INSERT_NOTE
@@ -1121,22 +1424,41 @@ def _pack_names(names: list[str]) -> str:
 def factory_pack_sentence(obi: str, insert: str, poster: str) -> str:
     """What this LP came with from the factory, and what complete means.
 
-    Sleeve and record are always part of the copy. The paper pack is one of:
-    obi, insert, and a pin-up; obi and insert; insert only; a pin-up that is
-    the insert; or factory no insert. Missing the insert is not a pack. It
-    means the pressing included an insert and this copy does not have it.
+    Sleeve and record are always part of the copy. The paper pack can be an
+    obi, an insert, and a poster together. A pressing from outside Japan has
+    no obi, and it is complete when the insert and the poster are both here.
+    Insert only, a pin-up that is the insert, and factory no insert are the
+    other packs. Missing the insert means the pressing included one and this
+    copy does not have it.
     """
     obi_yes = obi == "Yes"
     obi_no = obi == "No"
-    poster_yes = poster == "Pin-up is the poster"
+    poster_yes = poster in {"Yes", "Pin-up is the poster"}
     poster_no = poster == "No"
+    poster_name = "the poster" if poster == "Yes" else "the pin-up"
     with_copy = "with the sleeve and the record"
 
     if insert == "Insert only":
+        # The insert is the only extra paper. Poster and pin-up are No.
+        # Obi is separate: a Japanese copy can still have the strip.
+        if obi_yes:
+            return (
+                "This pressing came with an obi and the insert. "
+                "The insert is the only extra paper. "
+                f"Complete means the obi and that sheet are here, {with_copy}. "
+                "There is no poster and no pin-up."
+            )
+        if obi_no:
+            return (
+                "This pressing came with the insert only. "
+                f"Complete means that sheet is here, {with_copy}. "
+                "There is no obi, no poster, and no pin-up."
+            )
         return (
             "This pressing came with the insert only. "
             f"Complete means that sheet is here, {with_copy}. "
-            "There is no obi and no pin-up."
+            "There is no poster and no pin-up. "
+            "Set obi if this copy has the Japanese strip."
         )
     if insert == "Pin-up is the insert":
         if obi_yes:
@@ -1164,8 +1486,8 @@ def factory_pack_sentence(obi: str, insert: str, poster: str) -> str:
             came.append("an obi")
             needed.append("the obi")
         if poster_yes:
-            came.append("a pin-up")
-            needed.append("the pin-up")
+            came.append("a poster" if poster == "Yes" else "a pin-up")
+            needed.append(poster_name)
         if came:
             verb = "is" if len(came) == 1 else "are"
             return (
@@ -1196,7 +1518,7 @@ def factory_pack_sentence(obi: str, insert: str, poster: str) -> str:
             included.append("the obi")
         included.append("the insert")
         if poster_yes:
-            included.append("the pin-up")
+            included.append(poster_name)
         absent: list[str] = []
         if obi_no:
             absent.append("no obi")
@@ -1214,15 +1536,16 @@ def factory_pack_sentence(obi: str, insert: str, poster: str) -> str:
         if not obi_yes and not obi_no:
             unset.append("obi")
         if not poster_yes and not poster_no:
-            unset.append("the pin-up")
+            unset.append("the poster")
         if unset:
             pronoun = "it" if len(unset) == 1 else "them"
             return (
                 lead
                 + f" Set {_pack_names(unset)} if this pressing came with {pronoun}."
             )
+        came_with = "a poster" if poster == "Yes" else "a pin-up"
         return (
-            "This pressing came with an obi, an insert, and a pin-up. " + lead
+            f"This pressing came with an obi, an insert, and {came_with}. " + lead
         )
     if insert in {MISSING_INSERT, "No"}:
         still = ""
@@ -1238,7 +1561,7 @@ def factory_pack_sentence(obi: str, insert: str, poster: str) -> str:
             "This copy is missing the insert. The pressing included one, "
             "so this copy is not complete."
             + still
-            + " Insert only means that sheet is here and it is all the factory included."
+            + " Insert only means that sheet is here, with no poster and no pin-up."
             + " Factory no insert means the pressing never included one."
         )
     return (
@@ -1311,7 +1634,46 @@ def automatic_region(row: Any, options: tuple[str, ...]) -> str | None:
     return _option_choice(_row_value(row, "effective_region"), options)
 
 
-def automatic_disc_count(row: Any) -> int:
+_TAPE_COUNT = re.compile(
+    r"(?<!\d)(\d{1,2})\s*(?:本|巻|cassettes?|tapes?)",
+    re.IGNORECASE,
+)
+
+
+def cassette_tape_count(title: Any) -> int:
+    """Tapes in one cassette release.
+
+    One tape unless the listing states another number. 通算20枚目 is the
+    20th single in a series, not 20 tapes.
+    """
+    text = clean_text(title)
+    for match in _TAPE_COUNT.finditer(text):
+        if text[match.end(): match.end() + 1] == "目":
+            continue
+        count = int(match.group(1))
+        if count > 0:
+            return count
+    if re.search(r"ダブル|double\s+cassette", text, re.IGNORECASE):
+        return 2
+    return 1
+
+
+def automatic_disc_count(row: Any, media: Any = None) -> int:
+    """Piece count for the form. A counted pile uses the amount written in the title.
+
+    A cassette release is one tape unless the title states another number.
+    """
+    chosen = clean_text(media)
+    if _is_cassette(chosen) and not bulk_lot_media(chosen):
+        return cassette_tape_count(_row_value(row, "title"))
+    lot = as_boolean(_row_value(row, "job_lot")) or review_lot_flag(
+        _row_value(row, "title"),
+        _row_value(row, "manual_bulk_lot"),
+    )
+    if lot:
+        pieces = title_piece_count(_row_value(row, "title"))
+        if pieces > 0:
+            return pieces
     count = safe_int(_row_value(row, "effective_disc_count"))
     if count and count > 0:
         return count
@@ -1375,6 +1737,8 @@ def date_pressing_type(
     this copy, so a retail 7" stays a first pressing.
     A named reissue stays a later press even when it is the only copy stored.
     No year means the date is not established.
+    A lone 2025 or 2026 is a sale date. That year on a copy of an older
+    album, such as a 2026 pressing of a 1986 record, is a later press.
     """
     if _PROMO_TEXT.search(clean_text(title)):
         return "PROMO_SAMPLE"
@@ -1383,23 +1747,33 @@ def date_pressing_type(
     if _identity_module().listing_names_audiophile_reissue(title):
         return "REISSUE"
     year = safe_int(release_year)
-    # 2025 and 2026 are sale years on these listings, not press dates.
-    if year is None or year >= 2025:
-        return None
     earliest = safe_int(earliest_year)
+    # A lone 2025 or 2026, with no older original, is the sale date.
+    # The same year on a Discogs copy of a much older album is a later press.
+    if year is None or year >= 2025:
+        if (
+            year is not None
+            and earliest is not None
+            and earliest < year
+            and earliest < 2025
+        ):
+            return "REISSUE"
+        return None
     if earliest is None or year <= earliest:
         return "FIRST_PRESSING"
     return "REISSUE"
 
 
 def pressing_type_label(value: Any, release_year: Any = None) -> str:
-    """Plain label. A real press year is shown. A sale year such as 2026 is not."""
+    """Plain label. A later press shows its year, including a 2026 repress.
+
+    A sale year is not printed as a first-press date.
+    """
     year = safe_int(release_year)
-    if year is not None and year >= 2025:
-        year = None
     text = clean_text(value) or "Automatic / unset"
     if text == "FIRST_PRESSING":
-        return f"First pressing ({year})" if year else "First pressing"
+        shown = None if year is not None and year >= 2025 else year
+        return f"First pressing ({shown})" if shown else "First pressing"
     if text == "REISSUE":
         return f"Later press ({year})" if year else "Later press"
     if text == "PROMO_SAMPLE":
@@ -1926,35 +2300,200 @@ def _field_present(value: Any) -> bool:
         return True
 
 
-def review_progress(row: Any) -> tuple[str, str, str]:
+def _stamp_key(value: Any) -> str:
+    if not _field_present(value):
+        return ""
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return str(value)
+    return pd.Timestamp(parsed).isoformat()
+
+
+def _saved_stamp_series(frame: pd.DataFrame) -> pd.Series | None:
+    """One save-time column. A joined account row can repeat the name."""
+    if frame is None or frame.empty or "collector_updated_at" not in frame.columns:
+        return None
+    selected = frame.loc[:, "collector_updated_at"]
+    if isinstance(selected, pd.DataFrame):
+        selected = selected.iloc[:, -1]
+    return selected
+
+
+def mass_saved_stamps(frame: pd.DataFrame) -> set[str]:
+    """Timestamps written onto many rows at once are not a review."""
+    selected = _saved_stamp_series(frame)
+    if selected is None:
+        return set()
+    keys = selected.map(_stamp_key)
+    counts = keys[keys.ne("")].value_counts()
+    return {key for key, count in counts.items() if int(count) >= 20}
+
+
+_LOT_MEDIA_OPTIONS = (
+    "Automatic / unset",
+    "LP_BULK_LOT",
+    "CD_BULK_LOT",
+    "EP_BULK_LOT",
+    "CASSETTE_BULK_LOT",
+    "MIXED_BULK_LOT",
+    "MAGAZINE_BULK_LOT",
+    "BULK_LOT",
+    "LP",
+    "EP_7_INCH",
+    "SINGLE_12_INCH",
+    "CD",
+    "CD_BOX_SET",
+    "CASSETTE",
+    "DVD",
+    "VHS",
+    "MAGAZINE",
+    "PHOTO",
+    "PHOTOBOOK",
+    "OTHER",
+)
+_LOT_VERDICT_OPTIONS = (
+    "Automatic / unset",
+    "PASS",
+    "WATCH",
+    "REFERENCE_ONLY",
+    "REJECT",
+)
+
+
+LOT_REFERENCE_CONDITION = "VG+"
+LOT_REFERENCE_VERDICT = "REFERENCE_ONLY"
+
+
+def counted_reference_lot(row: Any) -> bool:
+    """A past pile whose title counts the pieces and names the format.
+
+    These repeats are reference stock. The grade and verdict can start
+    filled so the collector does not set the same pair on every one.
+    """
+    if title_piece_count(_row_value(row, "title")) <= 0:
+        return False
+    lot = as_boolean(_row_value(row, "job_lot")) or review_lot_flag(
+        _row_value(row, "title"),
+        _row_value(row, "manual_bulk_lot"),
+    )
+    if not lot:
+        return False
+    media = form_choice(
+        _row_value(row, "manual_media_type"),
+        automatic_media_type(row, _LOT_MEDIA_OPTIONS),
+        _LOT_MEDIA_OPTIONS,
+    )
+    return bool(_lot_entry(media) and media != "BULK_LOT")
+
+
+def automatic_lot_condition(row: Any) -> str | None:
+    """A grade already on the sale, otherwise VG+ for a counted pile."""
+    stated = _lot_entry(_row_value(row, "effective_condition_media"))
+    grades = condition_grade_options("both")
+    if stated in grades:
+        return stated
+    if counted_reference_lot(row):
+        return LOT_REFERENCE_CONDITION
+    return None
+
+
+def automatic_lot_verdict(row: Any) -> str | None:
+    """Reference only for a counted past pile. A saved verdict still wins."""
+    if counted_reference_lot(row):
+        return LOT_REFERENCE_VERDICT
+    return None
+
+
+def _lot_entry(value: Any) -> str:
+    text = clean_text(value)
+    if text.casefold() in {"", "automatic / unset", "automatic", "unset"}:
+        return ""
+    return text
+
+
+def lot_fields_still_open(row: Any) -> list[str]:
+    """Media type, piece count, condition, and verdict still blank on a lot.
+
+    A prefilled value counts. Saving it does not copy that value into a
+    manual column, so the form can be full while the manual column is empty.
+    """
+    missing: list[str] = []
+    media = form_choice(
+        _row_value(row, "manual_media_type"),
+        automatic_media_type(row, _LOT_MEDIA_OPTIONS),
+        _LOT_MEDIA_OPTIONS,
+    )
+    if not _lot_entry(media):
+        missing.append("media type")
+    count = form_disc_count(
+        _row_value(row, "manual_disc_count"),
+        automatic_disc_count(row),
+    )
+    if count is None or count <= 0:
+        missing.append("piece count")
+    condition = form_choice(
+        _row_value(row, "manual_condition_media"),
+        automatic_lot_condition(row),
+        condition_grade_options("both"),
+    )
+    if not _lot_entry(condition):
+        missing.append("condition")
+    verdict = form_choice(
+        _row_value(row, "manual_verdict"),
+        automatic_lot_verdict(row),
+        _LOT_VERDICT_OPTIONS,
+    )
+    if not _lot_entry(verdict):
+        missing.append("verdict")
+    return missing
+
+
+def review_progress(
+    row: Any,
+    *,
+    ignore_times: set[str] | None = None,
+) -> tuple[str, str, str]:
     """Glyph, filter name, and hover line for one listing.
 
-    Touched is the default once a row has been opened or saved.
-    Adjusted means a field was edited. Processed means the identity
-    is filled. A blank row has not been touched.
+    A bulk lot is processed when the media type, piece count, condition,
+    and verdict on the form are filled. A prefilled value counts. Any one
+    of those still empty means it is not done yet. Other sales keep the
+    edited mark, then the opened mark.
     """
     getter = row.get if hasattr(row, "get") else lambda _name, default=None: default
+    if as_boolean(getter("job_lot")):
+        missing = lot_fields_still_open(row)
+        if missing:
+            return "", PROGRESS_NOT_DONE, "Still to fill: " + ", ".join(missing)
+        return (
+            "✓",
+            PROGRESS_PROCESSED,
+            "Media type, piece count, condition, and verdict are filled.",
+        )
+    ignored = ignore_times or set()
     adjusted = any(_field_present(_row_value(row, name)) for name in _ADJUSTED_FIELDS)
     filled = clean_text(_row_value(row, "identity_status")) in {
         "filled_auto",
         "filled_manual",
     }
-    touched = any(
-        _field_present(getter(name))
-        for name in (
-            "collector_updated_at",
-            "identity_status_changed_at",
-            "identity_filled_at",
-            "seller_report_updated_at",
-        )
-    )
-    if filled:
-        detail = "Processed. Edited" if adjusted else "Processed"
-        return "✓", PROGRESS_PROCESSED, detail
+    touched = False
+    for name in (
+        "collector_updated_at",
+        "identity_status_changed_at",
+        "identity_filled_at",
+        "seller_report_updated_at",
+    ):
+        value = getter(name)
+        if not _field_present(value):
+            continue
+        if name == "collector_updated_at" and _stamp_key(value) in ignored:
+            continue
+        touched = True
+        break
     if adjusted:
         return "✎", PROGRESS_ADJUSTED, "Edited"
-    if touched:
-        return "●", PROGRESS_TOUCHED, "Touched"
+    if filled or touched:
+        return "✓", PROGRESS_PROCESSED, "Processed"
     return "", "", ""
 
 
@@ -2365,6 +2904,16 @@ def apply_pressing_copy_facts(
         earliest_year = None
         if master is not None:
             earliest_year = earliest.get((master, str(media_key)))
+        copy_year = safe_int(fact.get("release_year"))
+        original_year = safe_int(fact.get("original_release_year"))
+        if (
+            copy_year is not None
+            and copy_year >= 2025
+            and original_year is not None
+            and original_year < 2025
+            and (earliest_year is None or original_year < earliest_year)
+        ):
+            earliest_year = original_year
         listing_text = "\n".join(
             part
             for part in (clean_text(title), clean_text(seller))
@@ -2711,6 +3260,25 @@ def display_release_year(
     if module.listing_wants_original_pressing(str(title or "")) and stored >= claimed + 8:
         return claimed
     return stored
+
+
+def pressing_menu_year(
+    *,
+    pressing_year: Any = None,
+    title: Any = None,
+    pressing_type: Any = None,
+) -> int | None:
+    """Year printed on the pressing menu and the year line.
+
+    A bare 2025 or 2026 stays hidden. A later press of an older album shows
+    the Discogs year of this copy, including a 2026 repress.
+    """
+    shown = display_release_year(pressing_year=pressing_year, title=title)
+    if shown is not None:
+        return shown
+    if clean_text(pressing_type).upper() != "REISSUE":
+        return None
+    return safe_int(pressing_year)
 
 
 def _catalog_helpers():

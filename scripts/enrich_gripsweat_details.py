@@ -6,12 +6,14 @@ import argparse
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import BrowserContext, Page
@@ -21,6 +23,7 @@ from sqlalchemy import text
 from auction_etl.reporting.main_review_integration import gripsweat_seller_text
 from auction_etl.services.marketplace_browser_runtime import browser
 from auction_etl.database.session import engine
+from auction_etl.services.parse import apply_ebay_us_tax
 
 
 DEFAULT_PROBE = Path(
@@ -120,6 +123,7 @@ class DetailResult:
     title: str | None = None
     sold_at: datetime | None = None
     sold_price: Decimal | None = None
+    offer_price: Decimal | None = None
     currency: str | None = None
     image_url: str | None = None
     original_url: str | None = None
@@ -466,7 +470,7 @@ def _currency_code(symbol: str | None, paren: str | None) -> str | None:
     for raw in (paren, symbol):
         if not raw:
             continue
-        key = re.sub(r"\s+", "", raw).upper()
+        key = re.sub(r"[\s()]", "", raw).upper()
         code = _MONEY_CODE.get(key)
         if code:
             return code
@@ -483,34 +487,122 @@ def _priced_amounts(text: str) -> list[tuple[Decimal, str | None]]:
     return found
 
 
+def _node_amount(node: Any) -> tuple[Decimal | None, str | None]:
+    if node is None:
+        return None, None
+    amounts = _priced_amounts(node.get_text(" ", strip=True))
+    if not amounts:
+        return None, None
+    return amounts[-1]
+
+
+def _final_price_label(soup: BeautifulSoup) -> Any:
+    """The Final Price label for this sale, not a related listing."""
+    for strong in soup.find_all("strong"):
+        classes = strong.get("class") or []
+        if "item-price" in classes:
+            continue
+        label = strong.get_text(" ", strip=True).casefold()
+        if label.startswith("final price"):
+            return strong
+    return None
+
+
+def _prices_after_final_label(
+    label: Any,
+) -> tuple[Decimal | None, Decimal | None, str | None]:
+    """Read only the siblings that belong to this Final Price.
+
+    Related listings further down the page reuse item-price and
+    item-offer-price. Those are not this sale.
+    """
+    accepted: Decimal | None = None
+    original: Decimal | None = None
+    currency: str | None = None
+    for sibling in label.next_siblings:
+        name = getattr(sibling, "name", None)
+        if name == "br":
+            break
+        classes = sibling.get("class") or [] if name else []
+        if name == "strong" and "item-price" not in classes:
+            break
+        if name is None:
+            amounts = _priced_amounts(str(sibling))
+            if len(amounts) >= 2 and accepted is None:
+                original = amounts[0][0]
+                accepted, currency = amounts[-1]
+            elif amounts and accepted is None:
+                accepted, currency = amounts[-1]
+            continue
+        if "item-offer-price" in classes or name in {"strike", "s", "del"}:
+            original, _ask_code = _node_amount(sibling)
+            continue
+        if "item-price" in classes:
+            accepted, paid_code = _node_amount(sibling)
+            currency = currency or paid_code
+            continue
+        if name == "small":
+            currency = _currency_code(None, sibling.get_text(" ", strip=True)) or currency
+    return accepted, original, currency
+
+
+def gripsweat_offer_prices(
+    soup: BeautifulSoup | None,
+    visible_text: str,
+) -> tuple[Decimal | None, Decimal | None, str | None]:
+    """Accepted price, struck original, and currency.
+
+    An offer prints the ask struck through, then the paid amount, in
+    the Final Price line. The paid amount is the sale, before shipping.
+    One price, with no strike, is just the sale. Prices on related
+    listings are ignored.
+    """
+    accepted: Decimal | None = None
+    original: Decimal | None = None
+    currency: str | None = None
+    if soup is not None:
+        label = _final_price_label(soup)
+        if label is not None:
+            accepted, original, currency = _prices_after_final_label(label)
+    if accepted is None:
+        # The amount is often on the next line (£32.99). A later price
+        # after Bid Count belongs to a related listing.
+        final_block = re.search(
+            r"Final Price:\s*(.{0,160})",
+            visible_text or "",
+            re.IGNORECASE | re.DOTALL,
+        )
+        if final_block:
+            block = re.split(
+                r"Bid Count|Seller Feedback|Related",
+                final_block.group(1),
+                maxsplit=1,
+            )[0]
+            amounts = _priced_amounts(block)
+            if len(amounts) >= 2:
+                original = original or amounts[0][0]
+                accepted, code = amounts[-1]
+                currency = currency or code
+            elif amounts:
+                accepted, code = amounts[0]
+                currency = currency or code
+    if accepted is not None and original == accepted:
+        original = None
+    if accepted is not None and not currency:
+        currency = "USD"
+    return accepted, original, currency
+
+
 def extract_offer(
     soup: BeautifulSoup,
     json_ld: list[dict[str, Any]],
     visible_text: str,
 ) -> tuple[Decimal | None, str | None]:
     # An accepted offer prints the asking price struck through, then the
-    # price that was paid. The last amount in that block is the sale.
-    # The amount is often on the next line (£32.99), and a later $ on the
-    # page belongs to a related listing.
-    final_block = re.search(
-        r"Final Price:\s*(.{0,80})",
-        visible_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if final_block:
-        block = re.split(
-            r"Bid Count|Seller Feedback|Related",
-            final_block.group(1),
-            maxsplit=1,
-        )[0]
-        amounts = _priced_amounts(block)
-        if len(amounts) >= 2:
-            accepted, code = amounts[-1]
-            return accepted, code or "USD"
-        if amounts:
-            amount, code = amounts[0]
-            return amount, code or "USD"
-        return None, None
+    # price that was paid. The paid amount is the sale.
+    accepted, _original, currency = gripsweat_offer_prices(soup, visible_text)
+    if accepted is not None:
+        return accepted, currency
 
     for payload in json_ld:
         offers = payload.get("offers")
@@ -1327,12 +1419,21 @@ def inspect_sale(
         )
         (
             result.sold_price,
+            result.offer_price,
             result.currency,
-        ) = extract_offer(
+        ) = gripsweat_offer_prices(
             soup,
-            json_ld,
             visible_text,
         )
+        if result.sold_price is None:
+            (
+                result.sold_price,
+                result.currency,
+            ) = extract_offer(
+                soup,
+                json_ld,
+                visible_text,
+            )
         result.sold_at = extract_sold_at(
             soup,
             json_ld,
@@ -1397,6 +1498,87 @@ def inspect_sale(
             pass
 
     return result
+
+
+def store_gripsweat_offer(
+    connection: Any,
+    *,
+    listing_id: str,
+    accepted: Decimal,
+    original: Decimal | None,
+    currency: str | None,
+) -> None:
+    """Write the paid price, and the struck ask when the sale was an offer.
+
+    Tax is on the paid price. Shipping is not on the page, so the total
+    stays the paid price plus that tax.
+    """
+    code = (currency or "USD").upper()
+    hammer, tax, gross, rate = apply_ebay_us_tax(accepted, currency=code)
+    is_offer = original is not None and original != accepted
+    connection.execute(
+        text(
+            """
+            UPDATE warehouse.auction
+            SET start_price = CASE
+                    WHEN :is_offer THEN CAST(:original AS numeric)
+                    ELSE NULL
+                END,
+                final_price = :hammer,
+                tax_amount = CAST(:tax AS numeric),
+                gross_price = :gross,
+                tax_rate = CAST(:rate AS numeric),
+                price_includes_tax = CASE
+                    WHEN CAST(:tax AS numeric) IS NULL THEN price_includes_tax
+                    ELSE FALSE
+                END,
+                final_price_usd = CASE
+                    WHEN :code = 'USD' THEN :hammer
+                    ELSE NULL
+                END,
+                tax_usd = CASE
+                    WHEN :code = 'USD' THEN CAST(:tax AS numeric)
+                    ELSE NULL
+                END,
+                gross_price_usd = CASE
+                    WHEN :code = 'USD' THEN :gross
+                    ELSE NULL
+                END,
+                auction_format = CASE
+                    WHEN :is_offer THEN 'FIXED_PRICE_OBO'
+                    ELSE 'AUCTION'
+                END,
+                currency = :code
+            WHERE marketplace = 'gripsweat'
+              AND listing_id = :listing_id
+            """
+        ),
+        {
+            "listing_id": listing_id,
+            "original": original,
+            "hammer": hammer,
+            "tax": tax,
+            "gross": gross,
+            "rate": rate,
+            "code": code,
+            "is_offer": is_offer,
+        },
+    )
+    connection.execute(
+        text(
+            """
+            UPDATE warehouse.gripsweat_sale
+            SET sold_price = :hammer,
+                currency = :code
+            WHERE gripsweat_item_id = :listing_id
+            """
+        ),
+        {
+            "listing_id": listing_id,
+            "hammer": hammer,
+            "code": code,
+        },
+    )
 
 
 def apply_result(result: DetailResult) -> None:
@@ -1504,6 +1686,84 @@ def apply_result(result: DetailResult) -> None:
                     "description": result.seller_text,
                 },
             )
+        if result.sold_price is not None and result.gripsweat_item_id:
+            store_gripsweat_offer(
+                connection,
+                listing_id=result.gripsweat_item_id,
+                accepted=result.sold_price,
+                original=result.offer_price,
+                currency=result.currency,
+            )
+
+
+def repair_gripsweat_offers() -> tuple[int, int, int]:
+    """Re-read stored item pages and keep each sale's own Final Price.
+
+    A struck price on that line is the original ask. A struck price on
+    a related listing is not. Pages already marked complete are
+    included. Returns pages read, sales stored, and pages that could
+    not be read.
+    """
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT DISTINCT ON (gripsweat_item_id)
+                    gripsweat_item_id,
+                    gripsweat_url
+                FROM warehouse.gripsweat_sale
+                WHERE gripsweat_item_id IS NOT NULL
+                  AND gripsweat_url IS NOT NULL
+                ORDER BY gripsweat_item_id
+                """
+            )
+        ).all()
+
+    stored = 0
+    failed = 0
+
+    def read_one(item_id: object, url: str) -> tuple[str, Decimal | None, Decimal | None, str | None, bool]:
+        request = Request(
+            url,
+            headers={"User-Agent": "AuctionETL/1.0 (offer price repair)"},
+        )
+        try:
+            with urlopen(request, timeout=25) as response:
+                html = response.read().decode("utf-8", "replace")
+        except Exception as exc:
+            print(f"offer page failed {item_id}: {exc}", flush=True)
+            return str(item_id), None, None, None, False
+        soup = BeautifulSoup(html, "html.parser")
+        accepted, original, currency = gripsweat_offer_prices(
+            soup,
+            soup.get_text("\n", strip=True),
+        )
+        return str(item_id), accepted, original, currency, True
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [
+            pool.submit(read_one, item_id, url)
+            for item_id, url in rows
+        ]
+        for future in as_completed(futures):
+            item_id, accepted, original, currency, ok = future.result()
+            if not ok:
+                failed += 1
+                continue
+            if accepted is None:
+                continue
+            with engine.begin() as connection:
+                store_gripsweat_offer(
+                    connection,
+                    listing_id=item_id,
+                    accepted=accepted,
+                    original=original,
+                    currency=currency,
+                )
+            stored += 1
+            if stored % 25 == 0:
+                print(f"sales stored {stored}", flush=True)
+    return len(rows), stored, failed
 
 
 def print_result(

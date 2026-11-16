@@ -376,7 +376,13 @@ def test_first_pressing_follows_the_earliest_release_year() -> None:
     assert pressing_type_label("FIRST_PRESSING", 1980) == "First pressing (1980)"
     assert pressing_type_label("REISSUE", 1985) == "Later press (1985)"
     assert pressing_type_label("FIRST_PRESSING", 2026) == "First pressing"
-    assert pressing_type_label("REISSUE", 2026) == "Later press"
+    assert pressing_type_label("REISSUE", 2026) == "Later press (2026)"
+    assert date_pressing_type(
+        generation="UNKNOWN",
+        format_detail="Vinyl, LP, Album, Limited Edition",
+        release_year=2026,
+        earliest_year=1986,
+    ) == "REISSUE"
     assert date_pressing_type(
         generation="UNKNOWN",
         format_detail="Vinyl, 7\"",
@@ -500,6 +506,77 @@ def test_first_pressing_follows_the_earliest_release_year() -> None:
         str(ichie["effective_poster_present"]) in {"", "None", "nan"}
     )
     assert later["effective_pressing_type"] == "REISSUE"
+
+
+def test_a_2026_copy_of_a_1986_album_is_a_later_press() -> None:
+    from app.collector_review_support import (
+        apply_pressing_copy_facts,
+        pressing_menu_year,
+    )
+
+    title = "C-POP Teresa Teng Sake Drunken Search (100% Pure LP) Limited Edition"
+    assert pressing_menu_year(
+        pressing_year=2026,
+        title=title,
+        pressing_type="REISSUE",
+    ) == 2026
+    listings = pd.DataFrame(
+        [
+            {
+                "pressing_id": 1073,
+                "title": title,
+                "effective_pressing_type": "STANDARD",
+            }
+        ]
+    )
+    pressings = pd.DataFrame(
+        [
+            {
+                "id": 963,
+                "discogs_master_id": 1224744,
+                "release_year": 1986,
+                "original_release_year": 1986,
+                "generation": "UNKNOWN",
+                "media_type": "LP",
+                "format_detail": "Vinyl, LP, Album",
+                "notes": "",
+            },
+            {
+                "id": 1073,
+                "discogs_master_id": 1224744,
+                "release_year": 2026,
+                "original_release_year": 1986,
+                "generation": "UNKNOWN",
+                "media_type": "LP",
+                "format_detail": "Vinyl, LP, 45 RPM, Album, Limited Edition",
+                "catalog_number": "PROT-7418/9",
+                "notes": "",
+            },
+        ]
+    )
+    filled = apply_pressing_copy_facts(listings, pressings).iloc[0]
+    assert filled["effective_pressing_type"] == "REISSUE"
+
+    alone = pd.DataFrame(
+        [
+            {
+                "pressing_id": 1073,
+                "title": title,
+                "effective_pressing_type": "STANDARD",
+            }
+        ]
+    )
+    only_modern = pressings[pressings["id"] == 1073]
+    assert (
+        apply_pressing_copy_facts(alone, only_modern).iloc[0]["effective_pressing_type"]
+        == "REISSUE"
+    )
+    sale_year = pressings[pressings["id"] == 1073].copy()
+    sale_year["original_release_year"] = 2026
+    assert (
+        apply_pressing_copy_facts(alone, sale_year).iloc[0]["effective_pressing_type"]
+        == "STANDARD"
+    )
 
 
 def test_gripsweat_side_grades_and_runout_fill_the_copy() -> None:
@@ -820,13 +897,133 @@ def test_seller_report_fills_obi_and_grades_for_a_seven_inch() -> None:
 
     assert review_progress({}) == ("", "", "")
     assert review_progress({"collector_updated_at": "2026-10-01T00:00:00Z"})[:2] == (
-        "●",
-        "Touched",
+        "✓",
+        "Processed",
     )
     assert review_progress({"identity_status": "filled_auto"})[:2] == (
         "✓",
         "Processed",
     )
+    from app.collector_review_support import mass_saved_stamps
+
+    doubled = pd.DataFrame(
+        {
+            "collector_updated_at": ["2026-10-07T00:39:23Z"] * 20,
+        }
+    )
+    doubled["collector_updated_at_again"] = doubled["collector_updated_at"]
+    doubled.columns = ["collector_updated_at", "collector_updated_at"]
+    assert mass_saved_stamps(doubled)
+    assert review_progress({"job_lot": True})[:2] == ("", "Not done")
+    assert "piece count" in review_progress(
+        {
+            "job_lot": True,
+            "collector_manual_media_type": "CASSETTE_BULK_LOT",
+            "identity_status": "filled_auto",
+        }
+    )[2]
+    assert review_progress(
+        {
+            "job_lot": True,
+            "manual_media_type": "CASSETTE_BULK_LOT",
+            "manual_disc_count": 55,
+            "manual_condition_media": "VG+",
+            "manual_verdict": "WATCH",
+            "identity_status": "filled_auto",
+        }
+    )[:2] == ("✓", "Processed")
+    assert review_progress(
+        {
+            "job_lot": True,
+            "title": "【カセットテープ】テレサテン まとめて4点 鄧麗君",
+            "manual_disc_count": 55,
+            "effective_condition_media": "VG+",
+            "manual_verdict": "WATCH",
+        }
+    )[:2] == ("✓", "Processed")
+    counted = review_progress(
+        {
+            "job_lot": True,
+            "title": "【カセットテープ】テレサテン まとめて4点 鄧麗君",
+        }
+    )
+    assert counted[:2] == ("✓", "Processed")
+    assert review_progress(
+        {"job_lot": True, "title": "ジャンク まとめて 10点"}
+    )[1] == "Not done"
+    from app.collector_review_support import (
+        auction_timeline_caption,
+        title_piece_count,
+    )
+
+    cd_pile = (
+        "【1円スタート】ジャンク 邦楽 CD アルバム J-POP まとめ "
+        "山口百恵 中森明菜194本 Khg127"
+    )
+    assert title_piece_count(cd_pile) == 194
+    assert title_piece_count("カセット 42コ まとめ売り") == 42
+    assert title_piece_count("CD 7個セット まとめ") == 7
+    assert title_piece_count("CD 2枚組 TACL-2395") == 0
+    assert title_piece_count("Lot of (8) VINTAGE Chinese Cassette Tapes") == 8
+    assert title_piece_count("lot x5 Tetesa Teng CD") == 5
+    assert title_piece_count("Japanese LP x3 Momoe Yamaguchi") == 3
+    assert title_piece_count("Momoe Yamaguchi Ep Record 6-Disc Set") == 6
+    assert title_piece_count("EP 20-Record Set") == 20
+    assert title_piece_count("Teresa Teng Best 10 record LP") == 0
+    assert title_piece_count("45rpm Lot Of 4A絕戀") == 0
+    assert title_piece_count("45rpm Lot Of 4 Ex Copy") == 4
+    assert title_piece_count("Lot(3) 70s Japan HITS LP") == 3
+    assert title_piece_count("CD 8巻セット まとめ") == 8
+    assert title_piece_count("カセットテープ 2巻組") == 0
+    assert title_piece_count("鄧麗君 2セット・アカシアの夢") == 2
+    assert title_piece_count("1万セット限定") == 0
+    assert title_piece_count("3 CD LOT - RARE ALBUMS") == 3
+    assert title_piece_count("The Best of Teresa Teng 1 3 4 CD Lot") == 0
+    assert title_piece_count(
+        "Vtg 10 Hong Kong SISTERS' PICTORIAL Magazines 1980s"
+    ) == 10
+    assert title_piece_count("ジャンク まとめ 写真参照") == 0
+    assert title_piece_count("通算20枚目 シングル 10TT-7208") == 0
+    from app.collector_review_support import automatic_disc_count, cassette_tape_count
+
+    hong_kong_cassette = (
+        "【カセットテープ】テレサ・テン / 香港 / 星のしずくに濡れて "
+        "/1989年 リリース/通算20枚目 シングル/10TT-7208"
+    )
+    assert cassette_tape_count(hong_kong_cassette) == 1
+    assert cassette_tape_count("カセットテープ 2本組") == 2
+    assert automatic_disc_count(
+        {"title": hong_kong_cassette, "job_lot": True},
+        "CASSETTE",
+    ) == 1
+    assert review_progress({"job_lot": True, "title": cd_pile})[:2] == (
+        "✓",
+        "Processed",
+    )
+    assert review_progress(
+        {"job_lot": True, "title": "ジャンク CD まとめ 写真のみ"}
+    )[1] == "Not done"
+    assert auction_timeline_caption(
+        "2026-09-08 06:57:05+00:00",
+        "2026-09-13 13:57:05+00:00",
+        "buyee",
+    ) == (
+        "Opened 8 Sep 2026 15:57:05 JST"
+        " · Closed 13 Sep 2026 22:57:05 JST"
+        " · Ran 5 days 7 hours"
+    )
+    assert auction_timeline_caption(
+        "2026-08-13 19:41:30+00:00",
+        "2026-01-07 00:00:00+00:00",
+        "gripsweat",
+    ) == "Sold 7 Jan 2026"
+    assert auction_timeline_caption(None, None, "buyee") == (
+        "Auction clock is not on this sale yet."
+    )
+    assert review_progress(
+        {"job_lot": True, "collector_updated_at": "2026-10-07T00:39:23Z"},
+        ignore_times={"2026-10-07T00:39:23+00:00"},
+    )[:2] == ("", "Not done")
     assert review_progress(
         {
             "collector_updated_at": "2026-10-01T00:00:00Z",
@@ -839,7 +1036,7 @@ def test_seller_report_fills_obi_and_grades_for_a_seven_inch() -> None:
             "identity_status": "filled_manual",
             "collector_manual_condition_media": "VG+",
         }
-    )[:2] == ("✓", "Processed")
+    )[:2] == ("✎", "Adjusted")
 
 
 def test_catalog_reference_compares_a_complete_copy_with_one_that_never_said() -> None:
@@ -1301,7 +1498,14 @@ def test_mark_matched_does_not_require_discogs() -> None:
     source = REVIEW.read_text(encoding="utf-8")
     body = source.split("def mark_listing_matched", 1)[1].split("\ndef ", 1)[0]
     assert "identity_status = 'filled_manual'" in body
-    assert "identity_source = COALESCE(identity_source, 'listing')" in body
+    assert "identity_source = 'listing'" in body
+    after_save = source.split("changed_rows = save_collector_record", 1)[1]
+    after_mark = after_save.split("if mark_matched:", 1)[1]
+    assert "mark_listing_matched" in after_mark.split("st.rerun()", 1)[0]
+    mark_done = after_mark.split("if marked != 1:", 1)[1].split("return", 1)[1]
+    mark_done = mark_done.split("st.rerun()", 1)[0]
+    assert "_advance_to_neighbor(identity)" in mark_done
+    assert 'pop(f"_keep_open:{identity}"' in mark_done
     assert "discogs_release" not in body
     assert "Mark matched" in source
     assert '"LP_BULK_LOT"' in source

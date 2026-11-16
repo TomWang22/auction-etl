@@ -24,12 +24,29 @@ def function_block(name: str) -> str:
     return source[start:nxt]
 
 
-def test_completed_analytics_require_at_least_one_bid() -> None:
-    """Buy-it-now / 0-bid listings must not enter comparable-sale charts."""
+def test_completed_sales_include_every_scraped_platform() -> None:
+    """BIN, Best Offer, and auctions with a missing bid stay in the chart."""
     source = page_source()
 
-    assert "COALESCE(bid_count, 0) > 0" in source
-    assert "at least one bid" in source.casefold()
+    assert "COALESCE(sale.bid_count, -1) = 0" in source
+    assert "FIXED_PRICE_OBO" in source
+    assert "Buy It Now" in source
+    assert "Best Offer" in source
+    assert "display_title" in source
+    assert "cover_url" in source
+    assert "gross_price_usd" in source
+    assert "english_album_title" in source
+    assert "ImageColumn" in source
+    assert "Original price" in source
+    assert "original_release_year" in source
+    assert "ANALYTICS_MEDIA_SQL" in function_block("load_catalog_options")
+    assert "artist_name" in function_block("_pressing_choice_label")
+    assert "pressings_for_tracked_artist" in source
+    assert "manual_purchase_price" in source
+    assert "ascending=[True, True, True]" in source
+    assert "release_year DESC" not in source
+    assert "sale.currency = :currency" not in source
+    assert "at least one bid" not in source.casefold()
     for name in (
         "load_catalog_options",
         "load_filter_values",
@@ -37,10 +54,7 @@ def test_completed_analytics_require_at_least_one_bid() -> None:
         "load_sales",
     ):
         block = function_block(name)
-        assert (
-            "COMPLETED_AUCTION_PREDICATE" in block
-            or "COALESCE(bid_count, 0) > 0" in block
-        )
+        assert "COMPLETED_SALE_PREDICATE" in block
 
 
 def test_streamlit_tables_use_printf_money_not_altair_format() -> None:

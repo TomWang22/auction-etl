@@ -260,6 +260,18 @@ def test_known_sleeve_reuse_requires_album_or_catalog() -> None:
     assert _pressing_agrees_with_listing(sc_row, same_album_wrong_catno) is False
     assert _pressing_agrees_with_listing(dual, dual_pressing) is True
     assert _pressing_agrees_with_listing(rock, self_titled) is False
+    evil_girl = {
+        "title": "Gripsweat - 1986 Anita Mui 梅艷芳 妖女 / 將冰山劈開 12\" LP Vinyl Record Hong Kong",
+        "catalog_number": "CAL-04-1039",
+        "artist": "Anita Mui",
+        "media_type": "LP",
+    }
+    self_titled_evil = {
+        "display_artist": "梅艷芳",
+        "display_title": "梅艷芳",
+        "catalog_number": "CAL-04-1039",
+    }
+    assert _pressing_agrees_with_listing(evil_girl, self_titled_evil) is True
     assert _pressing_agrees_with_listing(hits_row, hits_pressing) is True
     assert _pressing_agrees_with_listing(bilingual, bilingual_wrong) is False
     assert _pressing_agrees_with_listing(bilingual, bilingual_right) is True

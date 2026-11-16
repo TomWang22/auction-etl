@@ -9,9 +9,11 @@ from auction_etl.services.discogs_identity import (
     Classification,
     artist_from_english_title,
     artist_overlaps,
+    canonical_artist_display,
     canonical_artist_key,
     canonical_title_key,
     catalog_token,
+    catalog_search_variants,
     is_junk_catalog,
     listing_identity_catalog,
     catalog_printed_on_listing,
@@ -22,7 +24,10 @@ from auction_etl.services.discogs_identity import (
     classify_search_hits,
     shortlist_agrees_with_listing,
     discogs_search_format,
+    english_album_title,
+    extract_release_year,
     fold_catalog,
+    hit_fits_listing_year,
     listing_search_artist,
     listing_volume_number,
     cover_fields_from_release,
@@ -31,6 +36,9 @@ from auction_etl.services.discogs_identity import (
     prefers_japan,
     unique_hit_can_auto_fill,
     album_name_in_listing,
+    jukebox_promo_catalog,
+    listing_barcode,
+    inferred_release_catalog,
     known_album_phrase,
     listing_names_specific_album,
     hit_bundles_other_album,
@@ -122,6 +130,7 @@ def test_ebay_sold_month_day_is_not_a_catalog() -> None:
     assert is_junk_catalog("L-11")
     assert not is_junk_catalog("TASL-7920")
     assert not is_junk_catalog("SOLL-114")
+    assert not is_junk_catalog("08EH-27")
     assert not is_junk_catalog("SOLI-70")
     assert not is_junk_catalog("SOLI70")
     assert catalog_token(
@@ -440,6 +449,18 @@ def test_prefers_japan_for_jp_titles() -> None:
 
 def test_catalog_token_reads_ep_cd_and_cinepoly_numbers() -> None:
     assert catalog_token(title="山口百恵 31st Single YS-265 シングル") == "YS-265"
+    assert catalog_token(
+        title="Momoe Yamaguchi Utai Tsugarete yuku 40AH116970 CBS SONY Japan",
+    ) == "40AH-1169~70"
+    assert catalog_token(
+        title="Sony 38Ah 9 10 Momoe Yamaguchi / Best Of Vest Japanese Music",
+    ) == "38AH-9~10"
+    assert catalog_token(
+        title="Momoe Legend Model Number 00AH 1021 5 CBS SONY",
+    ) == "00AH-1021"
+    assert catalog_token(catalog_number="OOAH-1021") == "00AH-1021"
+    assert catalog_search_variants("38AH-9~10")[0] == "38AH-9"
+    assert catalog_search_variants("PROT-7418~9")[0] == "PROT-7418"
     assert catalog_token(title="テレサ・テン CD CDU-104 カラオケ") == "CDU-104"
     assert catalog_token(
         title="ANITA MUI 梅艷芳 似水流年 Cinepoly LP-3973 Hong Kong",
@@ -695,6 +716,72 @@ def test_unique_catno_vinyl_hit_is_dead_on() -> None:
     assert result.hits[0].catno == "SOLL-114"
 
 
+def test_malaysia_jukebox_promo_is_its_own_catalog() -> None:
+    assert (
+        jukebox_promo_catalog(
+            "Gripsweat - (c9084) Malaysia Chinese promo Jukebox 7\" record - ANITA MUI"
+        )
+        == "JUKEBOX C-9084"
+    )
+    assert (
+        jukebox_promo_catalog(
+            "Anita Mui Malaysia Chinese Jukebox 1980's Promo Single - Rare C518"
+        )
+        == "JUKEBOX C-518"
+    )
+    assert (
+        jukebox_promo_catalog(
+            "Malaysia Chinese promo 7\" - Anita Mui vs Paula Tsui (833) c594"
+        )
+        == "JUKEBOX C-594"
+    )
+    assert (
+        jukebox_promo_catalog(
+            "Anita Mui Stand By Me Malaysia 1990's Chinese Juxebox Promo Single"
+        )
+        == "JUKEBOX"
+    )
+    assert listing_barcode(
+        "4716346162024;【3CDBOX/台湾盤】テレサ・テン / 国台語暢銷金曲"
+    ) == "4716346162024"
+    assert listing_barcode("国内盤 4988005296986 テレサ・テン") == "4988005296986"
+    assert listing_barcode("Teresa Teng 空港 Polydor LP 28AH-1") is None
+    assert jukebox_promo_catalog("Teresa Teng 空港 Polydor LP 28AH-1") is None
+    assert jukebox_promo_catalog("GRACE CHANG 7\" ep not teresa teng") is None
+
+
+def test_career_span_year_keeps_the_box_dated_to_the_end() -> None:
+    title = (
+        "Gripsweat - MOMOE YAMAGUCHI PLAYBACK 1973-1982 "
+        "CBS/SONY 60AH-1486,7,8 JAPAN VINYL LP"
+    )
+    assert extract_release_year(title) == 1982
+    assert hit_fits_listing_year(title, 1982) is True
+    assert hit_fits_listing_year(title, 1973) is True
+    hit = {
+        "id": 8299480,
+        "type": "release",
+        "title": "Momoe Yamaguchi - Playback 1973-1982 Momoe",
+        "catno": "60AH-1486~8",
+        "year": "1982",
+        "country": "Japan",
+        "format": ["Vinyl", "LP", "Compilation", "Box Set"],
+        "label": ["CBS/Sony"],
+        "uri": "/release/8299480",
+    }
+    result = classify_search_hits(
+        catalog_number="60AH-1486",
+        title=title,
+        artist="Momoe Yamaguchi",
+        media_type="LP",
+        hits=parse_search_hits([hit]),
+        require_catalog_token=True,
+    )
+    assert result.status == "filled_auto"
+    assert result.chosen is not None
+    assert result.chosen.discogs_id == 8299480
+
+
 def test_range_catalog_unique_cd_is_dead_on() -> None:
     hit = {
         "id": 4242,
@@ -874,6 +961,299 @@ def test_catalog_hit_wrong_format_needs_review() -> None:
         release_artist_names=("Momoe Yamaguchi", "山口百恵"),
         listing_catalog="SOLL-114",
     )
+
+
+def test_printed_lp_catalog_fills_when_the_series_has_other_volumes() -> None:
+    hits = parse_search_hits(
+        [
+            {
+                "id": 7876283,
+                "type": "release",
+                "title": "山口百恵 - 歌い継がれてゆく歌のように",
+                "catno": "40AH 1169~70",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Vinyl", "LP", "Compilation"],
+                "label": ["CBS/Sony"],
+            },
+            {
+                "id": 14587331,
+                "type": "release",
+                "title": "山口百恵 - 歌い継がれてゆく歌のように",
+                "catno": "40AH1167~8",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Vinyl", "LP", "Compilation"],
+                "label": ["CBS/Sony"],
+            },
+            {
+                "id": 15625041,
+                "type": "release",
+                "title": "山口百恵 - 歌い継がれてゆく歌のように",
+                "catno": "SRCL 2558",
+                "year": "1993",
+                "country": "Japan",
+                "format": ["CD", "Album"],
+                "label": ["Sony"],
+            },
+            {
+                "id": 29534956,
+                "type": "release",
+                "title": "山口百恵 - 歌い継がれてゆく歌のように",
+                "catno": "40KH 941",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Cassette", "Compilation"],
+                "label": ["CBS/Sony"],
+            },
+        ]
+    )
+    result = classify_search_hits(
+        catalog_number="40AH-1169~70",
+        title="2LP Momoe Yamaguchi Utai Tsugarete yuku Uta no youni 40AH116970",
+        artist="Momoe Yamaguchi",
+        media_type="LP",
+        hits=hits,
+    )
+    assert result.status == "filled_auto"
+    assert result.chosen is not None
+    assert result.chosen.discogs_id == 7876283
+
+
+def test_seven_inch_listing_fills_when_discogs_also_files_an_lp_of_that_catno() -> None:
+    hits = parse_search_hits(
+        [
+            {
+                "id": 8574540,
+                "type": "release",
+                "title": "山口百恵 - 一恵",
+                "catno": "09SH 894",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Vinyl", '7"'],
+                "label": ["CBS/Sony"],
+            },
+            {
+                "id": 11948137,
+                "type": "release",
+                "title": "山口百恵 - 一恵",
+                "catno": "09SH 894",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Vinyl", "LP"],
+                "label": ["CBS/Sony"],
+            },
+        ]
+    )
+    result = classify_search_hits(
+        catalog_number=None,
+        title="Momoe Yamaguchi ~ Ichie/ Japan 7\"/ OBI",
+        artist="Momoe Yamaguchi",
+        media_type="EP_7_INCH",
+        hits=hits,
+    )
+    assert result.status == "filled_auto"
+    assert result.chosen is not None
+    assert result.chosen.discogs_id == 8574540
+
+
+def test_named_seven_inch_fills_when_other_formats_use_other_catnos() -> None:
+    hits = parse_search_hits(
+        [
+            {
+                "id": 8906557,
+                "type": "release",
+                "title": "テレサ・テン - つぐない",
+                "catno": "07TR-1056",
+                "year": "1984",
+                "country": "Japan",
+                "format": ["Vinyl", '7"', "45 RPM", "Single"],
+                "label": ["Taurus"],
+            },
+            {
+                "id": 35980840,
+                "type": "release",
+                "title": "テレサ・テン - つぐない",
+                "catno": "07TR-1056",
+                "year": "1984",
+                "country": "Japan",
+                "format": ["Vinyl", '7"', "45 RPM", "Single", "Promo"],
+                "label": ["Taurus"],
+            },
+            {
+                "id": 6517055,
+                "type": "release",
+                "title": "テレサ・テン - つぐない",
+                "catno": "28TR-2032",
+                "year": "1984",
+                "country": "Japan",
+                "format": ["Vinyl", "LP", "Album"],
+                "label": ["Taurus"],
+            },
+            {
+                "id": 15515098,
+                "type": "release",
+                "title": "テレサ・テン - つぐない",
+                "catno": "35TX-1002",
+                "year": "1984",
+                "country": "Japan",
+                "format": ["CD", "Album"],
+                "label": ["Taurus"],
+            },
+        ]
+    )
+    result = classify_search_hits(
+        catalog_number=None,
+        title='Japanese press 7" TERESA TENG TUGUNAI / WARATTE KANPAI',
+        artist="Teresa Teng",
+        media_type="EP_7_INCH",
+        hits=hits,
+        require_catalog_token=False,
+    )
+    assert result.status == "filled_auto"
+    assert result.chosen is not None
+    assert result.chosen.catno == "07TR-1056"
+    assert result.chosen.discogs_id == 8906557
+
+
+def test_two_lp_catalogs_of_one_album_stay_undecided() -> None:
+    hits = parse_search_hits(
+        [
+            {
+                "id": 8244796,
+                "type": "release",
+                "title": "山口百恵 - This Is My Trial",
+                "catno": "27AH 1112",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Vinyl", "LP"],
+                "label": ["CBS/Sony"],
+            },
+            {
+                "id": 19752685,
+                "type": "release",
+                "title": "山口百恵 - This Is My Trial",
+                "catno": "30AH 520",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Vinyl", "LP"],
+                "label": ["CBS/Sony"],
+            },
+        ]
+    )
+    result = classify_search_hits(
+        catalog_number=None,
+        title="Momoe Yamaguchi ~ This is My Trilal/ Japan LP/ OBI",
+        artist="Momoe Yamaguchi",
+        media_type="LP",
+        hits=hits,
+    )
+    assert result.status == "needs_review"
+    assert result.chosen is None
+
+
+def test_lp_title_drops_the_seven_and_the_cassette() -> None:
+    yokosuka = parse_search_hits(
+        [
+            {
+                "id": 1,
+                "type": "release",
+                "title": "山口百恵 - パールカラーにゆれて / 横須賀ストーリー",
+                "catno": "08EH 22",
+                "year": "1976",
+                "country": "Japan",
+                "format": ["Vinyl", "LP"],
+            },
+            {
+                "id": 2,
+                "type": "release",
+                "title": "山口百恵 - 横須賀ストーリー",
+                "catno": "25AH 48",
+                "year": "1976",
+                "country": "Japan",
+                "format": ["Vinyl", "LP"],
+            },
+        ]
+    )
+    locked = classify_search_hits(
+        catalog_number=None,
+        title="MOMOE YAMAGUCHI Yokosuka Story VINYL LP",
+        artist="Momoe Yamaguchi",
+        media_type="LP",
+        hits=yokosuka,
+    )
+    assert locked.status == "filled_auto"
+    assert locked.chosen is not None
+    assert locked.chosen.catno == "25AH 48"
+
+    phoenix = parse_search_hits(
+        [
+            {
+                "id": 3,
+                "type": "release",
+                "title": "山口百恵 - 不死鳥伝説",
+                "catno": "38KH 846",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Cassette"],
+            },
+            {
+                "id": 4,
+                "type": "release",
+                "title": "山口百恵 - 不死鳥伝説",
+                "catno": "38AH 1039～40",
+                "year": "1980",
+                "country": "Japan",
+                "format": ["Vinyl", "LP"],
+            },
+        ]
+    )
+    album = classify_search_hits(
+        catalog_number=None,
+        title="MOMOE YAMAGUCHI / FUSHICHO DENSETSU / CBS SONY JAPAN OBI 2LPS",
+        artist="Momoe Yamaguchi",
+        media_type="LP",
+        hits=phoenix,
+    )
+    assert album.status == "filled_auto"
+    assert album.chosen is not None
+    assert album.chosen.catno == "38AH 1039～40"
+
+
+def test_printed_soli_locks_the_live_lp_when_media_is_blank() -> None:
+    hits = parse_search_hits(
+        [
+            {
+                "id": 5,
+                "type": "release",
+                "title": "山口百恵 - 百恵ライブ",
+                "catno": "SOLI 70~71",
+                "year": "1975",
+                "country": "Japan",
+                "format": ["Vinyl", "LP"],
+            },
+            {
+                "id": 6,
+                "type": "release",
+                "title": "山口百恵 - 百恵ライブ",
+                "catno": "SRCL3426-7",
+                "year": "1995",
+                "country": "Japan",
+                "format": ["CD"],
+            },
+        ]
+    )
+    result = classify_search_hits(
+        catalog_number="SOLI-70",
+        title="MOMOE YAMAGUCHI/MOMOE LIVE w/OBI JPN SOLI 70~71",
+        artist="Momoe Yamaguchi",
+        media_type=None,
+        hits=hits,
+        require_catalog_token=True,
+    )
+    assert result.status == "filled_auto"
+    assert result.chosen is not None
+    assert result.chosen.catno == "SOLI 70~71"
 
 
 def test_missing_token_is_unmatched() -> None:
@@ -1308,6 +1688,13 @@ def test_disc_count_comes_from_release_qty_or_the_format_name() -> None:
         [{"name": "Vinyl", "descriptions": ["LP", "Album"]}]
     )
     assert implied == 1
+    cassette_box, _detail, _count, _generation = _map_formats(
+        [
+            {"name": "Box Set", "descriptions": ["Compilation"]},
+            {"name": "Cassette", "descriptions": ["Compilation"]},
+        ]
+    )
+    assert cassette_box == "CASSETTE_BOX_SET"
 
 
 def test_two_label_entities_require_explicit_choice() -> None:
@@ -2510,6 +2897,10 @@ def test_listing_search_artist_maps_cjk_and_ebay_english() -> None:
         discogs_names=("山口百恵", "Momoe"),
     )
     assert listing_search_artist(None, "テレサテン/ベスト&ベスト~香港・CD") == "Teresa Teng"
+    assert listing_search_artist(
+        None,
+        "【希少品】☆香港盤☆LP/鄧麗君 テレサ・テン/鄧麗君十五週年/817 132/817 133/見開き/2LP",
+    ) == "Teresa Teng"
     assert listing_search_artist(None, "邓丽君 酒醉的探戈 LP") == "Teresa Teng"
     assert listing_search_artist(
         "Teresa Teng",
@@ -2579,6 +2970,10 @@ def test_listing_search_artist_maps_cjk_and_ebay_english() -> None:
 
 
 def test_canonical_artist_and_title_keys_fold_scripts() -> None:
+    assert canonical_artist_display("山口百恵 / Momoe Yamaguchi") == "Momoe Yamaguchi"
+    assert canonical_artist_display("テレサ・テン") == "Teresa Teng"
+    assert canonical_artist_display("Theresa Teng") == "Teresa Teng"
+    assert canonical_artist_display(float("nan")) == ""
     assert canonical_artist_key("鄧麗君") == canonical_artist_key("Teresa Teng")
     assert canonical_artist_key("Deng Lijun") == canonical_artist_key("テレサ・テン")
     assert canonical_artist_key("梅艳芳") == canonical_artist_key("Anita Mui")
@@ -2929,6 +3324,23 @@ def test_album_name_agrees_on_aliased_titles() -> None:
         'Japanese press 7" Artist from Taiwan TERESA TENG TUGUNAI / WARATTE KANPAI'
     )
     assert known_album_phrase(tugunai) == "つぐない"
+    assert known_album_phrase(
+        "Momoe Yamaguchi ~ Legend of Phoenix/ Japan Double LP"
+    ) == "不死鳥伝説"
+    assert known_album_phrase(
+        "Momoe Yamaguchi ~ This is My Trilal/ Japan LP"
+    ) == "ディス・イズ・マイ・トライアル"
+    assert known_album_phrase(
+        "MOMOE YAMAGUCHI-YAMAGUCHI MOMOE NO SUBETE"
+    ) == "ベスト・オブ・ベスト 山口百恵のすべて"
+    assert known_album_phrase(
+        "Momoe Yamaguchi ~ Momoe Monogatari/ Japan LP"
+    ) == "百恵物語"
+    assert inferred_release_catalog(
+        title="ANITA MUI original 87 88 live in Hong Kong vinyl 2x lp",
+        artist="Anita Mui",
+        media_type="LP",
+    ) == "CAL-04-1060"
     assert album_name_in_listing(tugunai, "テレサ・テン* - つぐない")
     big_hit = "TERESATENG BIG HIT4 POLYDOR KRS3012 1x7"
     assert known_album_phrase(big_hit) == "ビッグヒット4"
@@ -3346,4 +3758,16 @@ def test_yeu_jow_volume_sixteen_is_awk_039_not_generic_songbook() -> None:
         title,
         [{"title": "鄧麗君 - 鄧麗君之歌", "catno": "LFLP 199"}],
     )
+
+
+def test_english_album_title_sits_beside_a_cjk_catalog_name() -> None:
+    """The chart name is the English alias, and a Latin title stays put."""
+    assert english_album_title("テレサ・テン・ベスト20") == "Best 20"
+    assert english_album_title("愛人") == "Mistress"
+    assert english_album_title("島國之情歌- 再見! 我的愛人") == "Goodbye My Love"
+    assert english_album_title("再見! 我的愛人") == "Goodbye My Love"
+    assert english_album_title("夜の乗客") == "Night Passenger"
+    assert english_album_title("百恵伝説 = Star Legend") == "Star Legend"
+    assert english_album_title("In Brasil") == "In Brasil"
+    assert english_album_title("") == ""
 

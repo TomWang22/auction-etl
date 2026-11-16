@@ -389,7 +389,10 @@ def parse_search(
                 "title": parse_title(card),
                 "subtitle": None,
                 "description": None,
-                "price": price_details["gross_price_jpy"],
+                "price": (
+                    price_details["display_text"]
+                    or price_details["gross_price_jpy"]
+                ),
                 "price_text": price_details["display_text"],
                 "shipping": None,
                 "bids": parse_bids(card),

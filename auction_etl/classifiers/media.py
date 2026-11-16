@@ -11,6 +11,14 @@ class MediaClassification:
     bulk_lot: bool
 
 
+_FILM_TITLES = (
+    r"legend of drunken master",
+    r"drunken master",
+    r"heroic trio",
+    r"moon warriors",
+    r"better tomorrow",
+    r"\bwu yen\b",
+)
 _JOB_LOT_PATTERNS = (
     r"\blot\b",
     r"\bbundle\b",
@@ -100,7 +108,11 @@ _PRINT_PATTERNS = (
     r"11\s*x\s*17",
     r"色紙",
     r"直筆サイン",
-)
+            r"lobby\s*cards?",
+            r"souvenir\s+program",
+            r"movie\s+programs?",
+            r"whisper\s+cards?",
+        )
 _PHOTO_PATTERNS = (
     r"\b\d+\s*x\s*\d+\s*photos?\b",
     r"\bphotos?\b",
@@ -117,6 +129,7 @@ _STAMP_PATTERNS = (
     r"切手",
     r"小型シート",
     r"未使用糊",
+    r"\bmnh\b",
 )
 _USB_PATTERNS = (
     r"\busb\b",
@@ -185,10 +198,12 @@ _MEDIA_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "CD_SINGLE_8CM",
         (
-            r"\b8\s*cm\s*cd\b",
+            r"8\s*cm\s*cd",
+            r"８\s*cm\s*cd",
             r"\b3\s*inch\s*cd\b",
-            r"8センチ",
-            r"8cmシングル",
+            r"[8８]\s*センチ",
+            r"8\s*cm\s*シングル",
+            r"短冊",
         ),
     ),
     (
@@ -272,6 +287,7 @@ _MEDIA_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             r"\bdvd\b",
             r"ＤＶＤ",
+            r"\bvcds?\b",
         ),
     ),
     (
@@ -281,6 +297,8 @@ _MEDIA_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             r"タブ譜",
             r"\bsheet\s*music\b",
             r"\bsong\s*book\b",
+            r"ピアノ[\s・･]*ソロ",
+            r"\bpiano\s+solo\b",
         ),
     ),
     (
@@ -298,7 +316,8 @@ _MEDIA_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "LP",
         (
-            r"(?<![A-Za-z0-9])lp(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])lps?(?![A-Za-z0-9])",
+            r"(?<![A-Za-z])\d+\s*lps?(?![A-Za-z])",
             r"(?<![A-Za-z])lp[- ]?\d{3,5}(?!\d)",
             r"(?<![A-Za-z0-9])\d+\s*lp(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])\d+\s*[x×]\s*lp(?![A-Za-z0-9])",
@@ -365,8 +384,30 @@ def _twelve_inch_shape(text: str) -> str:
     return "LP"
 
 
+def _double_lp_album(text: str) -> bool:
+    """One gatefold or 2-LP album. A pile of separate records is not this."""
+    if re.search(
+        r"まとめ|大量|一括|箱売り|ジャンク|\blot\b|\bbundle\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    if re.search(
+        r"\bgatefold\b|\b2\s*[x×]\s*lps?\b|\b2\s*lps?\b|\bdouble\s+lp\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    return bool(
+        re.search(r"(?<![A-Za-z])lp(?![A-Za-z])", text, re.IGNORECASE)
+        and re.search(r"\b2\s+records?\s+set\b", text, re.IGNORECASE)
+    )
+
+
 def _records_quantity_lot(text: str) -> bool:
     """A count of records is a lot. A year or catno before 'Vinyl Record' is not."""
+    if _double_lp_album(text):
+        return False
     for match in _RECORDS_LOT_RE.finditer(text):
         count = int(match.group(1))
         if 1940 <= count <= 2035:
@@ -383,11 +424,32 @@ def _records_quantity_lot(text: str) -> bool:
     return False
 
 
+_PILE_WORDS = re.compile(
+    r"まとめ|大量|一括|箱売り|ジャンク|など|ほか|\blot\b|\bbundle\b|\bbulk\b",
+    re.IGNORECASE,
+)
+_NAMED_BOX = (
+    r"ボックス",
+    r"\bbox\s*set\b",
+    r"\bboxed\s*set\b",
+    r"cdbox",
+    r"\bcd\s*box\b",
+    r"\d+\s*巻\s*box\b",
+)
+
+
 def _official_multi_disc(text: str) -> bool:
     """A factory box, not a leftover pile. CD BOX and 全5巻 are one release."""
     if _OFFICIAL_MULTI_DISC.search(text):
         return True
     return bool(_VOLUME_BOX.search(text) and _TITLE_CD.search(text))
+
+
+def _single_box_release(text: str) -> bool:
+    """One named box, such as a memorial box. A pile that also says まとめ stays a lot."""
+    if _PILE_WORDS.search(text):
+        return False
+    return _matches_any(text, _NAMED_BOX)
 
 
 def _quantity_implies_bulk(text: str) -> bool:
@@ -511,9 +573,14 @@ def classify_media_details(
     ) or _quantity_implies_bulk(text)
     if (
         bulk_lot
-        and _official_multi_disc(text)
+        and (
+            _official_multi_disc(text)
+            or _single_box_release(text)
+        )
         and not re.search(r"\blot\b", text, re.IGNORECASE)
     ):
+        bulk_lot = False
+    if _double_lp_album(text):
         bulk_lot = False
 
     found_formats: list[str] = []
@@ -639,6 +706,19 @@ def classify_media_details(
         elif re.search(r"\d+\s*本セット", text):
             media_format = "CASSETTE"
 
+    if re.search(r"photo\s*frames?", text, re.IGNORECASE):
+        media_format = "PHOTO"
+    elif (
+        media_format == "MIXED_MEDIA"
+        and re.search(r"楽譜", text)
+        and re.search(r"カラオケ", text)
+    ):
+        media_format = "SHEET_MUSIC"
+
+    if media_format is None and _matches_any(text, _FILM_TITLES):
+        # A cast list with no LP, CD, or cassette is the movie, not a record.
+        media_format = "DVD"
+
     if media_format == "12_INCH_SINGLE":
         media_format = "SINGLE_12_INCH"
 
@@ -676,6 +756,8 @@ def is_job_lot(title: str | None) -> bool:
     if not title:
         return False
     text = re.sub(r"\s+", " ", title).strip()
+    if _double_lp_album(text):
+        return False
     leftover = _matches_any(text, _JOB_LOT_PATTERNS)
     official = _official_multi_disc(text)
     leftover_box = bool(re.search(r"まとめ|大量|一括|箱売り|ジャンク", text))

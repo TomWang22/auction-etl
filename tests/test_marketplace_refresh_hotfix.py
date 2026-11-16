@@ -50,6 +50,40 @@ def test_buyee_one_off_search_url_is_valid() -> None:
     ]
 
 
+def test_buyee_refresh_counts_every_closed_watchlist_page() -> None:
+    """Buyee progress must use this run's pages and listing identities."""
+
+    runner = (
+        ROOT
+        / "scripts"
+        / "run_latest_auction_refresh.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    discovered_sql = runner.split(
+        "buyee_discovered_count",
+        1,
+    )[1].split(
+        "if buyee_staged",
+        1,
+    )[0]
+    pages_sql = runner.split(
+        "buyee_discovery_pages",
+        1,
+    )[1].split(
+        "buyee_discovered_count",
+        1,
+    )[0]
+
+    assert "DISTINCT listing.listing_id" in discovered_sql
+    assert "MAX(" not in discovered_sql
+    assert "COUNT(*)" in pages_sql
+    assert "buyee_discovery_pages" in runner
+    assert '"discovery_pages":\n                        1' not in runner
+    assert "non-WAF failures; continuing refresh" in runner
+
+
 def test_production_ebay_uses_external_handoff() -> None:
     """Production eBay must use the external acquisition handoff."""
     import json

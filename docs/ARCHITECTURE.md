@@ -82,6 +82,23 @@ Accepted local contracts:
 - Buyee uses the headed owner; Gripsweat uses probe/import.
 - Vercel, Railway, and Neon must not connect to this loopback database.
 
+### 2.1c My collection and service layout
+
+My collection (`app/pages/17_My_Collection.py`) is the paid-copy shelf. Backend
+ownership:
+
+| Service | Role |
+| --- | --- |
+| `collection_import` | Buyee / Record City bill OCR and purchase parse |
+| `collection_shelf` | `owned_copy` / collector marks, anatomy, same-catalog Discogs fill |
+| `collection_billing` | Yen bill lines, gaps, shelf ordering |
+| `collection_acquisition` | Auction/fixed/OBO, shop, artist fold, package charts |
+| `discogs_identity` / `discogs_fill` | Search, release choice, pressing assign |
+
+Streamlit is the frontend only. Marketplace refresh stays in
+`scripts/run_latest_auction_refresh.py`. See the README architecture diagram
+for the end-to-end map; this file keeps the historical cloud topology below.
+
 ### 2.1b Historical Vercel + Neon staging topology
 
 The following diagram records the retired staging control-plane layout. It is **not** the current data authority.

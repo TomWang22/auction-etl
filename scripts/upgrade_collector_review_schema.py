@@ -9,6 +9,11 @@ from collections.abc import Sequence
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
 
+from auction_etl.services.collection_billing import (
+    COLLECTION_BILL_DDL,
+    collection_bill_statements,
+)
+
 
 DEFAULT_DATABASE_URL = (
     "postgresql+psycopg://"
@@ -156,6 +161,25 @@ def upgrade_schema(connection: Connection) -> None:
             manual_purchased
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS warehouse.owned_copy (
+            id bigserial PRIMARY KEY,
+            account_id uuid NOT NULL,
+            source varchar NOT NULL,
+            external_id varchar NOT NULL,
+            title text,
+            seller varchar,
+            catalog_number varchar,
+            pressing_id bigint,
+            paid_amount numeric(18, 2),
+            paid_currency varchar,
+            paid_on date,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            UNIQUE (account_id, source, external_id)
+        )
+        """,
+        *collection_bill_statements(COLLECTION_BILL_DDL),
     )
 
     for statement in statements:

@@ -13,6 +13,18 @@ def test_explicit_us_dollar_is_usd() -> None:
     assert currency == "USD"
 
 
+def test_buyee_yen_amount_is_jpy() -> None:
+    amount, currency = parse_sold_money(
+        "4,953 YEN (Price including Tax)"
+    )
+    assert amount == Decimal("4953")
+    assert currency == "JPY"
+
+    amount, currency = parse_sold_money("1,300YEN")
+    assert amount == Decimal("1300")
+    assert currency == "JPY"
+
+
 def test_gbp_and_eur_are_not_usd() -> None:
     amount, currency = parse_sold_money("GBP 36.45")
     assert amount == Decimal("36.45")

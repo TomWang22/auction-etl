@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any, Sequence
 
@@ -68,6 +69,17 @@ def enabled_tracked_artist_names(
     return fetch(bind)
 
 
+def _seller_says_not_this_artist(blob: str, names: Sequence[str]) -> bool:
+    """True when the seller wrote ``not Teresa Teng`` for a tracked name."""
+    for name in names:
+        folded = str(name or "").strip().casefold()
+        if not folded:
+            continue
+        if re.search(rf"\bnot\s+{re.escape(folded)}\b", blob):
+            return True
+    return False
+
+
 def listing_belongs_to_tracked_artists(
     *,
     title: object = None,
@@ -98,6 +110,8 @@ def listing_belongs_to_tracked_artists(
     ):
         return False
     blob_cf = f"{listing_artist or ''} {listing_title or ''}".casefold()
+    if _seller_says_not_this_artist(blob_cf, names):
+        return False
     given_names: list[str] = []
     family_names: list[str] = []
     for name in names:

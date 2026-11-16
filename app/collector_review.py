@@ -39,6 +39,10 @@ from auction_etl.auth.streamlit_auth import (
 from auction_etl.services.account_scope import account_transaction
 from auction_etl.runtime_authority import cloud_runtime_detected
 from auction_etl.services.fx import latest_rate
+import auction_etl.services.tracked_listing_scope as _tracked_scope
+
+importlib.reload(_tracked_scope)
+
 from auction_etl.services.tracked_listing_scope import (
     enabled_tracked_artist_names,
     listing_belongs_to_tracked_artists,
@@ -64,9 +68,13 @@ from app.collector_review_support import (
     apply_local_identity,
     apply_pressing_copy_facts,
     as_boolean,
+    auction_timeline_caption,
     automatic_catalog,
     automatic_disc_count,
     automatic_media_type,
+    automatic_lot_condition,
+    automatic_lot_verdict,
+    counted_reference_lot,
     automatic_pressing_group,
     automatic_pressing_type,
     automatic_region,
@@ -77,7 +85,6 @@ from app.collector_review_support import (
     derive_sale_type,
     display_listing_catalog,
     display_matrix_catalog,
-    display_release_year,
     drop_overlapping_gripsweat_rows,
     form_choice,
     form_disc_count,
@@ -110,6 +117,7 @@ from app.collector_review_support import (
     identity_matches_queue,
     identity_mix_caption,
     place_review_media,
+    listing_counts_as_lot,
     review_lot_flag,
     rows_kept_after_search,
     review_media_slot,
@@ -132,9 +140,11 @@ from app.collector_review_support import (
     marketplace_source_label,
     no_bid_auction_rows,
     omit_no_bid_auctions,
+    pressing_menu_year,
     pressing_type_label,
     sales_without_no_bid_auctions,
     recent_change_facts,
+    mass_saved_stamps,
     review_progress,
     PROGRESS_ADJUSTED,
     PROGRESS_NOT_DONE,
@@ -181,9 +191,12 @@ importlib.reload(_discogs_identity)
 from auction_etl.services.discogs_identity import (
     discogs_format_label,
     listing_format_label,
+    jukebox_promo_catalog,
+    known_album_phrase,
     listing_identity_catalog,
     listing_media_compatible,
     listing_search_artist,
+    query_is_year,
     search_user_catalog,
     shortlist_agrees_with_listing,
     visible_shortlist_hits,
@@ -817,14 +830,17 @@ def load_records(account_id: str) -> pd.DataFrame:
                 text(
                     """
                     SELECT
-                        id,
-                        discogs_master_id,
-                        release_year,
-                        generation,
-                        media_type,
-                        format_detail,
-                        notes
-                    FROM warehouse.pressing_identity
+                        pressing.id,
+                        pressing.discogs_master_id,
+                        pressing.release_year,
+                        family.original_release_year,
+                        pressing.generation,
+                        pressing.media_type,
+                        pressing.format_detail,
+                        pressing.notes
+                    FROM warehouse.pressing_identity AS pressing
+                    LEFT JOIN warehouse.release_family AS family
+                      ON family.id = pressing.release_family_id
                     """
                 ),
                 get_engine(),
@@ -1006,10 +1022,12 @@ def prepare_records(
         errors="coerce",
     )
 
-    # eBay and Gripsweat sales that do not state a tax use 6.25%.
+    # USD eBay and Gripsweat sales that do not state a tax use 6.25%
+    # of the accepted price. Other currencies keep the stored tax.
     # A tax already stored on the row stays as it is.
     needs_tax = (
         frame["marketplace"].str.casefold().isin(["ebay", "gripsweat"])
+        & frame["currency_display"].str.upper().eq("USD")
         & frame["hammer_local"].notna()
         & (frame["tax_local"].isna() | frame["tax_local"].eq(0))
     )
@@ -1093,18 +1111,24 @@ def prepare_records(
         shared_media = frame["manual_media_type"]
     else:
         shared_media = [""] * len(frame)
-    if "manual_bulk_lot" in frame.columns:
-        manual_lots = frame["manual_bulk_lot"]
+    if "collector_manual_bulk_lot" in frame.columns:
+        account_lots = frame["collector_manual_bulk_lot"]
     else:
-        manual_lots = [None] * len(frame)
-    for title, media, saved, shared, catalog, matrix, manual_lot in zip(
+        account_lots = [None] * len(frame)
+    if "manual_bulk_lot" in frame.columns:
+        shared_lots = frame["manual_bulk_lot"]
+    else:
+        shared_lots = [None] * len(frame)
+    job_lots: list[bool] = []
+    for title, media, saved, shared, catalog, matrix, account_lot, shared_lot in zip(
         frame["title"],
         frame["media_display"],
         saved_media,
         shared_media,
         frame["catalog_display"],
         frame["matrix_display"],
-        manual_lots,
+        account_lots,
+        shared_lots,
         strict=True,
     ):
         chosen_media = clean_text(saved) or clean_text(shared)
@@ -1117,14 +1141,13 @@ def prepare_records(
                 title=title,
             )
         )
+        bulk_flag = shared_lot if is_missing(account_lot) else account_lot
+        job_lots.append(listing_counts_as_lot(title, bulk_flag, chosen_media))
 
     frame["media_display"] = media_fills
     frame["catalog_display"] = catalog_fills
-    frame["job_lot"] = [
-        review_lot_flag(title, manual_lot)
-        for title, manual_lot in zip(frame["title"], manual_lots, strict=True)
-    ]
-    frame.loc[frame["job_lot"], "catalog_display"] = ""
+    frame["job_lot"] = job_lots
+    frame.loc[frame["job_lot"].fillna(False).astype(bool), "catalog_display"] = ""
 
     frame["label_display"] = coalesce_series(
         frame,
@@ -1149,9 +1172,23 @@ def prepare_records(
         if "title" in frame.columns
         else pd.Series("", index=frame.index)
     )
+    pressing_kinds = (
+        frame["effective_pressing_type"]
+        if "effective_pressing_type" in frame.columns
+        else pd.Series("", index=frame.index)
+    )
     frame["release_year_display"] = [
-        display_release_year(pressing_year=year, title=title)
-        for year, title in zip(pressing_years, titles, strict=False)
+        pressing_menu_year(
+            pressing_year=year,
+            title=title,
+            pressing_type=kind,
+        )
+        for year, title, kind in zip(
+            pressing_years,
+            titles,
+            pressing_kinds,
+            strict=False,
+        )
     ]
 
     frame["identity_status_display"] = coalesce_series(
@@ -1178,8 +1215,9 @@ def prepare_records(
     progress_labels: list[str] = []
     progress_details: list[str] = []
     progress_times: list[Any] = []
+    shared_saves = mass_saved_stamps(frame)
     for row in recent_rows:
-        glyph, label, detail = review_progress(row)
+        glyph, label, detail = review_progress(row, ignore_times=shared_saves)
         mark, recent_detail, when = recent_change_facts(
             [
                 ("Seller report", row.get("seller_report_updated_at")),
@@ -1190,7 +1228,7 @@ def prepare_records(
         )
         if glyph and recent_detail:
             detail = f"{detail}. {recent_detail}"
-        elif not glyph and mark:
+        elif not glyph and mark and label != PROGRESS_NOT_DONE:
             glyph = mark
             detail = recent_detail
         progress_marks.append(glyph)
@@ -1737,7 +1775,7 @@ def mark_listing_matched(
                 """
                 UPDATE warehouse.auction
                 SET identity_status = 'filled_manual',
-                    identity_source = COALESCE(identity_source, 'listing'),
+                    identity_source = 'listing',
                     identity_filled_at = COALESCE(identity_filled_at, now()),
                     identity_status_changed_at = now()
                 WHERE lower(btrim(marketplace)) = lower(btrim(:marketplace))
@@ -2739,6 +2777,10 @@ def apply_filters(
         "collector_filter_lot_progress",
         LOT_PROGRESS_ALL,
     ) or LOT_PROGRESS_ALL
+    if lot_progress == PROGRESS_TOUCHED:
+        lot_progress = PROGRESS_PROCESSED
+    if lot_progress == PROGRESS_ADJUSTED:
+        lot_progress = LOT_PROGRESS_ALL
     if (
         media_group == MEDIA_GROUP_LOTS
         and lot_progress != LOT_PROGRESS_ALL
@@ -2747,7 +2789,11 @@ def apply_filters(
     ):
         labels = filtered["review_progress"].fillna("")
         if lot_progress == PROGRESS_NOT_DONE:
-            filtered = filtered.loc[labels.eq("")]
+            filtered = filtered.loc[labels.eq(PROGRESS_NOT_DONE)]
+        elif lot_progress == PROGRESS_PROCESSED:
+            filtered = filtered.loc[
+                labels.isin([PROGRESS_PROCESSED, PROGRESS_TOUCHED])
+            ]
         else:
             filtered = filtered.loc[labels.eq(lot_progress)]
     identity_queue = st.session_state.get(
@@ -2910,25 +2956,13 @@ def _render_identity_queue_cards(
                 PROGRESS_NOT_DONE,
                 "not-done",
                 "Not done",
-                int(progress.eq("").sum()),
-            ),
-            (
-                PROGRESS_TOUCHED,
-                "touched",
-                "Touched",
-                int(progress.eq(PROGRESS_TOUCHED).sum()),
-            ),
-            (
-                PROGRESS_ADJUSTED,
-                "adjusted",
-                "Adjusted",
-                int(progress.eq(PROGRESS_ADJUSTED).sum()),
+                int(progress.eq(PROGRESS_NOT_DONE).sum()),
             ),
             (
                 PROGRESS_PROCESSED,
                 "processed",
                 "Processed",
-                int(progress.eq(PROGRESS_PROCESSED).sum()),
+                int(progress.isin([PROGRESS_PROCESSED, PROGRESS_TOUCHED]).sum()),
             ),
         )
     view_slug = re.sub(r"[^a-z0-9]+", "-", view_label.casefold()).strip("-")
@@ -2962,8 +2996,10 @@ def _render_identity_queue_cards(
     if view_label == MEDIA_GROUP_LOTS:
         if selected == LOT_PROGRESS_ALL:
             st.caption(
-                "● touched. ✎ edited. ✓ processed. "
-                "Not done is still blank."
+                "Not done is still missing a media type, a piece count, "
+                "a condition, or a verdict. "
+                "A pile whose title states the count starts at VG+ and Reference only. "
+                "✓ means those four are filled."
             )
         else:
             st.caption(
@@ -3868,9 +3904,9 @@ def render_listing_table(
                 "sortable": True,
                 "tooltipField": "Recent detail",
                 "headerTooltip": (
-                    "● touched, the default once a row has been opened. "
-                    "✎ edited. ✓ processed, the identity is filled. "
-                    "A blank row is not done."
+                    "On a bulk lot, blank means media type, piece count, "
+                    "condition, or verdict is still empty. "
+                    "✓ means those four are filled."
                 ),
                 "cellStyle": {
                     "textAlign": "center",
@@ -4376,6 +4412,26 @@ def load_identity_shortlist(
     return []
 
 
+def discogs_search_already_finished(marketplace: str, listing_id: str) -> bool:
+    """True when this sale was already searched and the shortlist was stored."""
+    with get_engine().connect() as connection:
+        fetched = connection.execute(
+            text(
+                """
+                SELECT discogs_shortlist_fetched_at IS NOT NULL
+                FROM warehouse.auction
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                """
+            ),
+            {
+                "marketplace": marketplace,
+                "listing_id": listing_id,
+            },
+        ).scalar()
+    return bool(fetched)
+
+
 _CATALOG_JOBS: dict[str, str] = {}
 _CATALOG_HITS: dict[str, list[dict[str, Any]]] = {}
 _CATALOG_LOCK = threading.Lock()
@@ -4627,7 +4683,11 @@ def _render_catalog_shelf(
     if format_key not in st.session_state or st.session_state.get(format_for) != typed:
         st.session_state[format_for] = typed
         st.session_state[format_key] = (
-            listing_label if listing_label in labels else "All"
+            "All"
+            if query_is_year(typed)
+            else listing_label
+            if listing_label in labels
+            else "All"
         )
     if st.session_state.get(format_key) not in options:
         st.session_state[format_key] = "All"
@@ -4696,19 +4756,21 @@ def _render_catalog_search(
     listing_image: str | None = None,
 ) -> None:
     """Typed Discogs search when the guessed candidate is the wrong record."""
-    st.markdown("**Search catalog**")
+    st.markdown("**Look up on Discogs**")
     st.caption(
-        "Type a catalog number or an album name. "
+        "Type a year, an album name, or a catalog number. "
+        "A year lists every release Discogs dates to that year for this artist, "
+        "in every format, including compilations and appearances. "
         "A catalog number is searched across Discogs, including a soundtrack "
-        "filed under another artist. This format is listed first."
+        "filed under another artist."
     )
     query = st.text_input(
-        "Catalog or album",
+        "Year, album, or catalog",
         key=f"catalog-query:{identity}",
-        placeholder="MR 3037 or Best Hits",
+        placeholder="1972, 女記者, or MR 3037",
         label_visibility="collapsed",
     )
-    if st.button("Search catalog", key=f"catalog-go:{identity}"):
+    if st.button("Look up", key=f"catalog-go:{identity}"):
         typed = clean_text(query)
         if len(typed) < 2:
             st.session_state[f"_catalog_state:{identity}"] = "short"
@@ -4738,7 +4800,9 @@ def _render_catalog_search(
         st.warning("Discogs did not finish this search. Try the catalog again.")
     hits = st.session_state.get(f"_catalog_hits:{identity}") or []
     if state == "done" and not hits:
-        st.caption("Discogs has no release for that search.")
+        st.caption(
+            "Discogs has nothing under that year, album, or catalog."
+        )
 
 
 def _commit_discogs_choice(
@@ -4833,6 +4897,7 @@ def _ensure_discogs_job(
     identity: str,
     marketplace: str,
     listing_id: str,
+    media_type: str | None = None,
 ) -> None:
     """Search Discogs off the page thread so another row can be opened."""
     with _DISCOGS_JOB_LOCK:
@@ -4848,6 +4913,7 @@ def _ensure_discogs_job(
                 engine,
                 marketplace=marketplace,
                 listing_id=listing_id,
+                media_type=media_type,
             )
         except DiscogsRateLimitError:
             state = "rate_limit"
@@ -4903,14 +4969,15 @@ def _open_media_choice(identity: str) -> str:
 
 
 def _resolved_review_media(selected: pd.Series, identity: str) -> str:
-    """The format on the form, then the title, then the stored fact.
+    """The format on the open menu, then a saved choice, then the title.
 
-    A CD box set the reviewer picked, or one named in the title, stays a
-    record. A leftover pile stays a bulk lot until they pick a format.
+    Changing the menu off every bulk-lot type opens Discogs on this pass.
+    A leftover pile stays a bulk lot until that menu names a real format.
     """
+    live = _open_media_choice(identity)
+    if live and live != "Automatic / unset":
+        return live
     chosen = clean_text(collector_value(selected, "manual_media_type"))
-    if not chosen or chosen == "Automatic / unset":
-        chosen = _open_media_choice(identity)
     if chosen and chosen != "Automatic / unset":
         return chosen
     hint_media, _hint_catalog, hint_lot = title_classification(selected.get("title"))
@@ -4921,7 +4988,7 @@ def _resolved_review_media(selected: pd.Series, identity: str) -> str:
         return "BULK_LOT"
     return clean_text(
         selected.get("effective_media_type") or selected.get("media_type")
-    )
+    ) or hinted
 
 
 def _skips_discogs_search(media: str) -> bool:
@@ -4939,10 +5006,12 @@ def render_identity_shortlist(
     *,
     account_context: AccountContext,
     identity: str,
+    chosen_media: str = "",
 ) -> None:
     """Inline Discogs chooser for flagged rows. Never a popup."""
     del account_context
-    chosen_media = _resolved_review_media(selected, identity)
+    if not chosen_media:
+        chosen_media = _resolved_review_media(selected, identity)
     if _skips_discogs_search(chosen_media):
         st.info(
             "Bulk lot — leftover box or mixed pile, not an individual Discogs pressing."
@@ -4954,6 +5023,19 @@ def render_identity_shortlist(
             st.image(listing_image, caption="Listing", width=280)
         return
     status = clean_text(selected.get("identity_status"))
+    if status not in {"filled_auto", "filled_manual", "needs_review", "unmatched"}:
+        status = "unmatched"
+    media_memory = f"_discogs_media:{identity}"
+    previous_media = st.session_state.get(media_memory)
+    switched_off_lot = previous_media != chosen_media and (
+        _skips_discogs_search(str(previous_media or ""))
+        or (previous_media is None and as_boolean(selected.get("job_lot")))
+    )
+    if switched_off_lot and status not in {"filled_auto", "filled_manual"}:
+        _clear_discogs_job(identity)
+        st.session_state.pop(f"_discogs_live:{identity}", None)
+        st.session_state[f"_discogs_force:{identity}"] = True
+    st.session_state[media_memory] = chosen_media
     listing_image = clean_text(selected.get("listing_image_url"))
     listing_media = clean_text(
         selected.get("effective_media_type") or selected.get("media_type")
@@ -4985,7 +5067,8 @@ def render_identity_shortlist(
             media_type=listing_media,
             infer=False,
         )
-        if st.session_state.pop(force_key, None):
+        forced_search = bool(st.session_state.pop(force_key, None))
+        if forced_search:
             shortlist = []
         agrees = bool(shortlist) and shortlist_agrees_with_listing(
             selected.get("title"),
@@ -5057,12 +5140,19 @@ def render_identity_shortlist(
             clean_text(selected.get("artist")) or None,
             clean_text(selected.get("title")) or None,
         )
-        if scoped:
+        if query_is_year(typed) and scoped:
             st.caption(
-                f"Catalog search for “{typed}” under {scoped}. Pick the cover, then Use this."
+                f"{typed} lists every release Discogs dates to that year for {scoped}, "
+                "including compilations and appearances. All formats are showing. "
+                "Pick the cover, then Use this."
+            )
+        elif scoped:
+            st.caption(
+                f"“{typed}” under {scoped}, "
+                "including compilations and appearances. Pick the cover, then Use this."
             )
         else:
-            st.caption(f"Catalog search for “{typed}”. Pick the cover, then Use this.")
+            st.caption(f"“{typed}”. Pick the cover, then Use this.")
         _render_catalog_shelf(
             list(catalog_hits),
             marketplace=str(selected["marketplace"]),
@@ -5080,6 +5170,40 @@ def render_identity_shortlist(
         return
 
     search_key = f"_discogs_live:{identity}"
+    jukebox_catalog = jukebox_promo_catalog(clean_text(selected.get("title")))
+    named_release = bool(
+        listing_identity_catalog(
+            stored=clean_text(selected.get("catalog_number"))
+            or clean_text(selected.get("effective_catalog_number"))
+            or None,
+            title=clean_text(selected.get("title")) or None,
+            artist=clean_text(selected.get("artist")) or None,
+            media_type=listing_media,
+        )
+        or known_album_phrase(clean_text(selected.get("title")))
+    )
+    # A title with no catalog and no album name cannot hit Discogs.
+    # A catalog Discogs already searched and stored empty must not be
+    # searched again just because the page was opened.
+    already_searched = False
+    if (
+        not shortlist
+        and status == "unmatched"
+        and named_release
+        and not forced_search
+    ):
+        already_searched = discogs_search_already_finished(
+            str(selected["marketplace"]),
+            str(selected["listing_id"]),
+        )
+    if (
+        not shortlist
+        and status == "unmatched"
+        and not forced_search
+        and (jukebox_catalog or not named_release or already_searched)
+        and st.session_state.get(search_key) != "done"
+    ):
+        st.session_state[search_key] = "done"
     if not shortlist and st.session_state.get(search_key) != "done":
         if st.session_state.get(search_key) in {"rate_limit", "failed"}:
             if st.session_state.get(search_key) == "rate_limit":
@@ -5088,7 +5212,7 @@ def render_identity_shortlist(
                 st.warning(
                     "Discogs did not finish this search. The sale is still here — search again."
                 )
-            if st.button("Search Discogs again", key=f"discogs-retry:{identity}"):
+            if st.button("Search this listing again", key=f"discogs-retry:{identity}"):
                 st.session_state.pop(search_key, None)
                 _clear_discogs_job(identity)
                 st.rerun()
@@ -5097,6 +5221,7 @@ def render_identity_shortlist(
             identity,
             str(selected["marketplace"]),
             str(selected["listing_id"]),
+            chosen_media,
         )
         _poll_discogs_search(identity)
         return
@@ -5108,12 +5233,13 @@ def render_identity_shortlist(
     if not shortlist:
         if st.session_state.get(search_key) == "done":
             st.warning(
-                "Discogs has no release for this sleeve in the artist's catalog. "
-                "The sale stays unmatched."
+                "This listing title did not match a Discogs release. "
+                "Look up a year, album, or catalog above, "
+                "or mark the sale matched from the form."
             )
         else:
-            st.caption("No Discogs shortlist for this sale yet.")
-        if st.button("Search Discogs", key=f"discogs-search:{identity}"):
+            st.caption("This listing has not been searched on Discogs yet.")
+        if st.button("Search this listing", key=f"discogs-search:{identity}"):
             st.session_state.pop(search_key, None)
             _clear_discogs_job(identity)
             st.rerun()
@@ -5121,7 +5247,7 @@ def render_identity_shortlist(
 
     st.markdown("**Discogs candidates** — LP, EP / 7\", and CD are separate options. Match the listing photo.")
     if not agrees:
-        if st.button("Search Discogs", key=f"discogs-search-open:{identity}"):
+        if st.button("Search this listing", key=f"discogs-search-open:{identity}"):
             st.session_state[force_key] = True
             st.session_state.pop(f"_discogs_live:{identity}", None)
             _clear_discogs_job(identity)
@@ -5134,7 +5260,7 @@ def render_identity_shortlist(
         st.caption(
             "None of the stored candidates is the album named in this title."
         )
-        if st.button("Search Discogs", key=f"discogs-search-filtered:{identity}"):
+        if st.button("Search this listing", key=f"discogs-search-filtered:{identity}"):
             st.session_state[force_key] = True
             st.session_state.pop(f"_discogs_live:{identity}", None)
             _clear_discogs_job(identity)
@@ -5148,11 +5274,6 @@ def render_identity_shortlist(
         listing_media=listing_media,
         key_prefix="identity-choose",
     )
-
-
-def _rerun_review_for_media() -> None:
-    """The Discogs search sits above the menu, so a format change redraws the page."""
-    st.rerun(scope="app")
 
 
 def render_listing_editor(
@@ -5284,9 +5405,13 @@ def _render_listing_editor_body(
             st.rerun()
 
     summary_columns = st.columns(6)
+    offer_sale = (
+        clean_text(selected.get("sale_type_display")).upper()
+        == "FIXED_PRICE_OBO"
+    )
 
     summary_columns[0].metric(
-        "Starting price",
+        "Original price" if offer_sale else "Starting price",
         format_money(
             selected["starting_local"],
             selected["currency_display"],
@@ -5294,7 +5419,7 @@ def _render_listing_editor_body(
     )
 
     summary_columns[1].metric(
-        "Sale price before tax",
+        "Accepted price" if offer_sale else "Sale price before tax",
         format_money(
             selected["hammer_local"],
             selected["currency_display"],
@@ -5332,17 +5457,22 @@ def _render_listing_editor_body(
         else int(bid_count),
     )
 
+    if offer_sale:
+        st.caption(
+            "Accepted price is the amount before shipping. For USD, tax is 6.25% of that price."
+        )
+
+    st.caption(
+        auction_timeline_caption(
+            selected["opening_display"],
+            selected["closing_display"],
+            selected.get("marketplace"),
+        )
+    )
+
     st.caption(
         " · ".join(
             (
-                (
-                    "Opened: "
-                    f"{format_datetime(selected['opening_display'])}"
-                ),
-                (
-                    "Closed: "
-                    f"{format_datetime(selected['closing_display'])}"
-                ),
                 (
                     "Detail: "
                     f"{selected['detail_status_display'] or 'not available'}"
@@ -5387,48 +5517,49 @@ def _render_listing_editor_body(
         )
     )
 
+    saved_media_type = clean_text(
+        collector_value(
+            selected,
+            "manual_media_type",
+        )
+    )
+    media_automatic_choice = media_automatic
+    media_key = key_prefix + "manual_media_type"
+    if not saved_media_type:
+        media_key += ":" + (media_automatic_choice or "auto")
+    manual_media_type = optional_selectbox(
+        "Media type",
+        MEDIA_OPTIONS,
+        form_choice(
+            saved_media_type,
+            media_automatic_choice,
+            MEDIA_OPTIONS,
+        ),
+        key=media_key,
+        help=(
+            "LP, CD, EP, and cassette bulk lots are piles of that format. "
+            "Mixed bulk lot is a pile with more than one of those. "
+            "Magazine bulk lot is a pile of magazines. "
+            "Choose the formats, then enter how many of each. "
+            "Bulk lot is a pile with no single format. "
+            "The grades below follow the format you pick."
+        ),
+        format_func=lambda value: MEDIA_OPTION_LABELS.get(
+            value, value
+        ),
+    )
+
     render_identity_shortlist(
         selected,
         account_context=account_context,
         identity=identity,
+        chosen_media=manual_media_type,
     )
 
     is_lot = as_boolean(selected.get("job_lot"))
 
     @st.fragment
     def _collector_editor_fragment() -> None:
-        saved_media_type = clean_text(
-            collector_value(
-                selected,
-                "manual_media_type",
-            )
-        )
-        media_automatic_choice = media_automatic
-        media_key = key_prefix + "manual_media_type"
-        if not saved_media_type:
-            media_key += ":" + (media_automatic_choice or "auto")
-        manual_media_type = optional_selectbox(
-            "Media type",
-            MEDIA_OPTIONS,
-            form_choice(
-                saved_media_type,
-                media_automatic_choice,
-                MEDIA_OPTIONS,
-            ),
-            key=media_key,
-            help=(
-                "LP, CD, EP, and cassette bulk lots are piles of that format. "
-                "Mixed bulk lot is a pile with more than one of those. "
-                "Magazine bulk lot is a pile of magazines. "
-                "Choose the formats, then enter how many of each. "
-                "Bulk lot is a pile with no single format. "
-                "The grades below follow the format you pick."
-            ),
-            format_func=lambda value: MEDIA_OPTION_LABELS.get(
-                value, value
-            ),
-            on_change=_rerun_review_for_media,
-        )
         lot_mode = bulk_lot_media(manual_media_type) or (
             is_lot and clean_text(manual_media_type) in {"", "Automatic / unset"}
         )
@@ -5499,17 +5630,26 @@ def _render_listing_editor_body(
                 counted_label = (
                     counted if counted in {"CDs", "EPs"} else counted.lower()
                 )
-                st.caption(
-                    "This sale is not one title. "
-                    f"Count the {counted_label}, "
-                    "give the pile one grade, and save. "
-                    "Discogs identity stays off. "
-                    + (
-                        f"Lot format: {lot_kind}."
-                        if lot_kind
-                        else "No LP, cassette, CD, EP, or magazine format is in the title, so this lot stays under All."
+                if counted_reference_lot(selected):
+                    st.caption(
+                        "The title already counts the pieces and names the format. "
+                        "Condition starts at VG+ and the verdict is Reference only, "
+                        "so this past sale is processed. "
+                        "Change either one when this pile is different. "
+                        "Discogs identity stays off."
                     )
-                )
+                else:
+                    st.caption(
+                        "This sale is not one title. "
+                        f"Count the {counted_label}, "
+                        "give the pile one grade, and save. "
+                        "Discogs identity stays off. "
+                        + (
+                            f"Lot format: {lot_kind}."
+                            if lot_kind
+                            else "No LP, cassette, CD, EP, or magazine format is in the title, so this lot stays under All."
+                        )
+                    )
                 # Same ceiling as a mixed lot. A 1600-CD pile is a normal count.
                 manual_disc_count = st.number_input(
                     f"{counted} in the lot",
@@ -5524,7 +5664,11 @@ def _render_listing_editor_body(
                     ),
                     step=1,
                     help=f"How many {counted_label} are in this sale.",
-                    key=key_prefix + "lot_record_count",
+                    key=automatic_widget_key(
+                        key_prefix + "lot_record_count",
+                        collector_value(selected, "manual_disc_count"),
+                        disc_automatic,
+                    ),
                 )
         elif paper_mode:
             st.caption(
@@ -5588,12 +5732,19 @@ def _render_listing_editor_body(
             saved_disc_count = safe_int(
                 collector_value(selected, "manual_disc_count")
             )
+            tape_release = _is_cassette(manual_media_type) and not bulk_lot_media(
+                manual_media_type
+            )
+            piece_automatic = automatic_disc_count(
+                selected,
+                manual_media_type,
+            )
             disc_count_key = key_prefix + "manual_disc_count"
             if not saved_disc_count:
-                disc_count_key += ":" + str(disc_automatic or 0)
+                disc_count_key += ":" + str(piece_automatic or 0)
             with core_columns[2]:
                 manual_disc_count = st.number_input(
-                    "Disc count",
+                    "Tape count" if tape_release else "Disc count",
                     min_value=0,
                     max_value=100,
                     value=form_disc_count(
@@ -5601,11 +5752,15 @@ def _render_listing_editor_body(
                             selected,
                             "manual_disc_count",
                         ),
-                        disc_automatic,
+                        piece_automatic,
                     ),
                     step=1,
                     help=(
-                        "How many discs this Discogs release contains. "
+                        "How many tapes are in this cassette release. "
+                        "One tape is 1 unless the listing states another number."
+                        if tape_release
+                        else
+                        "How many discs this release contains. "
                         "A single LP is 1. A double LP is 2."
                     ),
                     key=disc_count_key,
@@ -5637,9 +5792,11 @@ def _render_listing_editor_body(
                     ),
                     format_func=lambda value: pressing_type_label(
                         value,
-                        display_release_year(
+                        pressing_menu_year(
                             pressing_year=selected.get("effective_release_year"),
                             title=selected.get("title"),
+                            pressing_type=pressing_type_automatic
+                            or selected.get("effective_pressing_type"),
                         ),
                     ),
                     key=pressing_type_key,
@@ -5733,9 +5890,7 @@ def _render_listing_editor_body(
                 selected,
                 "manual_condition_media",
             )
-            automatic_media_grade = (
-                clean_text(selected.get("effective_condition_media")) or None
-            )
+            automatic_media_grade = automatic_lot_condition(selected)
             media_grade_key = automatic_widget_key(
                 key_prefix
                 + "manual_condition_media:"
@@ -5828,21 +5983,27 @@ def _render_listing_editor_body(
                 ),
             )
         with verdict_columns[3]:
+            saved_verdict = collector_value(selected, "manual_verdict")
+            verdict_automatic = automatic_lot_verdict(selected)
             manual_verdict = optional_selectbox(
                 "Verdict",
                 VERDICT_OPTIONS,
                 form_choice(
-                    collector_value(
-                        selected,
-                        "manual_verdict",
-                    ),
-                    clean_text(selected.get("effective_verdict")) or None,
+                    saved_verdict,
+                    verdict_automatic,
                     VERDICT_OPTIONS,
                 ),
-                key=(
-                    key_prefix
-                    + "manual_verdict"
+                key=automatic_widget_key(
+                    key_prefix + "manual_verdict",
+                    saved_verdict,
+                    verdict_automatic,
                 ),
+                format_func=lambda value: {
+                    "PASS": "Pass",
+                    "WATCH": "Watch",
+                    "REFERENCE_ONLY": "Reference only",
+                    "REJECT": "Reject",
+                }.get(value, value),
             )
         manual_completeness_notes = st.text_area(
             "Completeness / pressing notes",
@@ -6079,7 +6240,8 @@ def _render_listing_editor_body(
                     "Complete means this copy still has what the factory included. "
                     "Missing the insert means the pressing included one and this copy does not have it. "
                     "Insert only means that sheet is here and it is all the factory included. "
-                    "Obi is only on a Japanese pressing. "
+                    "Poster and pin-up are No in that case. "
+                    "Obi is only on a Japanese pressing, and insert only can still have one. "
                     "A sealed copy can still be any of these packs."
                 ),
                 "cassette": (
@@ -6138,10 +6300,6 @@ def _render_listing_editor_body(
                 or collector_value(selected, "manual_insert_present"),
                 insert_choice,
             )
-            live_insert = st.session_state.get(insert_key, insert_choice)
-            insert_only = (
-                profile["kind"] == "lp" and live_insert == "Insert only"
-            )
             insert_help = (
                 "The booklet. A CD does not have a poster."
                 if profile["kind"] == "cd"
@@ -6170,23 +6328,16 @@ def _render_listing_editor_body(
                         collector_value(selected, "manual_obi"),
                         obi_current,
                     )
-                    if insert_only:
-                        obi_key += ":insert-only"
-                        st.session_state[obi_key] = "No"
-                        manual_obi = st.selectbox(
-                            "Obi",
-                            TRI_STATE_OPTIONS,
-                            help="Insert only means the factory did not include an obi.",
-                            key=obi_key,
-                            disabled=True,
-                        )
-                    else:
-                        manual_obi = tri_state_selectbox(
-                            "Obi",
-                            obi_current,
-                            help="The paper strip on a Japanese pressing.",
-                            key=obi_key,
-                        )
+                    manual_obi = tri_state_selectbox(
+                        "Obi",
+                        obi_current,
+                        help=(
+                            "The paper strip on a Japanese pressing. "
+                            "Insert only can still have an obi. "
+                            "Poster and pin-up stay No."
+                        ),
+                        key=obi_key,
+                    )
             elif profile.get("show_obi") == "yes" and resolved_region:
                 manual_obi = "No"
             elif profile.get("show_obi") != "yes":
@@ -6236,7 +6387,7 @@ def _render_listing_editor_body(
                     if profile["kind"] == "lp":
                         poster_options = (
                             "Automatic / unset",
-                            "Pin-up is the poster",
+                            "Yes",
                             "No",
                         )
                         if insert_owns_poster:
@@ -6254,7 +6405,7 @@ def _render_listing_editor_body(
                             ):
                                 poster_choice = "No"
                             elif as_boolean(poster_current):
-                                poster_choice = "Pin-up is the poster"
+                                poster_choice = "Yes"
                             elif is_missing(poster_current):
                                 poster_choice = "Automatic / unset"
                             else:
@@ -6264,29 +6415,38 @@ def _render_listing_editor_body(
                             "insert-owns" if insert_owns_poster else poster_manual,
                             poster_choice,
                         )
+                        if st.session_state.get(poster_key) == "Pin-up is the poster":
+                            st.session_state[poster_key] = "Yes"
                         if insert_owns_poster:
                             st.session_state[poster_key] = "No"
                             manual_poster = st.selectbox(
                                 profile.get("poster_label") or "Poster / pin-up",
                                 poster_options,
                                 help=(
-                                    "Insert only came with that sheet. "
-                                    "Pin-up is the insert has no separate poster. "
-                                    "Factory no insert never included a pin-up."
+                                    "No. Factory no insert, insert only, and pin-up as the insert "
+                                    "have no extra poster or pin-up. "
+                                    "The obi is answered on its own."
                                 ),
                                 key=poster_key,
                                 disabled=True,
                             )
                         else:
+                            poster_index = {}
+                            if poster_key not in st.session_state:
+                                poster_index["index"] = poster_options.index(
+                                    poster_choice
+                                )
                             manual_poster = st.selectbox(
                                 profile.get("poster_label") or "Poster / pin-up",
                                 poster_options,
-                                index=poster_options.index(poster_choice),
                                 help=(
-                                    "Pin-up is the poster means a separate pin-up. "
-                                    "No means this copy has no separate poster."
+                                    "Yes means this copy has the poster as well as the insert. "
+                                    "No means this copy has no poster. "
+                                    "A pressing from outside Japan has no obi, "
+                                    "and it is complete with the insert and the poster."
                                 ),
                                 key=poster_key,
+                                **poster_index,
                             )
                     else:
                         poster_current = form_flag(
@@ -6438,30 +6598,12 @@ def _render_listing_editor_body(
                 or clean_text(selected.get("identity_status"))
                 in {"filled_auto", "filled_manual"},
                 help=(
-                    "Move this sale to Matched from the details filled in here. "
+                    "Save this form and file the sale under the media type chosen here. "
                     "Discogs does not have to list the release."
                 ),
             )
 
-        if mark_matched:
-            marked = mark_listing_matched(
-                str(account_context.account_id),
-                str(account_context.user_id),
-                marketplace,
-                listing_id,
-            )
-            if marked != 1:
-                st.error("This sale was not moved to Matched.")
-                return
-            st.session_state[f"_keep_open:{identity}"] = True
-            load_records.clear()
-            set_notification(
-                f"{marketplace} {listing_id} is matched from the listing. "
-                "Discogs was not required."
-            )
-            st.rerun()
-
-        if not submitted:
+        if not submitted and not mark_matched:
             return
 
         payload = {
@@ -6587,7 +6729,7 @@ def _render_listing_editor_body(
                         False
                         if manual_insert in {"Pin-up is the insert", "Insert only"}
                         else True
-                        if manual_poster == "Pin-up is the poster"
+                        if manual_poster in {"Yes", "Pin-up is the poster"}
                         else tri_state_value(manual_poster)
                     ),
                     selected.get("effective_poster_present"),
@@ -6689,6 +6831,44 @@ def _render_listing_editor_body(
             st.error(
                 "Changes were not saved."
             )
+            return
+
+        if mark_matched:
+            marked = mark_listing_matched(
+                str(account_context.account_id),
+                str(account_context.user_id),
+                marketplace,
+                listing_id,
+            )
+            if marked != 1:
+                st.error(
+                    "The form was saved. This sale was not moved to Matched."
+                )
+                load_records.clear()
+                st.rerun()
+                return
+            st.session_state[revision_key] = revision + 1
+            st.session_state.pop(f"_keep_open:{identity}", None)
+            media_label = MEDIA_OPTION_LABELS.get(
+                clean_text(manual_media_type),
+                clean_text(manual_media_type) or "its format",
+            )
+            moved = _advance_to_neighbor(identity)
+            if not moved:
+                _request_clear_listing_identity()
+            notice = (
+                f"{marketplace} {listing_id} is matched from this form "
+                f"and filed under {media_label}. Discogs was not required."
+            )
+            if moved == "below":
+                notice += " Opened the listing below."
+            elif moved == "above":
+                notice += " Opened the listing above."
+            else:
+                notice += " This pile is clear."
+            set_notification(notice)
+            load_records.clear()
+            st.rerun()
             return
 
         st.session_state[
@@ -7329,7 +7509,7 @@ st.title(
 )
 
 st.caption(
-    "Search marketplace sales, refine pressing details, track collection status, and compare equivalent pressings."
+    "Find a sale, then open it to check the price, the pressing, and your notes."
 )
 
 render_media_group_pills()
