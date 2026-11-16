@@ -91,7 +91,7 @@ def test_latest_refresh_does_not_force_all_buyee_details() -> None:
     )
 
     production_detail_start = value.index(
-        "if buyee_new_listing_ids:"
+        "if buyee_new_listing_ids or buyee_retry_detail_ids:"
     )
 
     production_detail_end = value.index(

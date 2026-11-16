@@ -660,3 +660,13 @@ def test_tracked_listing_keeps_owned_titles_and_hides_seller_inventory() -> None
         artist=None,
         tracked_names=(),
     )
+    assert not listing_belongs_to_tracked_artists(
+        title='GRACE CHANG Singapore 7" ep not teresa teng',
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )
+    assert not listing_belongs_to_tracked_artists(
+        title="Paula Tsui 7\" EP not teresa teng anita mui rare",
+        artist=None,
+        tracked_names=TRACKED_COLLECTION,
+    )

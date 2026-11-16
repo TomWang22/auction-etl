@@ -33,9 +33,18 @@ def test_card_sync_does_not_blank_start_price() -> None:
     assert "warehouse.auction.final_price" in source
     assert "EXCLUDED.gross_price" in source
     assert "COALESCE(EXCLUDED.tax_amount, warehouse.auction.tax_amount)" in source
+    assert "COALESCE(EXCLUDED.ended_at, warehouse.auction.ended_at)" in source
     assert "FIXED_PRICE_OBO" in source
     assert "promote_classification_facts(" in source
     assert "classify_condition" in source
+
+
+def test_card_sync_restores_buyee_ended_at_from_closing_at() -> None:
+    source = WAREHOUSE.read_text(encoding="utf-8")
+    assert "ended_at = COALESCE(" in source
+    assert "auction.ended_at" in source
+    assert "auction.closing_at" in source
+    assert "detail.closing_at" in source
 
 
 def test_refresh_sync_keeps_named_buyee_sellers() -> None:
@@ -278,6 +287,24 @@ def test_pressing_token_ignores_price_and_title_fragments() -> None:
         pressing_year=2026,
         title="Teresa Teng Best Vol. 4 Vinyl 鄧麗君 テレサ・テン Stereo Sound",
     ) is None
+    from app.collector_review_support import pressing_menu_year
+
+    stereo = "Teresa Teng Best Vol. 4 Vinyl 鄧麗君 テレサ・テン Stereo Sound"
+    assert pressing_menu_year(
+        pressing_year=2026,
+        title=stereo,
+        pressing_type="STANDARD",
+    ) is None
+    assert pressing_menu_year(
+        pressing_year=2026,
+        title="C-POP Teresa Teng Sake Drunken Search (100% Pure LP) Limited Edition",
+        pressing_type="REISSUE",
+    ) == 2026
+    assert pressing_menu_year(
+        pressing_year=2020,
+        title="美盤 LP テレサ・テン 夜の乗客 帯付 日本盤 1975年",
+        pressing_type="REISSUE",
+    ) == 1975
     assert display_release_year(
         pressing_year=2018,
         title="Teresa Teng Best Vol. 4 Vinyl 鄧麗君 テレサ・テン Stereo Sound",

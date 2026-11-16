@@ -41,50 +41,95 @@ Identity is `(marketplace, listing_id)`. eBay sold URLs are `https://www.ebay.co
 
 **Duplicates:** if the same `{id}` exists on eBay and Gripsweat, Collector Review keeps the native eBay row. **Gripsweat's sold amount on `sold_at` is the official transaction-day USD** for that duplicate, even if the eBay card shows `$` / GBP / EUR. The eBay local display amount stays on the eBay row.
 
+**Offers:** when Gripsweat shows a struck asking price and a lower accepted price, the struck amount is the original price and the accepted amount is the sale, before shipping. US sales tax is 6.25% of the accepted price. The review labels those fields Original price and Accepted price for every best-offer sale.
+
 **Buyee completeness:** every closed-watchlist identity must be in the warehouse with a listing ID, title, and JPY sold price. Live item-detail pages are extra enrichment, not the identity itself.
+
+**My collection bills:** on My collection, drag and drop a Buyee invoice PDF (or paste the text) onto a copy already on the shelf. The album title and item price stay as they are. The bill is labeled yen charges only. Shipping, tax, and fees stay in yen; landed adds their dollar value from the printed USD pair on that copy.
 
 ## Architecture overview
 
 ```mermaid
-flowchart LR
+flowchart TB
     Operator["Collector / operator"]
 
-    subgraph Review["Collector Review"]
-        UI["Streamlit HTTPS localhost:8501<br/>app/collector_review.py"]
+    subgraph UI["Streamlit frontend · HTTPS localhost:8501"]
+        Review["Review marketplace sales<br/>app/collector_review.py"]
+        Collection["My collection<br/>app/pages/17_My_Collection.py"]
+        RefreshUI["Latest Auction Refresh<br/>app/pages/3_Latest_Auction_Refresh.py"]
+        Home["Home · Analytics · Pressings"]
     end
 
-    subgraph Local["Authoritative local runtime"]
+    subgraph Services["Python backend services · auction_etl/"]
+        Shelf["collection_shelf<br/>owned copies · anatomy · same-catalog fill"]
+        Billing["collection_billing<br/>yen bills · gaps · order"]
+        Import["collection_import<br/>Buyee / Record City OCR"]
+        Acquire["collection_acquisition<br/>type · shop · artist · package charts"]
+        Identity["discogs_identity + discogs_fill<br/>search · release · pressing assign"]
+        Scope["tracked_listing_scope · warehouse · fx"]
+    end
+
+    subgraph Data["Authoritative data plane"]
         DB[("PostgreSQL 127.0.0.1:5544<br/>auction_warehouse")]
+    end
+
+    subgraph Execution["Local execution"]
         Refresh["scripts/run_latest_auction_refresh.py"]
-        EbayOp["Headed eBay operator<br/>persistent facerecords profile"]
+        EbayOp["Headed eBay sold crawl"]
         BuyeeOwner["Headed Buyee owner"]
         Gripsweat["Gripsweat probe / import"]
     end
 
     subgraph Sources["Marketplace sources"]
-        Buyee["Buyee completed watchlist"]
-        Ebay["eBay completed/sold search<br/>LH_Sold=1 LH_Complete=1 _sop=13"]
-        Grip["Gripsweat artist search"]
-    end
-
-    subgraph Promotion["Promotion boundary"]
-        Git["GitHub main"]
-        Cloud["Vercel / Railway / Neon<br/>deferred non-data shells"]
+        Buyee["Buyee closed watchlist"]
+        Ebay["eBay completed/sold"]
+        Grip["Gripsweat"]
+        Discogs["Discogs API"]
     end
 
     Operator --> UI
-    UI --> DB
-    Operator --> EbayOp
-    EbayOp --> Ebay
-    EbayOp --> DB
-    Operator --> Refresh
+    Review --> Scope
+    Collection --> Shelf
+    Collection --> Billing
+    Collection --> Import
+    Collection --> Acquire
+    Collection --> Identity
+    RefreshUI --> Refresh
+    Shelf --> DB
+    Billing --> DB
+    Import --> DB
+    Acquire --> DB
+    Identity --> Discogs
+    Identity --> DB
+    Scope --> DB
     Refresh --> BuyeeOwner
+    Refresh --> EbayOp
     Refresh --> Gripsweat
     BuyeeOwner --> Buyee
+    EbayOp --> Ebay
     Gripsweat --> Grip
     Refresh --> DB
-    Git -.-> Cloud
 ```
+
+### Backend breakdown
+
+| Layer | What it owns |
+| --- | --- |
+| **Streamlit pages** | Auth, navigation, grids, forms. No long marketplace crawls inside a request. |
+| **collection_*** | My collection: intake bills, shelf writes, acquisition charts, anatomy gaps. |
+| **discogs_*** | Catalog search, release fetch, pressing upsert, same-catalog sibling fill (no HTTP when a pressing is already known). |
+| **warehouse / parse / fx** | Canonical `(marketplace, listing_id)` sales, money, FX. |
+| **scripts/run_latest_auction_refresh.py** | Buyee + eBay + Gripsweat ingest outside the UI process. |
+
+Warehouse identity stays `(marketplace, listing_id)`. My collection overlays `warehouse.auction_collector` / `owned_copy` / `collection_bill*` for paid copies. Discogs pressings live in `pressing_identity` + `release_family`.
+
+### Streamlit UI notes
+
+Streamlit re-runs the page script on every widget change. That is why a save can look “glitchy”:
+
+1. **Service reload** — My collection reloads backend modules only when their files change (not on every click). Reloading every run remounted AgGrid and blanked widgets.
+2. **AgGrid remount** — After a shelf write, the grid key bumps once so rows match the warehouse. Scroll/selection reset is intentional for that write, not for ordinary clicks.
+3. **Save banners** — “Next open copy” / “Saved …” lead with **catalog / matrix**, then artist and title — not `marketplace:listing_id`.
 
 The key architectural boundary is deliberate:
 
@@ -299,13 +344,13 @@ flowchart TD
     OneCount --> Mark
     Mixed --> Mark
     Mag --> Mark
-    Mark --> Blank["Blank. Not done"]
-    Mark --> Touched["● Touched. Opened or saved"]
-    Mark --> Edited["✎ Adjusted. A field was edited"]
-    Mark --> Done["✓ Processed. Identity is filled"]
+    Mark --> Blank["Blank. A lot still missing media, count, condition, or verdict"]
+    Mark --> Done["✓ Processed. Those four are filled"]
 ```
 
-● is the first mark, once the row has been opened or saved. ✎ means a grade, count, note, or other field was edited. ✓ means the Discogs identity is filled. A blank row has not been touched. On the Lots filter the pills are All lots, Not done, Touched, Adjusted, and Processed.
+A bulk lot is processed when its media type, piece count, condition, and verdict are filled. A pile whose title states the count (枚, 点, 冊, 本, 個, コ, or an English count such as “lot of 6”), and already names the format, starts at VG+ and Reference only, so that past sale is processed without typing the same pair again. A title with no count stays for a manual piece count. Any one of those four still empty leaves the mark blank. On the Lots filter the pills are All lots, Not done, and Processed.
+
+Each open sale shows its auction clock under the price: when it opened, when it closed, and how long it ran. Buyee times are Japan time. A sale that only has a date shows that date. A sale with no clock says so.
 
 A mixed lot stores its counts as the first completeness-notes line, `Lot mix: LP 2, EP 2.` The disc count is the sum. A single-format lot keeps one number: records for an LP pile, CDs, EPs, cassettes, or magazines for the others.
 

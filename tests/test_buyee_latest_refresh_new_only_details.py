@@ -84,8 +84,23 @@ def test_latest_refresh_snapshots_buyee_ids_before_sync() -> None:
     )
 
 
+def test_latest_refresh_retries_failed_details_on_discovered_pages() -> None:
+    """Watchlist rows with failed or missing details must be retried."""
+
+    main = function_source(
+        RUNNER,
+        "main",
+    )
+
+    assert "buyee_retry_detail_ids" in main
+    assert "buyee_detail_listing_ids" in main
+    assert "IS DISTINCT FROM" in main
+    assert "'complete'" in main
+    assert "if buyee_new_listing_ids or buyee_retry_detail_ids:" in main
+
+
 def test_latest_refresh_details_only_new_buyee_ids() -> None:
-    """Existing Buyee identities never enter normal detail navigation."""
+    """Complete existing Buyee identities never enter normal detail navigation."""
 
     main = function_source(
         RUNNER,
@@ -102,7 +117,7 @@ def test_latest_refresh_details_only_new_buyee_ids() -> None:
         in main
     )
     assert (
-        "if buyee_new_listing_ids:"
+        "if buyee_new_listing_ids or buyee_retry_detail_ids:"
         in main
     )
     assert (
@@ -128,7 +143,7 @@ def test_latest_refresh_does_not_force_historical_refresh() -> None:
     )
 
     production_start = main.index(
-        "if buyee_new_listing_ids:"
+        "if buyee_new_listing_ids or buyee_retry_detail_ids:"
     )
 
     production_end = main.index(

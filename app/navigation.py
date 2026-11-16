@@ -29,10 +29,9 @@ class NavigationSection:
 
 NAVIGATION_SECTIONS = (
     NavigationSection(
-        title="Everyday work",
+        title="Start here",
         description=(
-            "The normal workflow for reviewing sales, refreshing data, "
-            "and handling newly collected listings."
+            "Review a sale, bring in the latest ones, or match a new listing."
         ),
         collapsed=False,
         items=(
@@ -41,6 +40,15 @@ NAVIGATION_SECTIONS = (
                 path="pages/1_Home.py",
                 icon="🏠",
                 help_text="Start here and choose the job you want to do.",
+            ),
+            NavigationItem(
+                label="My collection",
+                path="pages/17_My_Collection.py",
+                icon="💿",
+                help_text=(
+                    "Bring in copies you bought on eBay, Buyee, and "
+                    "Record City, and see which tracked records are still missing."
+                ),
             ),
             NavigationItem(
                 label="Review marketplace sales",
@@ -269,9 +277,27 @@ def render_navigation(
     """Render compact navigation with progressive disclosure."""
 
     with st.sidebar:
-        st.markdown("## 💿 Auction workspace")
-        st.caption(
-            "Review sales, refresh data, and manage pressings."
+        st.markdown(
+            """
+            <style>
+            .etl-brand-name {
+                font-size: 1.35rem;
+                font-weight: 700;
+                letter-spacing: -0.02em;
+                line-height: 1.2;
+                margin: 0.15rem 0 0.2rem;
+            }
+            .etl-brand-note {
+                color: rgba(49, 51, 63, 0.68);
+                font-size: 0.92rem;
+                line-height: 1.35;
+                margin: 0 0 0.85rem;
+            }
+            </style>
+            <div class="etl-brand-name">Auction ETL</div>
+            <div class="etl-brand-note">Buyee, eBay, and Gripsweat sales, in one place.</div>
+            """,
+            unsafe_allow_html=True,
         )
 
         everyday = NAVIGATION_SECTIONS[0]

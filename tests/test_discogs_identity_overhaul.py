@@ -89,8 +89,8 @@ def test_ingest_and_review_have_no_identity_modal() -> None:
     assert "on_click=_commit_discogs_choice" in review
     assert "research_listing_identity" in review
     assert "Searching Discogs for this sale" in review
-    assert "Search Discogs" in review
-    assert "Search catalog" in review
+    assert "Search this listing" in review
+    assert "Look up on Discogs" in review
     assert "search_user_catalog" in review
     catalog_box = review.split("def _render_catalog_search", 1)[1].split(
         "def _commit_discogs_choice", 1
@@ -177,3 +177,9 @@ def test_cli_identity_command_is_registered() -> None:
     )
     assert "identity_app" in main
     assert 'name="identity"' in main
+    identity = (ROOT / "auction_etl" / "cli" / "identity.py").read_text(
+        encoding="utf-8"
+    )
+    assert "--backlog" in identity
+    assert "retune=not backlog" in identity
+    assert "fail_fast=False if backlog else None" in identity

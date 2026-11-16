@@ -439,6 +439,29 @@ def apply_rate(
         "rate_date": exchange_rate.rate_date,
     }
 
+    connection.execute(
+        text(
+            """
+            UPDATE warehouse.auction
+            SET currency = CASE
+                WHEN marketplace = 'buyee'
+                    THEN 'JPY'
+                WHEN marketplace = 'ebay'
+                    THEN 'USD'
+                ELSE currency
+            END
+            WHERE (
+                currency IS NULL
+                OR BTRIM(currency) = ''
+            )
+              AND marketplace IN (
+                'buyee',
+                'ebay'
+              )
+            """
+        )
+    )
+
     rate_result = connection.execute(
         text(
             """

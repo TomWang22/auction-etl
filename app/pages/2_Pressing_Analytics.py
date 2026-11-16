@@ -12,6 +12,11 @@ import streamlit as st
 from sqlalchemy import text
 
 from auction_etl.database.session import engine
+from auction_etl.services.discogs_identity import english_album_title
+from auction_etl.services.tracked_listing_scope import (
+    enabled_tracked_artist_names,
+    listing_belongs_to_tracked_artists,
+)
 from app.navigation import render_navigation
 
 from auction_etl.auth.streamlit_auth import (
@@ -21,11 +26,92 @@ from auction_etl.auth.streamlit_auth import (
 )
 
 
-COMPLETED_AUCTION_PREDICATE = (
-    "gross_price IS NOT NULL",
-    "ended_at IS NOT NULL",
-    "COALESCE(bid_count, 0) > 0",
+COMPLETED_SALE_PREDICATE = (
+    "sale.gross_price IS NOT NULL",
+    """NOT (
+        COALESCE(sale.auction_format, '') IN (
+            'AUCTION',
+            'AUCTION_WITH_BUYOUT'
+        )
+        AND COALESCE(sale.bid_count, -1) = 0
+    )""",
 )
+
+# Discogs files many 7-inch and cassette pressings as "Vinyl".
+# The listing format is the one the sale was actually classified as.
+ANALYTICS_MEDIA_SQL = """
+CASE
+    WHEN COALESCE(sale.effective_media_type, '') IN ('Vinyl', 'VINYL')
+     AND sale.media_type IN (
+        'EP_7_INCH',
+        'SINGLE_12_INCH',
+        'LP',
+        'CD',
+        'CASSETTE',
+        'SACD',
+        'DVD',
+        'CD_BOX_SET',
+        'LP_BOX_SET'
+     )
+    THEN sale.media_type
+    WHEN COALESCE(sale.effective_media_type, '') IN ('Vinyl', 'VINYL')
+    THEN 'LP'
+    WHEN UPPER(BTRIM(COALESCE(
+        sale.effective_media_type,
+        sale.media_type,
+        ''
+    ))) = 'CASSETTE'
+    THEN 'CASSETTE'
+    ELSE COALESCE(
+        NULLIF(BTRIM(sale.effective_media_type), ''),
+        NULLIF(BTRIM(sale.media_type), ''),
+        'UNKNOWN'
+    )
+END
+"""
+
+
+def _text_or_blank(value: object) -> str:
+    """Return a stripped string, or nothing for a missing value."""
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def _pressing_choice_label(row: Any) -> str:
+    """Catalog choice with the record name and every marketplace."""
+    album_title = _text_or_blank(getattr(row, "album_title", ""))
+    artist_name = _text_or_blank(getattr(row, "artist_name", ""))
+    english_name = english_album_title(album_title)
+    name = english_name or album_title
+    places = _text_or_blank(getattr(row, "marketplaces", ""))
+    release_year = getattr(row, "release_year", None)
+    year = ""
+    if release_year is not None and not pd.isna(release_year):
+        year = str(int(release_year))
+    tracked = _text_or_blank(getattr(row, "tracked_artist", ""))
+    parts = [
+        year,
+        tracked or artist_name,
+        name,
+        str(row.catalog_number),
+        str(row.media_type),
+        f"{int(row.sale_count)} sale(s)",
+        places,
+    ]
+    return "  ·  ".join(part for part in parts if part)
+
+
+def sale_type_label(auction_format: object) -> str:
+    """Name the way the listing sold."""
+    key = str(auction_format or "").strip().upper()
+    if key in {"FIXED_PRICE_OBO", "OBO", "BEST_OFFER"}:
+        return "Best Offer"
+    if key == "FIXED_PRICE":
+        return "Buy It Now"
+    if key in {"AUCTION", "AUCTION_WITH_BUYOUT"}:
+        return "Auction"
+    return "Sale"
 
 
 st.set_page_config(
@@ -53,9 +139,9 @@ def query_dataframe(
 def load_catalog_options(search: str) -> pd.DataFrame:
     """Load exact pressing choices with completed-sale coverage."""
     conditions = [
-        "effective_catalog_number IS NOT NULL",
-        "BTRIM(effective_catalog_number) <> ''",
-        *COMPLETED_AUCTION_PREDICATE,
+        "sale.effective_catalog_number IS NOT NULL",
+        "BTRIM(sale.effective_catalog_number) <> ''",
+        *COMPLETED_SALE_PREDICATE,
     ]
     parameters: dict[str, Any] = {}
 
@@ -65,9 +151,12 @@ def load_catalog_options(search: str) -> pd.DataFrame:
         conditions.append(
             """
             (
-                effective_catalog_number ILIKE :search
-                OR title ILIKE :search
-                OR seller ILIKE :search
+                sale.effective_catalog_number ILIKE :search
+                OR sale.title ILIKE :search
+                OR sale.seller ILIKE :search
+                OR family.display_title ILIKE :search
+                OR family.display_artist ILIKE :search
+                OR sale.effective_artist ILIKE :search
             )
             """
         )
@@ -78,36 +167,69 @@ def load_catalog_options(search: str) -> pd.DataFrame:
     return query_dataframe(
         f"""
         SELECT
-            effective_catalog_number AS catalog_number,
+            sale.effective_catalog_number AS catalog_number,
+            {ANALYTICS_MEDIA_SQL} AS media_type,
             COALESCE(
-                effective_media_type,
-                'UNKNOWN'
-            ) AS media_type,
-            currency,
+                LEAST(
+                    MIN(pressing.release_year) FILTER (
+                        WHERE pressing.release_year BETWEEN 1950 AND 2015
+                    ),
+                    MIN(family.original_release_year) FILTER (
+                        WHERE family.original_release_year BETWEEN 1950 AND 2015
+                    )
+                ),
+                MIN(pressing.release_year) FILTER (
+                    WHERE pressing.release_year BETWEEN 1950 AND 2030
+                ),
+                MIN(family.original_release_year) FILTER (
+                    WHERE family.original_release_year BETWEEN 1950 AND 2030
+                )
+            ) AS release_year,
+            STRING_AGG(
+                DISTINCT sale.marketplace,
+                ', ' ORDER BY sale.marketplace
+            ) AS marketplaces,
+            (ARRAY_AGG(family.display_artist) FILTER (
+                WHERE family.display_artist IS NOT NULL
+                  AND BTRIM(family.display_artist) <> ''
+            ))[1] AS artist_name,
+            (ARRAY_AGG(family.display_title) FILTER (
+                WHERE family.display_title IS NOT NULL
+                  AND BTRIM(family.display_title) <> ''
+            ))[1] AS album_title,
+            COALESCE(
+                (ARRAY_AGG(sale.discogs_thumb_url) FILTER (
+                    WHERE sale.discogs_thumb_url IS NOT NULL
+                      AND BTRIM(sale.discogs_thumb_url) <> ''
+                ))[1],
+                (ARRAY_AGG(sale.image_url) FILTER (
+                    WHERE sale.image_url IS NOT NULL
+                      AND BTRIM(sale.image_url) <> ''
+                ))[1]
+            ) AS cover_url,
             COUNT(*) AS sale_count,
-            COUNT(DISTINCT marketplace) AS marketplace_count,
-            COUNT(DISTINCT seller) AS seller_count,
-            MIN(gross_price) AS minimum_price,
+            COUNT(DISTINCT sale.marketplace) AS marketplace_count,
+            COUNT(DISTINCT sale.seller) AS seller_count,
+            MIN(sale.gross_price_usd) AS minimum_price,
             PERCENTILE_CONT(0.5)
-                WITHIN GROUP (ORDER BY gross_price)
+                WITHIN GROUP (ORDER BY sale.gross_price_usd)
                 AS median_price,
-            AVG(gross_price) AS average_price,
-            MAX(gross_price) AS maximum_price,
-            MIN(ended_at) AS first_sale_at,
-            MAX(ended_at) AS latest_sale_at
-        FROM warehouse.auction_collector_effective
+            AVG(sale.gross_price_usd) AS average_price,
+            MAX(sale.gross_price_usd) AS maximum_price,
+            MIN(sale.ended_at) AS first_sale_at,
+            MAX(sale.ended_at) AS latest_sale_at
+        FROM warehouse.auction_collector_effective sale
+        LEFT JOIN warehouse.pressing_identity pressing
+            ON pressing.id = sale.pressing_id
+        LEFT JOIN warehouse.release_family family
+            ON family.id = pressing.release_family_id
         WHERE {where_clause}
         GROUP BY
-            effective_catalog_number,
-            COALESCE(
-                effective_media_type,
-                'UNKNOWN'
-            ),
-            currency
+            sale.effective_catalog_number,
+            {ANALYTICS_MEDIA_SQL}
         ORDER BY
-            sale_count DESC,
-            latest_sale_at DESC,
-            effective_catalog_number
+            release_year ASC NULLS LAST,
+            sale.effective_catalog_number
         LIMIT 1000
         """,
         parameters,
@@ -117,26 +239,22 @@ def load_catalog_options(search: str) -> pd.DataFrame:
 @st.cache_data(ttl=120)
 def load_filter_values(
     catalog_number: str,
-    currency: str,
 ) -> dict[str, list[str]]:
-    """Load valid filters for one exact pressing and currency."""
+    """Load valid filters for one pressing across every marketplace."""
+    sale_filter = " AND ".join(COMPLETED_SALE_PREDICATE)
     dataframe = query_dataframe(
-        """
+        f"""
         SELECT
-            marketplace,
-            seller,
-            effective_media_type,
-            effective_region
-        FROM warehouse.auction_collector_effective
-        WHERE effective_catalog_number = :catalog_number
-          AND currency = :currency
-          AND gross_price IS NOT NULL
-          AND ended_at IS NOT NULL
-          AND COALESCE(bid_count, 0) > 0
+            sale.marketplace,
+            sale.seller,
+            {ANALYTICS_MEDIA_SQL} AS effective_media_type,
+            sale.effective_region
+        FROM warehouse.auction_collector_effective sale
+        WHERE sale.effective_catalog_number = :catalog_number
+          AND {sale_filter}
         """,
         {
             "catalog_number": catalog_number,
-            "currency": currency,
         },
     )
 
@@ -168,24 +286,22 @@ def load_filter_values(
 @st.cache_data(ttl=120)
 def load_date_bounds(
     catalog_number: str,
-    currency: str,
 ) -> tuple[date, date]:
     """Load available completed-sale date bounds."""
+    sale_filter = " AND ".join(COMPLETED_SALE_PREDICATE)
     dataframe = query_dataframe(
-        """
+        f"""
         SELECT
-            MIN(ended_at)::date AS minimum_date,
-            MAX(ended_at)::date AS maximum_date
-        FROM warehouse.auction_collector_effective
-        WHERE effective_catalog_number = :catalog_number
-          AND currency = :currency
-          AND gross_price IS NOT NULL
-          AND ended_at IS NOT NULL
-          AND COALESCE(bid_count, 0) > 0
+            MIN(COALESCE(sale.ended_at, sale.closing_at))::date
+                AS minimum_date,
+            MAX(COALESCE(sale.ended_at, sale.closing_at))::date
+                AS maximum_date
+        FROM warehouse.auction_collector_effective sale
+        WHERE sale.effective_catalog_number = :catalog_number
+          AND {sale_filter}
         """,
         {
             "catalog_number": catalog_number,
-            "currency": currency,
         },
     )
 
@@ -210,7 +326,7 @@ def load_date_bounds(
 def load_sales(
     *,
     catalog_number: str,
-    currency: str,
+    account_id: str,
     marketplaces: tuple[str, ...],
     sellers: tuple[str, ...],
     media_types: tuple[str, ...],
@@ -221,46 +337,49 @@ def load_sales(
 ) -> pd.DataFrame:
     """Load exact completed comparable sales."""
     conditions = [
-        "effective_catalog_number = :catalog_number",
-        "currency = :currency",
-        *COMPLETED_AUCTION_PREDICATE,
-        "ended_at::date BETWEEN :start_date AND :end_date",
+        "sale.effective_catalog_number = :catalog_number",
+        *COMPLETED_SALE_PREDICATE,
+        """(
+            COALESCE(sale.ended_at, sale.closing_at) IS NULL
+            OR COALESCE(sale.ended_at, sale.closing_at)::date
+                BETWEEN :start_date AND :end_date
+        )""",
     ]
 
     parameters: dict[str, Any] = {
         "catalog_number": catalog_number,
-        "currency": currency,
+        "account_id": account_id,
         "start_date": start_date,
         "end_date": end_date,
     }
 
     if marketplaces:
         conditions.append(
-            "marketplace = ANY(:marketplaces)"
+            "sale.marketplace = ANY(:marketplaces)"
         )
         parameters["marketplaces"] = list(marketplaces)
 
     if sellers:
         conditions.append(
-            "seller = ANY(:sellers)"
+            "sale.seller = ANY(:sellers)"
         )
         parameters["sellers"] = list(sellers)
 
     if media_types:
         conditions.append(
-            "effective_media_type = ANY(:media_types)"
+            f"({ANALYTICS_MEDIA_SQL}) = ANY(:media_types)"
         )
         parameters["media_types"] = list(media_types)
 
     if regions:
         conditions.append(
-            "effective_region = ANY(:regions)"
+            "sale.effective_region = ANY(:regions)"
         )
         parameters["regions"] = list(regions)
 
     if exclude_bulk:
         conditions.append(
-            "COALESCE(effective_bulk_lot, false) = false"
+            "COALESCE(sale.effective_bulk_lot, false) = false"
         )
 
     where_clause = "\nAND ".join(conditions)
@@ -268,35 +387,65 @@ def load_sales(
     dataframe = query_dataframe(
         f"""
         SELECT
-            marketplace,
-            listing_id,
-            ended_at,
-            seller,
-            title,
-            auction_url,
-            effective_catalog_number AS catalog_number,
-            effective_media_type AS media_type,
-            effective_region AS region,
-            effective_disc_count AS disc_count,
-            effective_bulk_lot AS bulk_lot,
-            effective_obi AS obi,
-            effective_insert_present AS insert_present,
-            effective_poster_present AS poster_present,
-            effective_condition_media AS media_condition,
-            effective_condition_cover AS cover_condition,
-            start_price,
-            final_price,
-            tax_amount,
-            gross_price,
-            currency,
-            bid_count,
-            effective_importance_score AS importance_score,
-            effective_verdict AS verdict
-        FROM warehouse.auction_collector_effective
+            sale.marketplace,
+            sale.listing_id,
+            COALESCE(sale.ended_at, sale.closing_at) AS ended_at,
+            sale.seller,
+            sale.title,
+            sale.auction_url,
+            sale.auction_format,
+            sale.effective_catalog_number AS catalog_number,
+            COALESCE(
+                family.display_artist,
+                sale.effective_artist
+            ) AS artist_name,
+            family.display_title AS album_title,
+            COALESCE(
+                NULLIF(BTRIM(sale.discogs_thumb_url), ''),
+                NULLIF(BTRIM(sale.image_url), '')
+            ) AS cover_url,
+            {ANALYTICS_MEDIA_SQL} AS media_type,
+            sale.effective_region AS region,
+            sale.effective_disc_count AS disc_count,
+            sale.effective_bulk_lot AS bulk_lot,
+            sale.effective_obi AS obi,
+            sale.effective_insert_present AS insert_present,
+            sale.effective_poster_present AS poster_present,
+            sale.effective_condition_media AS media_condition,
+            sale.effective_condition_cover AS cover_condition,
+            sale.start_price,
+            sale.final_price,
+            sale.tax_amount,
+            sale.gross_price,
+            sale.gross_price_usd,
+            paid.manual_purchase_price AS purchase_price,
+            paid.manual_purchase_currency AS purchase_currency,
+            sale.currency,
+            sale.bid_count,
+            sale.effective_importance_score AS importance_score,
+            sale.effective_verdict AS verdict
+        FROM warehouse.auction_collector_effective sale
+        LEFT JOIN warehouse.pressing_identity pressing
+            ON pressing.id = sale.pressing_id
+        LEFT JOIN warehouse.release_family family
+            ON family.id = pressing.release_family_id
+        LEFT JOIN LATERAL (
+            SELECT
+                owned.manual_purchase_price,
+                owned.manual_purchase_currency
+            FROM warehouse.auction_collector owned
+            WHERE owned.account_id = CAST(:account_id AS uuid)
+              AND owned.marketplace::text = sale.marketplace::text
+              AND owned.listing_id::text = sale.listing_id::text
+              AND owned.manual_purchased IS TRUE
+              AND owned.manual_purchase_price IS NOT NULL
+            ORDER BY owned.purchase_updated_at DESC NULLS LAST
+            LIMIT 1
+        ) paid ON TRUE
         WHERE {where_clause}
         ORDER BY
-            ended_at ASC,
-            id ASC
+            sale.ended_at ASC,
+            sale.id ASC
         """,
         parameters,
     )
@@ -315,6 +464,8 @@ def load_sales(
         "final_price",
         "tax_amount",
         "gross_price",
+        "gross_price_usd",
+        "purchase_price",
         "bid_count",
         "disc_count",
         "importance_score",
@@ -344,8 +495,53 @@ def load_sales(
         .astype(str)
         .str.upper()
     )
+    dataframe["price_usd"] = dataframe["gross_price_usd"]
+    dataframe["native_price"] = [
+        money(price, code)
+        for price, code in zip(
+            dataframe["gross_price"],
+            dataframe["currency"].fillna(""),
+            strict=True,
+        )
+    ]
+    paid = pd.to_numeric(dataframe["purchase_price"], errors="coerce")
+    paid_code = (
+        dataframe["purchase_currency"].fillna("USD").astype(str).str.upper()
+    )
+    for idx in dataframe.index[paid.notna() & paid.gt(0)]:
+        amount = paid.at[idx]
+        code = paid_code.at[idx] or "USD"
+        dataframe.at[idx, "native_price"] = money(amount, code)
+        if code == "USD":
+            dataframe.at[idx, "price_usd"] = float(amount)
+    dataframe["sale_type"] = dataframe["auction_format"].map(
+        sale_type_label
+    )
+    dataframe["bid_label"] = [
+        _bid_label(sale_type, bid_count)
+        for sale_type, bid_count in zip(
+            dataframe["sale_type"],
+            dataframe["bid_count"],
+            strict=True,
+        )
+    ]
+    recorded_bids = dataframe["bid_count"].where(
+        dataframe["sale_type"].eq("Auction")
+    )
+    dataframe["point_size"] = recorded_bids.fillna(
+        recorded_bids.median() if recorded_bids.notna().any() else 1
+    )
 
     return dataframe
+
+
+def _bid_label(sale_type: str, bid_count: Any) -> str:
+    """Show a bid count only when the listing was an auction."""
+    if sale_type != "Auction":
+        return "—"
+    if bid_count is None or pd.isna(bid_count):
+        return "Not captured"
+    return str(int(bid_count))
 
 
 def money(
@@ -391,16 +587,17 @@ def render_metrics(
     currency: str,
 ) -> None:
     """Render completed-sale summary statistics."""
-    prices = sales["gross_price"].dropna()
+    prices = sales["price_usd"].dropna()
 
     if prices.empty:
-        st.warning("No priced sales match these filters.")
+        st.warning("No stored USD prices match these filters.")
         return
 
-    latest_row = sales.sort_values(
+    dated = sales.dropna(subset=["price_usd"]).sort_values(
         "ended_at",
         ascending=False,
-    ).iloc[0]
+    )
+    latest_row = dated.iloc[0]
 
     columns = st.columns(7)
 
@@ -427,7 +624,7 @@ def render_metrics(
     columns[5].metric(
         "Latest",
         money(
-            latest_row["gross_price"],
+            latest_row["price_usd"],
             currency,
         ),
     )
@@ -440,14 +637,28 @@ def render_metrics(
 def render_price_history(
     sales: pd.DataFrame,
     currency: str,
+    *,
+    artist_name: str,
+    album_title: str,
+    catalog_number: str,
+    cover_url: str,
 ) -> None:
-    """Render a Discogs-style completed-sale history graph."""
+    """Render every marketplace on one stored-USD price chart."""
     chart_data = sales.dropna(
         subset=[
             "completed_date",
-            "gross_price",
+            "price_usd",
         ]
     ).copy()
+
+    undated = int(sales["completed_date"].isna().sum())
+    if undated:
+        st.caption(
+            f"{undated} sold "
+            f"{'listing has' if undated == 1 else 'listings have'} "
+            "no stored sale date, so they stay in the list below "
+            "and not on the timeline."
+        )
 
     if chart_data.empty:
         st.info("No dated completed sales are available.")
@@ -474,7 +685,7 @@ def render_price_history(
     )
 
     median_price = float(
-        chart_data["gross_price"].median()
+        chart_data["price_usd"].median()
     )
 
     price_axis = alt.Axis(
@@ -492,7 +703,7 @@ def render_price_history(
     )
 
     y_encoding = alt.Y(
-        "gross_price:Q",
+        "price_usd:Q",
         title=f"Sold for ({currency})",
         axis=price_axis,
         scale=alt.Scale(
@@ -512,11 +723,11 @@ def render_price_history(
             x=x_encoding,
             y=y_encoding,
             color=alt.Color(
-                "media_condition_label:N",
-                title="Media condition",
+                "marketplace_display:N",
+                title="Marketplace",
             ),
             size=alt.Size(
-                "bid_count:Q",
+                "point_size:Q",
                 title="Bids",
                 scale=alt.Scale(
                     range=[80, 280],
@@ -529,9 +740,13 @@ def render_price_history(
                     format="%Y-%m-%d %H:%M",
                 ),
                 alt.Tooltip(
-                    "gross_price:Q",
+                    "price_usd:Q",
                     title=f"Price ({currency})",
                     format=currency_format(currency),
+                ),
+                alt.Tooltip(
+                    "native_price:N",
+                    title="Original price",
                 ),
                 alt.Tooltip(
                     "media_condition_label:N",
@@ -542,9 +757,12 @@ def render_price_history(
                     title="Sleeve condition",
                 ),
                 alt.Tooltip(
-                    "bid_count:Q",
+                    "sale_type:N",
+                    title="Sale type",
+                ),
+                alt.Tooltip(
+                    "bid_label:N",
                     title="Bids",
-                    format=".0f",
                 ),
                 alt.Tooltip(
                     "marketplace_display:N",
@@ -633,12 +851,21 @@ def render_price_history(
         + median_label
     ).properties(
         height=480,
-        title=alt.TitleParams(
-            "Completed auctions with bids",
+            title=alt.TitleParams(
+            " · ".join(
+                part
+                for part in (
+                    artist_name,
+                    english_album_title(album_title) or album_title,
+                    catalog_number,
+                )
+                if part
+            ),
             subtitle=(
-                "Each dot is one sold listing with at least one bid. "
-                "Color is media condition. Size is bid count. "
-                "The dashed line is the median."
+                "Buyee, eBay, and Gripsweat on one chart. "
+                "The axis is the stored USD price. "
+                "Color is the marketplace. "
+                "Size is the bid count when the scrape recorded one."
             ),
             anchor="start",
             fontSize=22,
@@ -646,7 +873,22 @@ def render_price_history(
         ),
     )
 
-    st.altair_chart(
+    identity, chart_column = st.columns([1, 4])
+    if cover_url:
+        identity.image(cover_url, width=210)
+    shown_name = english_album_title(album_title) or album_title
+    identity.markdown(
+        "**"
+        + " · ".join(
+            part
+            for part in (artist_name, shown_name, catalog_number)
+            if part
+        )
+        + "**"
+    )
+    if album_title and album_title != shown_name:
+        identity.caption(album_title)
+    chart_column.altair_chart(
         combined,
         width="stretch",
     )
@@ -658,7 +900,7 @@ def render_price_distribution(
 ) -> None:
     """Render box plots and individual observations."""
     chart_data = sales.dropna(
-        subset=["gross_price"]
+        subset=["price_usd"]
     ).copy()
 
     if chart_data.empty:
@@ -677,7 +919,7 @@ def render_price_distribution(
                 title="Marketplace",
             ),
             y=alt.Y(
-                "gross_price:Q",
+                "price_usd:Q",
                 title=f"Completed price ({currency})",
                 axis=alt.Axis(
                     format=currency_format(currency),
@@ -825,7 +1067,7 @@ def render_marketplace_summary(
         sales.groupby(
             "marketplace_display",
             dropna=False,
-        )["gross_price"]
+        )["price_usd"]
         .agg(
             sales="count",
             minimum="min",
@@ -875,9 +1117,9 @@ def render_marketplace_summary(
 
     seller_summary = (
         sales.groupby(
-            "seller_display",
+            ["marketplace_display", "seller_display"],
             dropna=False,
-        )["gross_price"]
+        )["price_usd"]
         .agg(
             sales="count",
             median="median",
@@ -902,6 +1144,9 @@ def render_marketplace_summary(
         hide_index=True,
         width="stretch",
         column_config={
+            "marketplace_display": st.column_config.TextColumn(
+                "Marketplace"
+            ),
             "seller_display": st.column_config.TextColumn(
                 "Seller"
             ),
@@ -945,8 +1190,12 @@ def render_comparable_sales(
     )
 
     display_columns = [
+        "cover_url",
         "completed",
         "marketplace",
+        "sale_type",
+        "native_price",
+        "price_usd",
         "listing_id",
         "seller",
         "title",
@@ -957,13 +1206,9 @@ def render_comparable_sales(
         "insert_present",
         "poster_present",
         "bulk_lot",
-        "bid_count",
+        "bid_label",
         "media_condition",
         "cover_condition",
-        "start_price",
-        "final_price",
-        "tax_amount",
-        "gross_price",
         "verdict",
         "auction_url",
     ]
@@ -973,11 +1218,18 @@ def render_comparable_sales(
         hide_index=True,
         width="stretch",
         column_config={
+            "cover_url": st.column_config.ImageColumn(
+                "Pressing",
+                width="small",
+            ),
             "completed": st.column_config.TextColumn(
                 "Completed"
             ),
             "marketplace": st.column_config.TextColumn(
                 "Marketplace"
+            ),
+            "sale_type": st.column_config.TextColumn(
+                "Sale type"
             ),
             "listing_id": st.column_config.TextColumn(
                 "Listing ID"
@@ -1011,9 +1263,8 @@ def render_comparable_sales(
             "bulk_lot": st.column_config.CheckboxColumn(
                 "Bulk"
             ),
-            "bid_count": st.column_config.NumberColumn(
-                "Bids",
-                format="%d",
+            "bid_label": st.column_config.TextColumn(
+                "Bids"
             ),
             "media_condition": st.column_config.TextColumn(
                 "Media condition"
@@ -1021,31 +1272,84 @@ def render_comparable_sales(
             "cover_condition": st.column_config.TextColumn(
                 "Sleeve condition"
             ),
-            "start_price": st.column_config.NumberColumn(
-                f"Start ({currency})",
-                format=streamlit_money_format(currency),
+            "native_price": st.column_config.TextColumn(
+                "Original price"
             ),
-            "final_price": st.column_config.NumberColumn(
-                f"Hammer ({currency})",
-                format=streamlit_money_format(currency),
-            ),
-            "tax_amount": st.column_config.NumberColumn(
-                f"Tax ({currency})",
-                format=streamlit_money_format(currency),
-            ),
-            "gross_price": st.column_config.NumberColumn(
-                f"Gross ({currency})",
+            "price_usd": st.column_config.NumberColumn(
+                "USD",
                 format=streamlit_money_format(currency),
             ),
             "verdict": st.column_config.TextColumn(
                 "Verdict"
             ),
             "auction_url": st.column_config.LinkColumn(
-                "Auction",
+                "Listing",
                 display_text="Open",
             ),
         },
     )
+
+
+_MEDIA_RANK = {
+    "LP": 0,
+    "LP_BOX_SET": 1,
+    "EP_7_INCH": 2,
+    "SINGLE_12_INCH": 3,
+    "CASSETTE": 4,
+    "CASSETTE_BOX_SET": 5,
+    "CD": 6,
+    "CD_BOX_SET": 7,
+    "SACD": 8,
+    "DVD": 9,
+}
+
+
+def _tracked_artist_for_pressing(
+    artist: object,
+    title: object,
+    names: tuple[str, ...],
+) -> str:
+    """The tracked artist this pressing belongs to."""
+    for name in names:
+        if listing_belongs_to_tracked_artists(
+            title=title,
+            artist=artist,
+            tracked_names=(name,),
+        ):
+            return name
+    return ""
+
+
+def pressings_for_tracked_artist(
+    options: pd.DataFrame,
+    artist_name: str,
+    tracked_names: tuple[str, ...],
+) -> pd.DataFrame:
+    """One artist's records, earliest release first, then older formats."""
+    if options.empty:
+        return options
+    frame = options.copy()
+    frame["tracked_artist"] = [
+        _tracked_artist_for_pressing(artist, title, tracked_names)
+        for artist, title in zip(
+            frame["artist_name"],
+            frame["album_title"],
+            strict=True,
+        )
+    ]
+    frame = frame.loc[frame["tracked_artist"].eq(artist_name)].copy()
+    frame["media_rank"] = (
+        frame["media_type"].map(_MEDIA_RANK).fillna(50)
+    )
+    frame["release_year"] = pd.to_numeric(
+        frame["release_year"],
+        errors="coerce",
+    )
+    return frame.sort_values(
+        ["release_year", "media_rank", "catalog_number"],
+        ascending=[True, True, True],
+        na_position="last",
+    ).reset_index(drop=True)
 
 
 def normalize_date_selection(
@@ -1079,9 +1383,9 @@ def main() -> None:
     )
     st.title("📈 Pressing Analytics")
     st.caption(
-        "Discogs-style completed-sale history using actual "
-        "auction results with at least one bid. "
-        "Currencies remain completely separate."
+        "One chart for the same record across Buyee, eBay, "
+        "and Gripsweat. Prices use the stored USD amount. "
+        "The original currency stays on each sale."
     )
 
     search_column, refresh_column = st.columns(
@@ -1104,11 +1408,24 @@ def main() -> None:
         st.rerun()
 
     options = load_catalog_options(search)
+    tracked_names = enabled_tracked_artist_names(
+        engine,
+        account_id=page_account_context.account_id,
+    )
+    if tracked_names:
+        selected_artist = st.selectbox(
+            "Artist",
+            tracked_names,
+        )
+        options = pressings_for_tracked_artist(
+            options,
+            selected_artist,
+            tracked_names,
+        )
 
     if options.empty:
         st.warning(
-            "No priced and dated catalog-number sales "
-            "match the search."
+            "No priced catalog sales match this artist."
         )
         return
 
@@ -1116,18 +1433,12 @@ def main() -> None:
         (
             str(row.catalog_number),
             str(row.media_type),
-            str(row.currency),
         )
         for row in options.itertuples()
     ]
 
     option_labels = {
-        key: (
-            f"{key[0]}  ·  "
-            f"{key[1]}  ·  "
-            f"{key[2]}  ·  "
-            f"{int(row.sale_count)} sale(s)"
-        )
+        key: _pressing_choice_label(row)
         for key, row in zip(
             option_keys,
             options.itertuples(),
@@ -1135,9 +1446,9 @@ def main() -> None:
         )
     }
 
-    selected_catalog, selected_media, currency = (
+    selected_catalog, selected_media = (
         st.selectbox(
-            "Exact pressing / catalog number",
+            "Record",
             options=option_keys,
             format_func=lambda key: option_labels[key],
         )
@@ -1146,42 +1457,62 @@ def main() -> None:
     selected_option = options[
         (options["catalog_number"] == selected_catalog)
         & (options["media_type"] == selected_media)
-        & (options["currency"] == currency)
     ].iloc[0]
 
     heading_columns = st.columns(
-        [3, 1, 1, 1]
+        [1.1, 2.4, 1, 1, 1]
     )
-
-    heading_columns[0].subheader(
-        selected_catalog
+    cover_url = _text_or_blank(selected_option.get("cover_url"))
+    if cover_url:
+        heading_columns[0].image(
+            cover_url,
+            width=148,
+        )
+    artist_name = _text_or_blank(selected_option.get("artist_name"))
+    album_title = _text_or_blank(selected_option.get("album_title"))
+    english_name = english_album_title(album_title)
+    heading_columns[1].subheader(
+        " · ".join(
+            part
+            for part in (
+                artist_name,
+                english_name or album_title,
+                selected_catalog,
+            )
+            if part
+        )
     )
-    heading_columns[0].caption(
-        f"{selected_media} · {currency}"
+    if album_title and album_title != english_name:
+        heading_columns[1].caption(album_title)
+    places = _text_or_blank(selected_option.get("marketplaces"))
+    heading_columns[1].caption(
+        " · ".join(
+            part
+            for part in (selected_media, places)
+            if part
+        )
     )
-    heading_columns[1].metric(
+    heading_columns[2].metric(
         "Stored sales",
         int(selected_option["sale_count"]),
     )
-    heading_columns[2].metric(
+    heading_columns[3].metric(
         "Marketplaces",
         int(
             selected_option["marketplace_count"]
         ),
     )
-    heading_columns[3].metric(
+    heading_columns[4].metric(
         "Sellers",
         int(selected_option["seller_count"]),
     )
 
     filter_values = load_filter_values(
         selected_catalog,
-        currency,
     )
 
     minimum_date, maximum_date = load_date_bounds(
         selected_catalog,
-        currency,
     )
 
     with st.expander(
@@ -1239,7 +1570,7 @@ def main() -> None:
 
     sales = load_sales(
         catalog_number=selected_catalog,
-        currency=currency,
+        account_id=str(page_account_context.account_id),
         marketplaces=tuple(marketplaces),
         sellers=tuple(sellers),
         media_types=tuple(media_types),
@@ -1251,7 +1582,7 @@ def main() -> None:
 
     render_metrics(
         sales,
-        currency,
+        "USD",
     )
 
     (
@@ -1273,22 +1604,28 @@ def main() -> None:
     with history_tab:
         render_price_history(
             sales,
-            currency,
+            "USD",
+            artist_name=artist_name,
+            album_title=album_title,
+            catalog_number=selected_catalog,
+            cover_url=cover_url,
         )
         st.markdown("#### Sales history")
         st.caption(
-            "Each row is one completed auction with at least one bid, "
-            "including Discogs-style media and sleeve condition."
+            "Each row is one completed sale. Buyee and any other "
+            "non-USD price keeps the original amount and shows the "
+            "stored USD conversion beside it. The pressing image is "
+            "the cover for that row."
         )
         render_comparable_sales(
             sales,
-            currency,
+            "USD",
         )
 
     with distribution_tab:
         render_price_distribution(
             sales,
-            currency,
+            "USD",
         )
 
     with activity_tab:
@@ -1299,21 +1636,23 @@ def main() -> None:
     with summary_tab:
         render_marketplace_summary(
             sales,
-            currency,
+            "USD",
         )
 
     with sales_tab:
         render_comparable_sales(
             sales,
-            currency,
+            "USD",
         )
 
     st.divider()
 
     st.caption(
-        "Only exact effective catalog-number matches with at least "
-        "one bid are included. Variants such as MR3166 and MR316-6 "
-        "remain separate until they are manually normalized in "
+        "One record keeps Buyee, eBay, and Gripsweat together. "
+        "The chart uses the stored USD price, and each row still "
+        "shows the original amount. A recorded zero-bid auction "
+        "is left out. Variants such as MR3166 and MR316-6 remain "
+        "separate until they are manually normalized in "
         "Collector Review."
     )
 

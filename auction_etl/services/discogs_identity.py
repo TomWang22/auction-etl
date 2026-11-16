@@ -45,6 +45,16 @@ _TAURUS_DOUBLE = re.compile(
     r"\b(\d{2}TR)[- ]?(\d{4})(\d{2})\b",
     re.IGNORECASE,
 )
+# 40AH116970 is the double LP 40AH-1169~70 with the range glued on.
+_CBS_GLUED_RANGE = re.compile(
+    r"\b(\d{2}AH)[- ]?(\d{4})(\d{2})\b",
+    re.IGNORECASE,
+)
+# "38Ah 9 10" is the double LP Discogs stores as 38AH 9~10.
+_CBS_SPACED_RANGE = re.compile(
+    r"\b(\d{2}AH)[- ~]+(\d{1,4})[- ~]+(\d{1,2})\b",
+    re.IGNORECASE,
+)
 _CATALOG_RANGE_IN_TEXT = re.compile(
     r"\b([A-Z]{2,6}[-\s]?\d{2,6})[~／/](\d{1,4})\b",
     re.IGNORECASE,
@@ -216,7 +226,7 @@ _KNOWN_CATALOG_PREFIX = re.compile(
     r"^(?:"
     r"TACL|TATL|POCH|PCCA|PCJA|UPCY|UICZ|UICY|UPJY|MR|MRZ|"
     r"SOLL|SOLS|SOLB|SOLI|SOLJ|TRUE|DCT|WPCV|AMCM|SRCL|SR|TASL|CRQ|TDL|"
-    r"28TT|28TR|07TR|06SH|07SH|04SH|18TR|28MX|32TX|34TX|35TX|35CX|38TT|60DH|"
+    r"28TT|28TR|07TR|06SH|07SH|04SH|0\dEH|18TR|28MX|32TX|34TX|35TX|35CX|38TT|60DH|"
     r"H32P|H50P|CS|MHCL|KRS|C28A|\d{2}AH|POCH|PROT|UPCY|PKDA|GSR|"
     r"YS|CDU|DR|LFLP|AWK|"
     r"817|2427"
@@ -401,6 +411,18 @@ def catalog_search_variants(token: str | None) -> tuple[str, ...]:
         for item in (pair, slash, head):
             if item not in variants:
                 variants.append(item)
+    # Discogs treats "38AH-9~10" as every 38AH number. The head "38AH-9" is the hit.
+    # PROT-7418/9 is found by searching PROT-7418, not the glued range.
+    spaced = _CBS_SPACED_RANGE.fullmatch(
+        raw.upper().replace("～", "~").replace("〜", "~")
+    )
+    head = None
+    if spaced:
+        head = f"{spaced.group(1).upper()}-{spaced.group(2)}"
+    elif ranged:
+        head = re.sub(r"\s+", "-", ranged.group(1).upper())
+    if head:
+        variants = [head, *[item for item in variants if item != head]]
     return tuple(variants)
 
 
@@ -517,6 +539,10 @@ def covering_hits_for_listing(
 
 
 _TITLE_YEAR = re.compile(r"(?<![A-Za-z0-9])(19[4-9]\d|20[0-2]\d)(?![A-Za-z0-9])")
+# Playback 1973-1982 is the span the box covers. Discogs dates that box to 1982.
+_YEAR_SPAN = re.compile(
+    r"(?<![A-Za-z0-9])(19[4-9]\d|20[0-2]\d)\s*[-–~～〜]\s*(19[4-9]\d|20[0-2]\d)(?![A-Za-z0-9])"
+)
 _TITLE_YEAR_NEN = re.compile(r"(?<![A-Za-z0-9])(19[4-9]\d|20[0-2]\d)年")
 _CONCERT_TIMESTAMP = re.compile(
     r"(?:19[4-9]\d|20[0-2]\d)\.\d{1,2}\.\d{1,2}"
@@ -554,6 +580,12 @@ def extract_release_year(title: object) -> int | None:
     years = [int(match.group(1)) for match in _TITLE_YEAR.finditer(text)]
     if not years:
         return None
+    span = _YEAR_SPAN.search(text)
+    if span and not title_claims_reissue(text):
+        end = int(span.group(2))
+        start = int(span.group(1))
+        if end > start and end in years:
+            return end
     if title_claims_reissue(text):
         modern = [year for year in years if year >= 2000]
         return modern[0] if modern else years[-1]
@@ -927,6 +959,9 @@ def is_junk_catalog(value: str | None, *, title: str | None = None) -> bool:
     raw = re.sub(r"\s+", " ", _catalog_text(value))
     if not raw:
         return True
+    spaced_raw = raw.upper().replace("～", "~").replace("〜", "~")
+    if _CBS_SPACED_RANGE.fullmatch(spaced_raw):
+        return False
     if _MEDIA_YEAR_CATALOG.fullmatch(raw):
         return True
     if _MEDIA_SIZE_CATALOG.fullmatch(raw):
@@ -1077,6 +1112,36 @@ def _polygram_from_text(text: str) -> str | None:
     return None
 
 
+def _cbs_glued_range_from_text(text: str) -> str | None:
+    """40AH116970 is the double LP Discogs stores as 40AH-1169~70."""
+    match = _CBS_GLUED_RANGE.search(text)
+    if not match:
+        return None
+    return f"{match.group(1).upper()}-{match.group(2)}~{match.group(3)}"
+
+
+def _cbs_range_tail_fits(head: str, tail: str) -> bool:
+    """True for 9~10 or 1169~70. False for 00AH 1021 5 CBS SONY."""
+
+    if not head.isdigit() or not tail.isdigit():
+        return False
+    if int(tail) == int(head) + 1:
+        return True
+    if len(tail) >= len(head):
+        return False
+    return int(head[: -len(tail)] + tail) == int(head) + 1
+
+
+def _cbs_spaced_range_from_text(text: str) -> str | None:
+    """38Ah 9 10 is the double LP Discogs stores as 38AH 9~10."""
+    match = _CBS_SPACED_RANGE.search(text)
+    if not match:
+        return None
+    if not _cbs_range_tail_fits(match.group(2), match.group(3)):
+        return None
+    return f"{match.group(1).upper()}-{match.group(2)}~{match.group(3)}"
+
+
 def _taurus_double_from_text(text: str) -> str | None:
     """2LP mash 18TR205960 is Discogs 18TR-2059~2060."""
     match = _TAURUS_DOUBLE.search(text)
@@ -1113,6 +1178,7 @@ def _is_inch_format_catalog(match: re.Match[str], text: str) -> bool:
 def display_catalog(value: str | None) -> str | None:
     """Canonical catalog display: spaced 4+3 poly, PREFIX-NUMBER otherwise."""
     raw = re.sub(r"\s+", " ", (value or "").strip().upper())
+    raw = re.sub(r"^[O0]{2}AH\b", "00AH", raw)
     if not raw or is_junk_catalog(raw):
         return None
 
@@ -1127,6 +1193,16 @@ def display_catalog(value: str | None) -> str | None:
     taurus = _taurus_double_from_text(raw)
     if taurus:
         return taurus
+
+    spaced_raw = raw.replace("～", "~").replace("〜", "~")
+    spaced = _CBS_SPACED_RANGE.fullmatch(spaced_raw)
+    if spaced and _cbs_range_tail_fits(spaced.group(2), spaced.group(3)):
+        return f"{spaced.group(1).upper()}-{spaced.group(2)}~{spaced.group(3)}"
+
+    compact = re.sub(r"[^A-Z0-9]", "", raw)
+    glued = _CBS_GLUED_RANGE.fullmatch(compact)
+    if glued:
+        return f"{glued.group(1)}-{glued.group(2)}~{glued.group(3)}"
 
     folded = fold_catalog(raw)
     if re.fullmatch(r"2[3-4]\d{5}", folded):
@@ -1196,6 +1272,8 @@ def catalog_token(
         _add(title_candidates, _poly_from_text(text))
         _add(title_candidates, _polygram_from_text(text))
         _add(title_candidates, _taurus_double_from_text(text))
+        _add(title_candidates, _cbs_glued_range_from_text(text))
+        _add(title_candidates, _cbs_spaced_range_from_text(text))
         ranged = _CATALOG_RANGE_IN_TEXT.search(text)
         if ranged:
             head = re.sub(r"\s+", "-", ranged.group(1).upper())
@@ -1254,7 +1332,7 @@ def catalog_printed_on_listing(token: str | None, title: str | None) -> bool:
 
 
 _SEVEN_INCH_STORED_PREFIX = re.compile(
-    r"^(?:0[467]SH|07TR|07DX|SOLB|KRS|DR\d{3,4})",
+    r"^(?:0[467]SH|0\dEH|07TR|07DX|SOLB|KRS|DR\d{3,4})",
     re.IGNORECASE,
 )
 _CD_STORED_PREFIX = re.compile(
@@ -1396,15 +1474,16 @@ def _slash_part_is_noise(part: str) -> bool:
         return True
     if _MEDIA_SLASH_LEAD.fullmatch(part):
         return True
-    compact = re.sub(r"[\s・]+", "", part)
+    compact = re.sub(r"[\s・☆★*※♪【】\[\]]+", "", part)
     compact = _MEDIA_SLASH_PREFIX.sub("", compact)
     for junk in sorted(_SLASH_NOISE_WORDS, key=len, reverse=True):
         compact = compact.replace(junk, "")
+    compact = re.sub(r"(?:\d+)?(?:lps?|eps?|cds?|dvds?)$", "", compact, flags=re.IGNORECASE)
     return not compact
 
 
 def _artist_from_slash_part(lead: str) -> str | None:
-    if not lead or _VA_LEAD.match(lead):
+    if not lead or _VA_LEAD.match(lead) or _slash_part_is_noise(lead):
         return None
     stripped = lead.strip()
     if _PLACE_ONLY.fullmatch(stripped) or _STOCK_THEN_PLACE.fullmatch(stripped):
@@ -1641,9 +1720,20 @@ def artist_from_english_title(title: str | None) -> str | None:
     return head
 
 
+_BUYEE_BARCODE = re.compile(r"^(\d{12,13})\s*;")
+
+
 def listing_barcode(title: str | None) -> str | None:
-    """Return a JAN/EAN barcode from a Buyee-style title prefix."""
-    match = _JAN_BARCODE.search(title or "")
+    """Return a JAN/EAN barcode from a Buyee-style title prefix.
+
+    Buyee pastes the barcode before the semicolon. Taiwan EANs start
+    with 471, so a Japan-only 45/49 pattern misses them.
+    """
+    text = str(title or "").strip()
+    prefixed = _BUYEE_BARCODE.match(text)
+    if prefixed:
+        return prefixed.group(1)
+    match = _JAN_BARCODE.search(text)
     return match.group(0) if match else None
 
 
@@ -1716,7 +1806,7 @@ _ANITA_ALBUM_CATNOS = (
     (re.compile(r"夢裡共醉|梦里共醉", re.IGNORECASE), "CAL-04-1069"),
     (re.compile(r"似火探戈|oh no[! ]?oh yes", re.IGNORECASE), "CAL-04-1047"),
     (re.compile(r"烈焰紅唇|烈燄紅唇|plastic love|flaming(?: red)? lips", re.IGNORECASE), "CAL-04-1056"),
-    (re.compile(r"再展光華|in concert\s*87", re.IGNORECASE), "CAL-04-1060"),
+    (re.compile(r"再展光華|in concert\s*'?87|87\s*88\s*live", re.IGNORECASE), "CAL-04-1060"),
     (re.compile(r"夏日耀光華|in concert\s*'?90", re.IGNORECASE), "CAL-04-1103"),
     (re.compile(r"in brasil", re.IGNORECASE), "CAL-04-1087"),
     (re.compile(r"國語專輯|百變梅艷芳\s*烈焰", re.IGNORECASE), "RR-164"),
@@ -1767,7 +1857,7 @@ def inferred_release_catalog(
         if _TERESA_HINT.search(blob) and re.search(r"best hit\s*4", blob, re.IGNORECASE):
             return "KRS-3021"
         if _ANITA_HINT.search(blob) and re.search(
-            r"再展光華|in concert\s*87",
+            r"再展光華|in concert\s*'?87|87\s*88\s*live",
             blob,
             re.IGNORECASE,
         ):
@@ -1841,6 +1931,7 @@ _ARTIST_EQUIVALENCE_GROUPS = (
     (
         "Teresa Teng",
         "Teresa Tang",
+        "Theresa Teng",
         "Deng Lijun",
         "Deng Li Jun",
         "Teng Li Chun",
@@ -1947,6 +2038,23 @@ _TITLE_EQUIVALENCE_GROUPS = (
     ("ラストコンサート", "ラスト・コンサート", "Last Concert"),
     ("ファーストコンサート", "ファースト・コンサート", "First Concert"),
     ("百恵ライブ", "Momoe Live", "Momoe Festival"),
+    ("不死鳥伝説", "Legend of Phoenix", "Phoenix Legend", "Fushicho Densetsu"),
+    ("歌い継がれてゆく歌のように", "Utai Tsugarete"),
+    ("伝説から神話へ", "Last Live", "Budokan At Last"),
+    ("メビウス・ゲーム", "Möbius's Game", "Mobius's Game", "Mobius Game"),
+    ("ディス・イズ・マイ・トライアル", "This Is My Trial", "This is My Trilal"),
+    ("百恵白書", "Momoe Hakusho"),
+    ("百恵物語", "Momoe Monogatari"),
+    (
+        "ベスト・オブ・ベスト 山口百恵のすべて",
+        "山口百恵のすべて",
+        "Momoe no Subete",
+        "Yamaguchi Momoe no Subete",
+    ),
+    ("ささやかな欲望", "Sasayakana Yokubou", "Sasayakana Yokubo"),
+    ("16才のテーマ", "16 Year Old Theme"),
+    ("一恵", "Ichie"),
+    ("赤い疑惑", "Akai Giwaku"),
     ("永遠的情懷", "永遠的情懐", "永远的情怀"),
     ("島國情歌第六集", "島國情歌六", "島国情歌第六集", "小城故事"),
     ("島國之情歌第七集", "島國情歌第七集", "假如我是真的"),
@@ -1963,6 +2071,13 @@ _TITLE_EQUIVALENCE_GROUPS = (
     ("まごころ", "Anata Magokoro"),
     ("One & Only", "One and Only", "NHK Live"),
     ("漫步人生路", "A Stroll Through Life"),
+    (
+        "島國之情歌- 再見! 我的愛人",
+        "島國之情歌再見我的愛人",
+        "再見我的愛人",
+        "再見! 我的愛人",
+        "Goodbye My Love",
+    ),
     ("愛人", "Mistress", "Aijin", "Ai Jin", "あいじん"),
 )
 
@@ -1988,6 +2103,11 @@ def _equivalence_lookup(groups: tuple[tuple[str, ...], ...]) -> dict[str, str]:
 
 
 _ARTIST_CANON = _equivalence_lookup(_ARTIST_EQUIVALENCE_GROUPS)
+_ARTIST_DISPLAY = {
+    _script_compact(group[0]): group[0]
+    for group in _ARTIST_EQUIVALENCE_GROUPS
+    if _script_compact(group[0])
+}
 _TITLE_CANON = _equivalence_lookup(_TITLE_EQUIVALENCE_GROUPS)
 _ARTIST_CANON_BY_LENGTH = tuple(
     alias for alias in sorted(_ARTIST_CANON, key=len, reverse=True) if alias
@@ -1995,6 +2115,68 @@ _ARTIST_CANON_BY_LENGTH = tuple(
 _TITLE_CANON_BY_LENGTH = tuple(
     sorted(_TITLE_CANON.items(), key=lambda item: -len(item[0]))
 )
+
+
+_ROMAJI_PARTICLE = re.compile(
+    r"\b(?:no|ni|wo|wa|ga)\b",
+    re.IGNORECASE,
+)
+
+
+def _readable_latin_name(value: str) -> bool:
+    """A spelling a collector can read without CJK."""
+    text = value.strip()
+    if len(text) < 2:
+        return False
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text):
+        return False
+    return any(character.isalpha() for character in text)
+
+
+def english_album_title(display_title: str | None) -> str:
+    """English or romanized album name beside a catalog number.
+
+    Discogs bilingual titles use ``original = English``. A title that is
+    already Latin stays as stored. Otherwise the known album aliases
+    supply the first readable spelling, skipping romaji that is only a
+    particle phrase when a later alias is clearer.
+    """
+    title = str(display_title or "").strip()
+    if not title:
+        return ""
+    if "=" in title:
+        translated = title.split("=", 1)[1].strip(" -–—")
+        if _readable_latin_name(translated):
+            return translated
+    if _readable_latin_name(title):
+        return title
+    compact = _script_compact(title)
+    if not compact:
+        return ""
+    best_group: tuple[str, ...] | None = None
+    best_length = 0
+    for group in _TITLE_EQUIVALENCE_GROUPS:
+        matched = 0
+        for alias in group:
+            key = _script_compact(alias)
+            if key and len(key) >= 2 and key in compact:
+                matched = max(matched, len(key))
+        if matched > best_length:
+            best_group = group
+            best_length = matched
+    if best_group is None:
+        return ""
+    fallback = ""
+    for alias in best_group:
+        spelling = alias.strip()
+        if not _readable_latin_name(spelling):
+            continue
+        if not fallback:
+            fallback = spelling
+        if _ROMAJI_PARTICLE.search(spelling):
+            continue
+        return spelling
+    return fallback
 
 
 def equivalent_title_spellings(phrase: str | None) -> tuple[str, ...]:
@@ -2314,6 +2496,33 @@ def _compact_contains_album_key(compact: str, key: str) -> bool:
             start = index + 1
             continue
         return True
+
+
+_JUKEBOX_WORD = re.compile(r"juke\s*box|juxe\s*box", re.IGNORECASE)
+_JUKEBOX_CODE = re.compile(
+    r"(?<![A-Za-z0-9])[Cc][\s\-]?(\d{3,5})(?![A-Za-z0-9])"
+)
+
+
+def jukebox_promo_catalog(title: str | None) -> str | None:
+    """Malaysia jukebox promo number. Discogs does not list these 7\" discs.
+
+    C-9084 and the seller spelling C9084 are the same special catalog.
+    A promo with no printed number is the shared JUKEBOX catalog.
+    """
+    text = str(title or "")
+    jukebox = bool(_JUKEBOX_WORD.search(text))
+    malaysia_promo = bool(
+        re.search(r"malaysia", text, re.IGNORECASE)
+        and re.search(r"\bpromo\b", text, re.IGNORECASE)
+        and re.search(r"7\s*[\"″']|\bsingle\b", text, re.IGNORECASE)
+    )
+    if not jukebox and not malaysia_promo:
+        return None
+    code = _JUKEBOX_CODE.search(text)
+    if code:
+        return f"JUKEBOX C-{code.group(1)}"
+    return "JUKEBOX"
 
 
 def known_album_phrase(title: str | None) -> str | None:
@@ -2786,6 +2995,57 @@ def canonical_artist_key(value: str | None) -> str:
     return _ARTIST_CANON.get(compact, compact)
 
 
+_BLANK_ARTIST = frozenset({"", "nan", "none", "nat", "<na>"})
+_ARTIST_CREDIT_SPLIT = re.compile(r"\s*/\s*|\s*[|]\s*|、")
+
+
+def _artist_credit_text(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        if value != value:
+            return ""
+    except Exception:
+        pass
+    text = str(value).strip()
+    if text.casefold() in _BLANK_ARTIST:
+        return ""
+    return text
+
+
+def canonical_artist_display(
+    value: object,
+    *,
+    known_only: bool = False,
+) -> str:
+    """JP, EN, and slash credits collapse to one printed artist name."""
+
+    text = _artist_credit_text(value)
+    if not text:
+        return ""
+    key = canonical_artist_key(text)
+    display = _ARTIST_DISPLAY.get(key)
+    if display:
+        return display
+    for part in _ARTIST_CREDIT_SPLIT.split(text):
+        part = part.strip()
+        if not part:
+            continue
+        key = canonical_artist_key(part)
+        display = _ARTIST_DISPLAY.get(key)
+        if display:
+            return display
+    compact = _script_compact(text)
+    for alias in _ARTIST_CANON_BY_LENGTH:
+        if alias and alias in compact:
+            display = _ARTIST_DISPLAY.get(_ARTIST_CANON[alias])
+            if display:
+                return display
+    if known_only:
+        return ""
+    return text
+
+
 def canonical_title_key(value: str | None) -> str:
     """Album title key across English, Japanese, Canto/Mandarin, and pinyin."""
     text = (value or "").strip()
@@ -2921,7 +3181,16 @@ def parse_search_hits(raw_hits: Iterable[dict[str, Any]]) -> tuple[SearchHit, ..
 
 
 _SEARCH_ARTIST_ALIASES: dict[str, tuple[str, ...]] = {
-    "teresa teng": ("Teresa Teng", "テレサ・テン", "テレサテン", "鄧麗君", "邓丽君"),
+    "teresa teng": (
+        "Teresa Teng",
+        "Theresa Teng",
+        "Teresa Tang",
+        "テレサ・テン",
+        "テレサテン",
+        "鄧麗君",
+        "邓丽君",
+        "鄧丽君",
+    ),
     "momoe yamaguchi": ("Momoe Yamaguchi", "山口百恵", "山口百惠"),
     "anita mui": ("Anita Mui", "梅艷芳", "梅艳芳"),
     "akina nakamori": ("Akina Nakamori", "中森明菜"),
@@ -2970,6 +3239,12 @@ _CATALOG_STEM_WORDS = frozenset(
         "vinyl",
     }
 )
+
+
+def query_is_year(value: str | None) -> bool:
+    """True for a four-digit year. That is a credit year, not a catalog number."""
+    text = re.sub(r"\s+", "", str(value or ""))
+    return bool(re.fullmatch(r"(?:19|20)\d{2}", text))
 
 
 def query_looks_like_catalog(value: str | None) -> bool:
@@ -3055,6 +3330,110 @@ def _confirm_typed_catalog_hits(
     return confirmed
 
 
+def _credit_matches_query(row: Mapping[str, Any], typed: str) -> bool:
+    """True when this credited release is the year or album the user typed."""
+    title = str(row.get("title") or "")
+    if query_is_year(typed):
+        return str(row.get("year") or "") == typed
+    words = [word.casefold() for word in typed.split() if len(word) >= 2]
+    if not words:
+        return False
+    folded = title.casefold()
+    return all(word in folded for word in words)
+
+
+def _formats_from_credit(raw: Any) -> tuple[str, ...]:
+    if isinstance(raw, list):
+        return tuple(str(item).strip() for item in raw if str(item).strip())
+    return tuple(part.strip() for part in str(raw or "").split(",") if part.strip())
+
+
+def _hit_from_credit(row: Mapping[str, Any], release_id: int) -> SearchHit:
+    """Search card for a compilation or appearance filed under another artist."""
+    album = str(row.get("title") or "").strip()
+    credited = str(row.get("artist") or "").strip()
+    title = f"{credited} - {album}" if credited and album else album or credited
+    label = row.get("label")
+    if isinstance(label, list):
+        labels = tuple(str(item) for item in label if str(item).strip())
+    elif label:
+        labels = (str(label),)
+    else:
+        labels = ()
+    return SearchHit(
+        discogs_id=release_id,
+        title=title,
+        catno=str(row.get("catno") or ""),
+        year=_optional_text(row.get("year")),
+        country=_optional_text(row.get("country")),
+        formats=_formats_from_credit(row.get("format")),
+        labels=labels,
+        thumb_url=_optional_text(row.get("thumb") or row.get("thumbnail_url")),
+        uri=_optional_text(row.get("uri")) or f"/release/{release_id}",
+    )
+
+
+def appearance_hits_for_query(
+    client: Any,
+    artist_name: str | None,
+    typed: str,
+) -> list[SearchHit]:
+    """Compilations and appearances for this artist that match the typed search.
+
+    A database search scoped to the artist returns that artist's own albums.
+    Huaxing's hardcover collection is credited as an appearance, with Various
+    as the release artist, so it only shows up on the artist credit list.
+    """
+    if not artist_name or query_looks_like_catalog(typed) or query_is_catalog_stem(typed):
+        return []
+    finder = getattr(client, "find_artist_id", None)
+    credits = getattr(client, "artist_credits", None)
+    if finder is None or credits is None:
+        return []
+    try:
+        artist_id = finder(artist_name)
+    except Exception as exc:
+        if exc.__class__.__name__ == "DiscogsRateLimitError":
+            raise
+        return []
+    if not artist_id:
+        return []
+    try:
+        rows = credits(
+            int(artist_id),
+            stop_after_year=typed if query_is_year(typed) else None,
+        )
+    except Exception as exc:
+        if exc.__class__.__name__ == "DiscogsRateLimitError":
+            raise
+        return []
+    hits: list[SearchHit] = []
+    master_fetches = 0
+    resolve_master = getattr(client, "master_main_release", None)
+    for row in rows:
+        if not isinstance(row, Mapping) or not _credit_matches_query(row, typed):
+            continue
+        kind = str(row.get("type") or "release")
+        release_id: int | None = None
+        if kind == "release":
+            try:
+                release_id = int(row["id"])
+            except (TypeError, ValueError, KeyError):
+                release_id = None
+        elif kind == "master" and resolve_master is not None and master_fetches < 6:
+            master_fetches += 1
+            try:
+                release_id = resolve_master(int(row["id"]))
+            except Exception as exc:
+                if exc.__class__.__name__ == "DiscogsRateLimitError":
+                    raise
+                release_id = None
+        if release_id is None:
+            continue
+        hits.append(_hit_from_credit(row, release_id))
+    return hits
+
+
 def search_user_catalog(
     client: Any,
     *,
@@ -3063,13 +3442,15 @@ def search_user_catalog(
     query: str,
     listing_media: str | None,
 ) -> list[dict[str, Any]]:
-    """Search Discogs for the catalog or album the user typed.
+    """Search Discogs for the catalog, album, or year the user typed.
 
     Same-format releases come first. A catalog that only exists in another
     format is still returned, so the user can override the listing media.
     A typed catalog is also searched with no artist, because Discogs files
     some copies under Appearances: the soundtrack artist is Various, and
     the listing artist is only a track credit.
+    A year or album name also includes that artist's compilations and
+    appearances, which Discogs files under another release artist.
     """
     typed = re.sub(r"\s+", " ", str(query or "")).strip()
     if len(typed) < 2:
@@ -3124,6 +3505,16 @@ def search_user_catalog(
                 format_name=None,
             )
             found.extend(_confirm_typed_catalog_hits(client, bare, typed))
+    elif query_is_year(typed) and artist_name:
+        # title=1972 looks for an album named 1972 and returns nothing.
+        # year=1972 is every release Discogs dates to that year.
+        found.extend(
+            client.search_releases(
+                artist=artist_name,
+                year=typed,
+                format_name=None,
+            )
+        )
     else:
         # SSAR is a catalog prefix. title=SSAR matches unrelated words
         # and never the Stereo Sound LPs the Discogs site returns for ssar.
@@ -3167,16 +3558,20 @@ def search_user_catalog(
                         format_name=None,
                     )
                 )
+    credit_hits = appearance_hits_for_query(client, artist_name, typed)
+    credit_ids = {hit.discogs_id for hit in credit_hits}
     typed_catalog = query_looks_like_catalog(typed)
     if artist_name:
         found = [
             hit
             for hit in found
-            if (
+            if hit.discogs_id in credit_ids
+            or (
                 typed_catalog and catno_locks_listing(hit.catno, typed)
             )
             or release_belongs_to_artist(hit, artist_name)
         ]
+    found.extend(credit_hits)
     ordered: list[SearchHit] = []
     seen: set[int] = set()
     catalog_match: list[SearchHit] = []
@@ -3897,6 +4292,93 @@ def _same_album_or_catalog_hits(
     return matched
 
 
+def _catalog_conflicts_with_listing(
+    catno: str | None,
+    media_type: str | None,
+) -> bool:
+    """True when the catalog prefix is a different carrier than the listing.
+
+    Discogs search sometimes labels an 08EH 7\" as LP. The prefix is the carrier.
+    """
+    family = _stored_catalog_family(catno or "")
+    if family == "lp":
+        return False
+    listing_family = media_family(media_type)
+    shape = vinyl_shape(media_type)
+    if family == "seven":
+        return shape == "lp" or listing_family == "cd" or listing_family == "cassette"
+    if family == "cassette":
+        return listing_family not in {"cassette", "unknown"}
+    if family == "cd":
+        return listing_family not in {"cd", "unknown"}
+    return False
+
+
+def _format_locked_release(
+    hits: Sequence[SearchHit],
+    *,
+    title: str | None,
+    media_type: str | None,
+    token: str | None,
+) -> SearchHit | None:
+    """The one pressing the listing format and catalog leave standing.
+
+    A printed catno that locks one LP still fills when Discogs also lists
+    the cassette, the CD, and a different volume of the same series.
+    A 7\" listing fills when Discogs split that same catno into a 7\" and an LP.
+    Two LPs with different catnos stay undecided.
+    """
+    if media_family(media_type) == "unknown":
+        # SOLI 70 is printed and the media word is missing. The CD of
+        # that same album is a different catalog.
+        if not token:
+            return None
+        locked = [
+            hit
+            for hit in hits
+            if catno_locks_listing(hit.catno, token)
+            or catno_covers_listing_token(hit.catno, token)
+        ]
+        folds = {fold_catalog(hit.catno) for hit in locked if hit.catno}
+        if len(folds) != 1:
+            return None
+        edition = _prefer_listing_edition(locked, title)
+        return edition[0] if edition else None
+    compatible = [
+        hit
+        for hit in hits
+        if listing_media_compatible(media_type, " ".join(hit.formats))
+        and not _catalog_conflicts_with_listing(hit.catno, media_type)
+    ]
+    if token:
+        locked = [
+            hit
+            for hit in compatible
+            if catno_locks_listing(hit.catno, token)
+            or catno_covers_listing_token(hit.catno, token)
+        ]
+        folds = {fold_catalog(hit.catno) for hit in locked if hit.catno}
+        if len(folds) != 1:
+            return None
+        edition = _prefer_listing_edition(locked, title)
+        return edition[0] if edition else None
+    # 2LPS leaves the cassette out. One remaining pressing is that copy.
+    # Two LPs with different catnos are still undecided.
+    if not token and len(compatible) == 1:
+        return compatible[0]
+    folds = {fold_catalog(hit.catno) for hit in compatible if hit.catno}
+    if len(folds) != 1:
+        return None
+    edition = _prefer_listing_edition(compatible, title)
+    chosen = edition[0] if edition else None
+    if chosen is None:
+        return None
+    whole = {fold_catalog(hit.catno) for hit in hits if hit.catno}
+    if whole == folds or album_name_in_listing(title, chosen.title):
+        return chosen
+    return None
+
+
 def classify_search_hits(
     *,
     catalog_number: str | None,
@@ -4043,7 +4525,34 @@ def classify_search_hits(
         )
         if chosen is not None and chosen.discogs_id in media_ids:
             option_shapes = {shortlist_option_shape(hit.formats) for hit in ordered}
+            if len(ordered) > 1:
+                locked_release = _format_locked_release(
+                    ordered,
+                    title=title,
+                    media_type=media_type,
+                    token=token,
+                )
+                if locked_release is not None:
+                    return Classification(
+                        status="filled_auto",
+                        reason="title_search",
+                        hits=(locked_release,),
+                        chosen=locked_release,
+                    )
             if len(option_shapes) > 1:
+                locked_release = _format_locked_release(
+                    ordered,
+                    title=title,
+                    media_type=media_type,
+                    token=token,
+                )
+                if locked_release is not None:
+                    return Classification(
+                        status="filled_auto",
+                        reason="title_search",
+                        hits=(locked_release,),
+                        chosen=locked_release,
+                    )
                 return Classification(
                     status="needs_review",
                     reason="title_search",
@@ -4107,6 +4616,53 @@ def classify_search_hits(
         if not catno_locks_listing(hit.catno, token)
         and not catno_covers_listing_token(hit.catno, token)
     ]
+    wanted_fold = fold_catalog(token)
+    range_locked = [
+        hit
+        for hit in same_album
+        if fold_catalog(hit.catno) != wanted_fold
+        and (
+            catno_locks_listing(hit.catno, token)
+            or catno_covers_listing_token(hit.catno, token)
+        )
+    ]
+    # 60AH-1486 locks Playback 60AH-1486~8. Fold equality drops the ~8,
+    # classify returns an empty shortlist, and the fill wipes the row.
+    if range_locked and not extra_album:
+        ranked = shortlist_format_options(
+            sorted(
+                range_locked,
+                key=lambda hit: _identity_shortlist_key(
+                    hit,
+                    title=title,
+                    media_type=media_type,
+                    catalog_number=token,
+                ),
+            )
+        )
+        locked_release = _format_locked_release(
+            ranked,
+            title=title,
+            media_type=media_type,
+            token=token,
+        )
+        if locked_release is not None:
+            return Classification(
+                status="filled_auto",
+                reason="unique_catno_artist_vinyl",
+                hits=(locked_release,),
+                chosen=locked_release,
+            )
+        has_mismatch = any(
+            not listing_media_compatible(media_type, " ".join(hit.formats))
+            for hit in ranked
+        )
+        return Classification(
+            status="needs_review",
+            reason="media_mismatch" if has_mismatch else "title_search",
+            hits=ranked,
+            chosen=None,
+        )
     if extra_album:
         ranked = shortlist_format_options(
             sorted(
@@ -4132,6 +4688,19 @@ def classify_search_hits(
                 reason="title_search",
                 hits=ordered,
                 chosen=titled,
+            )
+        locked_release = _format_locked_release(
+            ranked,
+            title=title,
+            media_type=media_type,
+            token=token,
+        )
+        if locked_release is not None:
+            return Classification(
+                status="filled_auto",
+                reason="unique_catno_artist_vinyl",
+                hits=(locked_release,),
+                chosen=locked_release,
             )
         has_mismatch = any(
             not listing_media_compatible(media_type, " ".join(hit.formats))
@@ -4388,7 +4957,10 @@ def map_release_payload(payload: dict[str, Any]) -> PressingIdentityDraft:
         label_name=primary.display_name,
         discogs_label_id=primary.discogs_label_id,
         labels=labels,
-        requires_label_choice=len(labels) > 1,
+        requires_label_choice=len({
+            (label.discogs_label_id, label.display_name.casefold())
+            for label in labels
+        }) > 1,
         catalog_number=primary.catno or str(
             (payload.get("labels") or [{}])[0].get("catno") or ""
         ).strip(),
@@ -4420,6 +4992,22 @@ def cover_fields_from_release(payload: dict[str, Any]) -> dict[str, Any]:
         "thumb": draft.discogs_thumb_url or "",
         "label": names,
     }
+
+
+def shortlist_field(hit: object, *names: str) -> Any:
+    """Read a shortlist dict or SearchHit. Format lists are values, not empty."""
+
+    for name in names:
+        if isinstance(hit, Mapping):
+            value = hit.get(name)
+        elif hasattr(hit, name):
+            value = getattr(hit, name)
+        else:
+            continue
+        if value is None or value == "":
+            continue
+        return value
+    return None
 
 
 def shortlist_payload(hits: Sequence[SearchHit]) -> list[dict[str, Any]]:
@@ -4522,7 +5110,7 @@ def _keeps_media(formats: Sequence[str], listing_media: str | None) -> bool:
 
 def _label_entities(raw_labels: Sequence[dict[str, Any]]) -> tuple[LabelChoice, ...]:
     choices: list[LabelChoice] = []
-    seen: set[tuple[int | None, str]] = set()
+    seen: set[tuple[int | None, str, str]] = set()
     for row in raw_labels:
         entity = str(row.get("entity_type_name") or "Label").strip()
         if entity and entity.casefold() != "label":
@@ -4531,7 +5119,9 @@ def _label_entities(raw_labels: Sequence[dict[str, Any]]) -> tuple[LabelChoice, 
         if not name:
             continue
         label_id = _optional_int(row.get("id"))
-        key = (label_id, name.casefold())
+        catno = str(row.get("catno") or "").strip()
+        # One label can print two numbers, such as MRM 1003 and 2488 447.
+        key = (label_id, name.casefold(), catno.casefold())
         if key in seen:
             continue
         seen.add(key)
@@ -4539,7 +5129,7 @@ def _label_entities(raw_labels: Sequence[dict[str, Any]]) -> tuple[LabelChoice, 
             LabelChoice(
                 discogs_label_id=label_id,
                 display_name=name,
-                catno=str(row.get("catno") or "").strip(),
+                catno=catno,
             )
         )
     return tuple(choices)
@@ -4567,8 +5157,19 @@ def _map_formats(
 
     media_type = name
     folded_name = name.casefold()
+    names = [
+        str(item.get("name") or "").strip().casefold()
+        for item in formats
+    ]
     joined = " ".join(descriptions)
-    if folded_name == "cd":
+    boxed = "box set" in names
+    if boxed and any(item == "cassette" for item in names):
+        media_type = "CASSETTE_BOX_SET"
+    elif boxed and any(item == "cd" for item in names):
+        media_type = "CD_BOX_SET"
+    elif boxed and any(item in {"vinyl", "lp"} for item in names):
+        media_type = "LP_BOX_SET"
+    elif folded_name == "cd":
         media_type = "CD"
     elif folded_name == "cassette":
         media_type = "CASSETTE"

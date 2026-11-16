@@ -95,6 +95,7 @@ from auction_etl.services.discogs_identity import (
     is_generic_songbook_album,
     extract_release_year,
     prefer_listing_generation,
+    _prefer_listing_edition,
     prefer_listing_label,
     map_release_payload,
     names_from_search_hit,
@@ -114,6 +115,7 @@ from auction_etl.services.discogs_identity import (
     listing_names_other_work,
     artist_local_name,
     concert_program_related,
+    jukebox_promo_catalog,
     listing_is_self_titled,
     listing_names_specific_album,
     stored_catalog_fits_listing,
@@ -1072,15 +1074,29 @@ def fill_unmatched_identities(
     marketplace: str | None = None,
     retune: bool = True,
     since: datetime | None = None,
+    budget_seconds: float | None = None,
+    fail_fast: bool | None = None,
 ) -> IdentityFillStats:
     """Search Discogs for unmatched warehouse rows and auto-fill dead-on hits.
 
     ``retune=False`` fills newly ingested rows first, then leftover unmatched
     and Need-a-decision piles with a short Discogs search (listing format plus
-    unfiltered). It does not grind every extra format.
+    unfiltered). It does not grind every extra format. A backlog pass passes
+    an older ``since`` and a longer ``budget_seconds`` so Gripsweat rows that
+    were never searched still get a catalog match.
     """
     stats = IdentityFillStats()
-    stats.ingest_fail_fast = not retune
+    stats.ingest_fail_fast = (not retune) if fail_fast is None else fail_fast
+    identity_budget = (
+        INGEST_IDENTITY_BUDGET_SECONDS
+        if budget_seconds is None
+        else float(budget_seconds)
+    )
+    leftover_budget = (
+        INGEST_LEFTOVER_BUDGET_SECONDS
+        if budget_seconds is None
+        else float(budget_seconds)
+    )
     discogs = client or DiscogsClient()
     search_cache: dict[str, tuple[SearchHit, ...]] = {}
     release_cache: dict[int, PressingIdentityDraft] = {}
@@ -1142,7 +1158,7 @@ def fill_unmatched_identities(
         ingest_deadline = (
             None
             if retune
-            else time.monotonic() + INGEST_IDENTITY_BUDGET_SECONDS
+            else time.monotonic() + identity_budget
         )
         for row in rows:
             if stats.stopped_reason:
@@ -1231,7 +1247,7 @@ def fill_unmatched_identities(
             leftover_deadline = (
                 None
                 if retune
-                else time.monotonic() + INGEST_LEFTOVER_BUDGET_SECONDS
+                else time.monotonic() + leftover_budget
             )
             _research_leftover_identities(
                 engine,
@@ -1268,6 +1284,15 @@ def fill_unmatched_identities(
                 client=discogs,
                 release_cache=release_cache,
                 stats=stats,
+            )
+        elif budget_seconds is not None and not stats.stopped_reason:
+            _promote_unique_shortlists(
+                engine,
+                client=discogs,
+                release_cache=release_cache,
+                stats=stats,
+                image_client=http,
+                marketplace=marketplace,
             )
     finally:
         http.close()
@@ -1326,7 +1351,49 @@ def apply_release_choice(
             "pressing_id": pressing_id,
             "identity_status": "filled_manual",
             "discogs_release_id": draft.discogs_release_id,
+            "catalog_number": draft.catalog_number,
+            "label_catnos": tuple(
+                label.catno
+                for label in draft.labels
+                if (label.catno or "").strip()
+            ),
+            "country": draft.country,
+            "region": draft.region,
+            "disc_count": draft.disc_count,
+            "discogs_thumb_url": draft.discogs_thumb_url,
+            "release_year": draft.release_year,
+            "generation": draft.generation,
         }
+
+
+def assign_known_pressing(
+    engine: Engine,
+    *,
+    marketplace: str,
+    listing_id: str,
+    pressing_id: int,
+    thumb_url: str | None = None,
+) -> None:
+    """Attach a pressing already identified on another copy. No Discogs HTTP."""
+
+    with engine.begin() as connection:
+        _assign_pressing(
+            connection,
+            marketplace=marketplace,
+            listing_id=listing_id,
+            pressing_id=pressing_id,
+            match_basis="MANUAL",
+            manual=True,
+        )
+        _set_auction_identity(
+            connection,
+            marketplace=marketplace,
+            listing_id=listing_id,
+            status="filled_manual",
+            source="discogs",
+            thumb_url=thumb_url,
+            shortlist=None,
+        )
 
 
 def research_listing_identity(
@@ -1335,6 +1402,7 @@ def research_listing_identity(
     marketplace: str,
     listing_id: str,
     client: DiscogsClient | None = None,
+    media_type: str | None = None,
 ) -> str:
     """Search Discogs for one open Review sale so Use this has candidates."""
     discogs = client or DiscogsClient()
@@ -1375,6 +1443,9 @@ def research_listing_identity(
         pressings = _identified_pressing_rows(connection)
     if row is None:
         return "unmatched"
+    if reviewer_left_the_lot(media_type):
+        row = dict(row)
+        row["review_media_type"] = media_type
     http = httpx.Client(
         timeout=4.0,
         follow_redirects=True,
@@ -2736,8 +2807,12 @@ def _pressing_formats(media_type: str | None) -> tuple[str, ...]:
         return ("Vinyl", '12"')
     if blob.startswith("CD") or "SACD" in blob or "SHM" in blob:
         return ("CD",)
-    if blob.startswith("LP") or "VINYL" in blob:
+    if blob.startswith("LP"):
         return ("Vinyl", "LP")
+    # A stored "Vinyl" row has not said LP or 7". Calling it an LP
+    # makes a 7\" listing reject the pressing it already identified.
+    if "VINYL" in blob:
+        return ("Vinyl",)
     return ((media_type or "Vinyl"),)
 
 
@@ -2842,6 +2917,187 @@ def _local_hits_cover_listing(
     return True
 
 
+_LOT_MEDIA = frozenset(
+    {
+        "BULK_LOT",
+        "LP_BULK_LOT",
+        "CD_BULK_LOT",
+        "EP_BULK_LOT",
+        "CASSETTE_BULK_LOT",
+        "MIXED_BULK_LOT",
+        "MAGAZINE_BULK_LOT",
+    }
+)
+
+
+def reviewer_left_the_lot(media: str | None) -> bool:
+    """True when the open menu names a real format, so Discogs should run."""
+    text = str(media or "").strip().upper()
+    if not text or text == "AUTOMATIC / UNSET":
+        return False
+    return text not in _LOT_MEDIA
+
+
+def _release_prints_barcode(payload: dict[str, Any], barcode: str) -> bool:
+    wanted = re.sub(r"\D", "", barcode)
+    if len(wanted) < 12:
+        return False
+    for item in payload.get("identifiers") or []:
+        if str(item.get("type") or "").casefold() != "barcode":
+            continue
+        printed = re.sub(r"\D", "", str(item.get("value") or ""))
+        if printed == wanted:
+            return True
+    return False
+
+
+def _fill_barcode_release(
+    connection: Connection,
+    *,
+    row: dict[str, Any],
+    client: DiscogsClient,
+    stats: IdentityFillStats,
+) -> bool:
+    """Fill when the title's barcode is printed on exactly one Discogs release."""
+    barcode = listing_barcode(row.get("title"))
+    if not barcode or is_job_lot(str(row.get("title") or "")):
+        return False
+    try:
+        found = client.search_releases(query=barcode, format_name=None)
+    except (httpx.HTTPError, DiscogsRateLimitError):
+        stats.search_errors += 1
+        return False
+    artist = listing_search_artist(row.get("artist"), row.get("title"))
+    overlapped = tuple(
+        hit
+        for hit in found
+        if artist_overlaps(
+            listing_artist=artist,
+            listing_title=row.get("title"),
+            discogs_names=names_from_search_hit(hit),
+        )
+    )
+    if len({hit.discogs_id for hit in overlapped}) != 1:
+        return False
+    hit = overlapped[0]
+    try:
+        payload = client.get_release(hit.discogs_id)
+    except (httpx.HTTPError, DiscogsRateLimitError):
+        stats.search_errors += 1
+        return False
+    if not _release_prints_barcode(payload, barcode):
+        return False
+    draft = map_release_payload(payload)
+    pressing_id = upsert_pressing(connection, draft)
+    _assign_pressing(
+        connection,
+        marketplace=str(row["marketplace"]),
+        listing_id=str(row["listing_id"]),
+        pressing_id=pressing_id,
+        match_basis="CATALOG_EXACT",
+        manual=False,
+    )
+    if draft.catalog_number:
+        connection.execute(
+            text(
+                """
+                UPDATE warehouse.auction
+                SET catalog_number = :catalog_number
+                WHERE marketplace = :marketplace
+                  AND listing_id = :listing_id
+                  AND COALESCE(BTRIM(catalog_number), '') = ''
+                """
+            ),
+            {
+                "catalog_number": draft.catalog_number,
+                "marketplace": str(row["marketplace"]),
+                "listing_id": str(row["listing_id"]),
+            },
+        )
+    _set_auction_identity(
+        connection,
+        marketplace=str(row["marketplace"]),
+        listing_id=str(row["listing_id"]),
+        status="filled_auto",
+        source="discogs",
+        thumb_url=draft.discogs_thumb_url,
+        shortlist=shortlist_payload((hit,)),
+    )
+    return True
+
+
+def _file_jukebox_promo(
+    connection: Connection,
+    *,
+    row: dict[str, Any],
+    catalog: str,
+) -> None:
+    """File a Malaysia jukebox 7\" on its own catalog. Discogs has no release."""
+    artist = listing_search_artist(row.get("artist"), row.get("title")) or "Various"
+    draft = PressingIdentityDraft(
+        discogs_release_id=None,  # type: ignore[arg-type]
+        discogs_master_id=None,
+        discogs_uri=None,
+        discogs_thumb_url=None,
+        display_artist=artist,
+        display_title="Jukebox promo",
+        artist_names=(artist,),
+        label_name="",
+        discogs_label_id=None,
+        labels=(),
+        requires_label_choice=False,
+        catalog_number=catalog,
+        matrix_number="",
+        country="Malaysia",
+        region="Malaysia",
+        media_type="EP_7_INCH",
+        format_detail='7" jukebox promo',
+        disc_count=1,
+        release_year=None,
+        generation="PROMO",
+        is_first_press=False,
+        notes_hint="Malaysia jukebox promo. Discogs has no release for this catalog.",
+    )
+    pressing_id = upsert_pressing(connection, draft)
+    _assign_pressing(
+        connection,
+        marketplace=str(row["marketplace"]),
+        listing_id=str(row["listing_id"]),
+        pressing_id=pressing_id,
+        match_basis="TITLE_RULE",
+        manual=False,
+    )
+    connection.execute(
+        text(
+            """
+            UPDATE warehouse.auction
+            SET catalog_number = :catalog_number,
+                media_type = CASE
+                    WHEN COALESCE(media_type, '') IN ('', 'UNKNOWN', 'VINYL')
+                    THEN 'EP_7_INCH'
+                    ELSE media_type
+                END
+            WHERE marketplace = :marketplace
+              AND listing_id = :listing_id
+            """
+        ),
+        {
+            "catalog_number": catalog,
+            "marketplace": str(row["marketplace"]),
+            "listing_id": str(row["listing_id"]),
+        },
+    )
+    _set_auction_identity(
+        connection,
+        marketplace=str(row["marketplace"]),
+        listing_id=str(row["listing_id"]),
+        status="filled_auto",
+        source="listing",
+        thumb_url=None,
+        shortlist=[],
+    )
+
+
 def _fill_one_row(
     connection: Connection,
     *,
@@ -2858,8 +3114,17 @@ def _fill_one_row(
     marketplace = str(row["marketplace"])
     listing_id = str(row["listing_id"])
     title_text = str(row.get("title") or "")
+    jukebox_catalog = jukebox_promo_catalog(title_text)
+    if jukebox_catalog and not is_job_lot(title_text):
+        _file_jukebox_promo(connection, row=row, catalog=jukebox_catalog)
+        return "filled_auto"
+    if _fill_barcode_release(connection, row=row, client=client, stats=stats):
+        return "filled_auto"
+    review_media = str(row.get("review_media_type") or "").strip() or None
     stored_lot = bool(row.get("bulk_lot")) and classify_media_details(title_text).bulk_lot
-    if is_job_lot(title_text) or stored_lot:
+    if not reviewer_left_the_lot(review_media) and (
+        is_job_lot(title_text) or stored_lot
+    ):
         _set_auction_identity(
             connection,
             marketplace=marketplace,
@@ -2870,7 +3135,7 @@ def _fill_one_row(
             shortlist=[],
         )
         return "unmatched"
-    listing_media = _listing_media_for_row(row)
+    listing_media = review_media or _listing_media_for_row(row)
     format_name = discogs_search_format(listing_media)
     if format_name is None:
         _set_auction_identity(
@@ -3063,14 +3328,42 @@ def _fill_one_row(
         )
         return "unmatched"
 
-    remaining_classification = classify_search_hits(
-        catalog_number=token,
-        title=row.get("title"),
-        artist=listing_search_artist(row.get("artist"), row.get("title")),
-        media_type=listing_media,
-        hits=hits,
-        require_catalog_token=require_catalog_token,
-    )
+    export_catalog_locked = False
+    if (
+        token
+        and hits
+        and not any(
+            catno_locks_listing(hit.catno, token)
+            or catno_covers_listing_token(hit.catno, token)
+            for hit in hits
+        )
+        and _one_displayed_pressing(hits)
+    ):
+        try:
+            label_draft = _release_draft(client, hits[0].discogs_id, release_cache)
+        except (httpx.HTTPError, DiscogsRateLimitError):
+            label_draft = None
+        if label_draft is not None and printed_catalog_on_release(label_draft, token):
+            # The title still prints 2488 447, so classify would keep that
+            # token and call MRM 1003 a mismatch. The release is that copy.
+            edition = _prefer_listing_edition(hits, row.get("title"))
+            chosen_hit = edition[0] if edition else hits[0]
+            remaining_classification = Classification(
+                status="filled_auto",
+                reason="unique_catno_artist_vinyl",
+                hits=(chosen_hit,),
+                chosen=chosen_hit,
+            )
+            export_catalog_locked = True
+    if not export_catalog_locked:
+        remaining_classification = classify_search_hits(
+            catalog_number=token,
+            title=row.get("title"),
+            artist=listing_search_artist(row.get("artist"), row.get("title")),
+            media_type=listing_media,
+            hits=hits,
+            require_catalog_token=require_catalog_token,
+        )
     cover_hash_cache: dict[str, int | None] = {}
     if not operator_choice:
         remaining_classification = _rank_classification_by_listing_photo(
@@ -3233,18 +3526,26 @@ def _fill_one_row(
             {
                 "display_title": draft.display_title,
                 "display_artist": draft.display_artist,
-                "catalog_number": draft.catalog_number,
+                "catalog_number": (
+                    token
+                    if printed_catalog_on_release(draft, token)
+                    else draft.catalog_number
+                ),
             },
             matrix_on_discogs=printed_matrix_on_discogs(
                 remaining_classification.hits or hits,
                 token,
-            ),
-        ) and _unique_shortlist_locks_identity(
-            row,
-            candidate,
-            remaining_classification.hits or (candidate,),
-            draft.discogs_thumb_url,
-            image_client,
+            )
+            or printed_catalog_on_release(draft, token),
+        ) and (
+            _unique_shortlist_locks_identity(
+                row,
+                candidate,
+                remaining_classification.hits or (candidate,),
+                draft.discogs_thumb_url,
+                image_client,
+            )
+            or printed_catalog_on_release(draft, token)
         ):
             pressing_id = upsert_pressing(connection, draft)
             _assign_pressing(
@@ -3614,6 +3915,7 @@ def _search_hits_for_row(
         listing_key = catalog_identity_key(token)
         locked: list[SearchHit] = []
         covering: list[SearchHit] = []
+        printed_same: list[SearchHit] = []
         seen_ids: set[int] = set()
         seen_folds: set[str] = set()
         variant_limit = 1 if listing_format_only else 2 if fast_search else None
@@ -3658,6 +3960,10 @@ def _search_hits_for_row(
                     " ".join(hit.formats),
                 ):
                     covering.append(hit)
+                elif catalog_identity_key(catno) == listing_key:
+                    # 2488 447 is printed on the sleeve. Discogs's main
+                    # number for that same pressing is MRM 1003.
+                    printed_same.append(hit)
             if locked:
                 break
             if covering and not catalog_has_range(token):
@@ -3665,9 +3971,13 @@ def _search_hits_for_row(
             if hits and not catalog_has_range(token):
                 break
         if locked:
-            return with_album_formats(tuple(locked), require_token=True)
+            # The printed number already names the pressing. Other catnos
+            # of the same album title are different copies.
+            return tuple(locked), True
         if covering:
             return with_album_formats(tuple(covering), require_token=True)
+        if _one_displayed_pressing(printed_same):
+            return tuple(printed_same), True
         if not listing_format_only:
             barcode_match = barcode_hits()
             if barcode_match:
@@ -4723,6 +5033,33 @@ def _hit_matches_title_tokens(hit: SearchHit, tokens: Sequence[str]) -> bool:
     return False
 
 
+def _one_displayed_pressing(hits: Sequence[SearchHit]) -> bool:
+    """True when every hit is the same album and the same displayed catno."""
+    if not hits or len(hits) > 6:
+        return False
+    folds = {fold_catalog(hit.catno) for hit in hits if hit.catno}
+    albums = {_release_album_key(hit) for hit in hits if _release_album_key(hit)}
+    return len(folds) == 1 and len(albums) == 1
+
+
+def printed_catalog_on_release(
+    draft: PressingIdentityDraft,
+    token: str | None,
+) -> bool:
+    """True when a second label number on the release is the printed catno.
+
+    Polydor files 絲絲小雨 as MRM 1003 and also as 2488 447.
+    """
+    if not token:
+        return False
+    wanted = catalog_identity_key(token)
+    return any(
+        catno_locks_listing(label.catno, token)
+        or (wanted and catalog_identity_key(label.catno) == wanted)
+        for label in draft.labels
+    )
+
+
 def _release_draft(
     client: DiscogsClient,
     release_id: int,
@@ -4740,6 +5077,7 @@ def _promote_unique_shortlists(
     release_cache: dict[int, PressingIdentityDraft],
     stats: IdentityFillStats,
     image_client: httpx.Client | None = None,
+    marketplace: str | None = None,
 ) -> None:
     """Auto-fill unique cached shortlists whose Latin artist names overlap."""
     with engine.connect() as connection:
@@ -4763,11 +5101,22 @@ def _promote_unique_shortlists(
                       AND COALESCE(bulk_lot, false) IS NOT TRUE
                       AND jsonb_typeof(discogs_shortlist) = 'array'
                       AND jsonb_array_length(discogs_shortlist) BETWEEN 1 AND 12
-                    ORDER BY marketplace, listing_id
                     """
                 )
             ).mappings()
         ]
+        if marketplace:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("marketplace") or "") == marketplace
+            ]
+        rows.sort(
+            key=lambda row: (
+                str(row.get("marketplace") or ""),
+                str(row.get("listing_id") or ""),
+            )
+        )
 
     for row in rows:
         raw_hits = row.get("discogs_shortlist") or []
@@ -4795,6 +5144,20 @@ def _promote_unique_shortlists(
             )
             if token and not hits:
                 continue
+            known = inferred_release_catalog(
+                title=row.get("title"),
+                artist=resolved_artist,
+                media_type=listing_media,
+            )
+            if known:
+                locked = tuple(
+                    hit
+                    for hit in hits
+                    if catno_locks_listing(hit.catno, known)
+                    or catno_covers_listing_token(hit.catno, known)
+                )
+                if locked and len({fold_catalog(hit.catno) for hit in locked}) == 1:
+                    hits = locked
             preliminary = classify_search_hits(
                 catalog_number=row.get("catalog_number"),
                 title=row.get("title"),
@@ -5613,6 +5976,8 @@ def _artist_only_album_with_extra_tokens(
     pressing: dict[str, Any],
 ) -> bool:
     """Self-titled Discogs rows must not steal listings that name another album."""
+    if listing_is_self_titled(row.get("title")):
+        return False
     artist = listing_search_artist(row.get("artist"), row.get("title")) or str(
         pressing.get("display_artist") or ""
     )
@@ -5642,6 +6007,17 @@ def _pressing_agrees_with_listing(
     title = str(row.get("title") or "")
     title_token = catalog_token(catalog_number=None, title=title)
     press_cat = pressing.get("catalog_number")
+    # Discogs files 妖女 as 梅艷芳. The known catalog is still that pressing.
+    known = inferred_release_catalog(
+        title=title,
+        artist=row.get("artist"),
+        media_type=row.get("media_type"),
+    )
+    if known and press_cat and (
+        catno_locks_listing(str(press_cat), known)
+        or catno_covers_listing_token(str(press_cat), known)
+    ):
+        return True
     catalog_hit = _catalog_appears_in_title(title, press_cat) or (
         bool(title_token)
         and bool(fold_catalog(press_cat))

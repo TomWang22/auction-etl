@@ -46,7 +46,7 @@ def test_home_is_a_direct_task_launcher() -> None:
     )
 
     required = (
-        "🏠 Auction workspace",
+        "Auction ETL",
         "What do you want to do?",
         "Review sales",
         "Update marketplace data",
@@ -63,6 +63,7 @@ def test_home_is_a_direct_task_launcher() -> None:
         "st.button(",
         "st.switch_page(",
         "Typical workflow",
+        "Bring in",
     )
 
     missing = [
@@ -178,7 +179,7 @@ def test_navigation_routes_are_unique() -> None:
 
     assert len(
         paths
-    ) == 19
+    ) == 20
 
 
 def test_every_page_identifies_current_route() -> None:
@@ -201,7 +202,7 @@ def test_every_page_identifies_current_route() -> None:
 
     assert len(
         scripts
-    ) == 19
+    ) == 20
 
     for path in scripts:
         source = path.read_text(

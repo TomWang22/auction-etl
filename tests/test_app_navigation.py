@@ -64,6 +64,7 @@ EXPECTED_PATHS = {
     "pages/14_Pressing_Reference_Catalog.py",
     "pages/15_Ingest_New_Auctions.py",
     "pages/16_Artists_to_Track.py",
+    "pages/17_My_Collection.py",
 }
 
 ADVANCED_PAGE_NAMES = {
@@ -179,7 +180,7 @@ def test_navigation_has_clear_user_intent_sections() -> None:
     ]
 
     assert titles == [
-        "Everyday work",
+        "Start here",
         "Analysis & reports",
         "Pressing library",
         "Advanced tools",
@@ -264,13 +265,14 @@ def test_home_page_explains_the_workspace_and_primary_workflow() -> None:
     )
 
     required = (
-        "Auction workspace",
+        "Auction ETL",
         "What do you want to do?",
         "Review sales",
         "Update marketplace data",
         "Match new listings",
         "Manage pressings",
         "Typical workflow",
+        "Bring in",
         "render_task_card_styles()",
         "st.switch_page(",
     )
@@ -422,7 +424,7 @@ def test_home_primary_tasks_are_single_clickable_surfaces() -> None:
 
     assert len(
         task_calls
-    ) == 4
+    ) == 5
 
     destinations: set[str] = set()
 
@@ -480,6 +482,7 @@ def test_home_primary_tasks_are_single_clickable_surfaces() -> None:
         "pages/15_Ingest_New_Auctions.py",
         "pages/13_New_Auction_Intake.py",
         "pages/14_Pressing_Reference_Catalog.py",
+        "pages/17_My_Collection.py",
     }
 
     stale_nested_ctas = (

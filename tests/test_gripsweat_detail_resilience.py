@@ -298,3 +298,29 @@ def test_accepted_offer_replaces_the_struck_asking_price() -> None:
     )
     assert sterling == Decimal("32.99")
     assert sterling_code == "GBP"
+    html = (
+        "<strong>Final Price:</strong>"
+        "<span class='item-offer-price'><strike>$445.00</strike></span>"
+        "<strong class='item-price'>$400.00</strong>"
+        "<small>(USD)</small>"
+    )
+    accepted, original, code = module.gripsweat_offer_prices(
+        module.BeautifulSoup(html, "html.parser"),
+        "Final Price: $445.00 $400.00 (USD)",
+    )
+    assert accepted == Decimal("400.00")
+    assert original == Decimal("445.00")
+    assert code == "USD"
+    plain = (
+        "<span class='item-offer-price'><strike>$34.99</strike></span>"
+        "<strong>Final Price:</strong>"
+        "<strong class='item-price'>$599.00</strong>"
+        "<small>(USD)</small>"
+    )
+    sale, ask, sale_code = module.gripsweat_offer_prices(
+        module.BeautifulSoup(plain, "html.parser"),
+        "Final Price: $599.00 (USD)",
+    )
+    assert sale == Decimal("599.00")
+    assert ask is None
+    assert sale_code == "USD"

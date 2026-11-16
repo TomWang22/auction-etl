@@ -3102,27 +3102,43 @@ def main() -> int:
                 )
 
 
-                buyee_discovered_count = int(
+                run_started = str(
+                    status[
+                        "started_at"
+                    ]
+                )
+                buyee_discovery_pages = int(
                     scalar(
                         connection,
                         """
-                        SELECT COALESCE(
-                            MAX(
-                                listing_count
-                            ),
-                            0
-                        )
+                        SELECT COUNT(*)
                         FROM raw.page
                         WHERE source = 'buyee'
                           AND downloaded_at
                               >= %s::timestamptz
                         """,
                         (
-                            str(
-                                status[
-                                    "started_at"
-                                ]
-                            ),
+                            run_started,
+                        ),
+                    )
+                )
+                buyee_discovered_count = int(
+                    scalar(
+                        connection,
+                        """
+                        SELECT COUNT(
+                            DISTINCT listing.listing_id
+                        )
+                        FROM staging.listing AS listing
+                        JOIN raw.page AS page
+                          ON page.id
+                             = listing.raw_page_id
+                        WHERE page.source = 'buyee'
+                          AND page.downloaded_at
+                              >= %s::timestamptz
+                        """,
+                        (
+                            run_started,
                         ),
                     )
                 )
@@ -3168,10 +3184,63 @@ def main() -> int:
                         ("buyee",),
                     ).fetchall()
                 }
+                buyee_retry_detail_ids = sorted(
+                    {
+                        str(row["listing_id"])
+                        for row in connection.execute(
+                            """
+                            SELECT auction.listing_id
+                            FROM warehouse.auction
+                                AS auction
+                            JOIN staging.listing
+                                AS listing
+                              ON listing.marketplace
+                                 = auction.marketplace
+                             AND listing.listing_id
+                                 = auction.listing_id
+                            JOIN raw.page AS page
+                              ON page.id
+                                 = listing.raw_page_id
+                            LEFT JOIN warehouse.auction_detail
+                                AS detail
+                              ON detail.marketplace
+                                 = auction.marketplace
+                             AND detail.listing_id
+                                 = auction.listing_id
+                            WHERE auction.marketplace = %s
+                              AND page.downloaded_at
+                                  >= %s::timestamptz
+                              AND (
+                                (
+                                  auction.ended_at IS NULL
+                                  AND auction.closing_at
+                                      IS NULL
+                                )
+                                OR detail.listing_id IS NULL
+                                OR detail.detail_status
+                                   IS DISTINCT FROM
+                                   'complete'
+                              )
+                            """,
+                            (
+                                "buyee",
+                                str(
+                                    status[
+                                        "started_at"
+                                    ]
+                                ),
+                            ),
+                        ).fetchall()
+                    }
+                )
 
             buyee_new_listing_ids = sorted(
                 buyee_listing_ids_after
                 - buyee_listing_ids_before
+            )
+            buyee_detail_listing_ids = sorted(
+                set(buyee_new_listing_ids)
+                | set(buyee_retry_detail_ids)
             )
 
 
@@ -3201,7 +3270,7 @@ def main() -> int:
                     "detail_skipped":
                         buyee_already_known,
                     "discovery_pages":
-                        1,
+                        buyee_discovery_pages,
                     "consecutive_known_at_stop":
                         0,
                 },
@@ -3221,7 +3290,7 @@ def main() -> int:
             status[
                 "buyee_detail_candidate_count"
             ] = len(
-                buyee_new_listing_ids
+                buyee_detail_listing_ids
             )
             status[
                 "buyee_existing_listing_count"
@@ -3273,11 +3342,17 @@ def main() -> int:
                 ),
             )
             logger.info(
-                "Existing listing details are not "
+                "Retry incomplete details: %s",
+                len(
+                    buyee_retry_detail_ids
+                ),
+            )
+            logger.info(
+                "Complete existing listing details are not "
                 "revisited by the normal latest refresh."
             )
 
-            if buyee_new_listing_ids:
+            if buyee_new_listing_ids or buyee_retry_detail_ids:
                 buyee_detail_command = [
                     sys.executable,
                     "scripts/crawl_buyee_http_details.py",
@@ -3298,7 +3373,7 @@ def main() -> int:
                 ]
 
                 for listing_id in (
-                    buyee_new_listing_ids
+                    buyee_detail_listing_ids
                 ):
                     buyee_detail_command.extend(
                         [
@@ -3407,13 +3482,14 @@ def main() -> int:
                         )
 
                 if buyee_non_waf_failures:
-                    raise RuntimeError(
+                    logger.warning(
                         "Buyee HTTPS detail enrichment had "
-                        "non-WAF failures: "
+                        "non-WAF failures; continuing refresh: "
                         + " | ".join(
                             buyee_non_waf_failures
                         )
                     )
+                    status["degraded"] = True
 
                 if buyee_waf_listing_ids:
                     logger.warning(

@@ -301,6 +301,17 @@ def _conflict_updates(values: dict) -> dict:
     updates["start_price"] = text(
         "COALESCE(EXCLUDED.start_price, warehouse.auction.start_price)"
     )
+    updates["ended_at"] = text(
+        "COALESCE(EXCLUDED.ended_at, warehouse.auction.ended_at)"
+    )
+    updates["currency"] = text(
+        """
+        COALESCE(
+            NULLIF(BTRIM(EXCLUDED.currency), ''),
+            warehouse.auction.currency
+        )
+        """
+    )
     updates["final_price"] = text(
         """
         CASE
@@ -400,6 +411,11 @@ def promote_sale_facts(
                 END,
                 opening_at = COALESCE(auction.opening_at, detail.opening_at),
                 closing_at = COALESCE(auction.closing_at, detail.closing_at),
+                ended_at = COALESCE(
+                    auction.ended_at,
+                    auction.closing_at,
+                    detail.closing_at
+                ),
                 start_price = COALESCE(auction.start_price, detail.starting_price),
                 buyout_price_gross = COALESCE(
                     auction.buyout_price_gross,
