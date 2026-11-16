@@ -6161,16 +6161,15 @@ def test_collection_page_reloads_identity_before_acquisition() -> None:
     """canonical_artist_display must exist before acquisition reloads."""
 
     source = COLLECTION_PAGE.read_text(encoding="utf-8")
-    reload_fn = source.split("def _reload_services_if_changed", 1)[1].split(
-        "\ndef ", 1
+    block = source.split("reload_modules_if_changed(", 1)[1].split(
+        "cache_key=", 1
     )[0]
-    identity = reload_fn.index("discogs_identity")
-    fill = reload_fn.index("discogs_fill")
-    acquisition = reload_fn.index("collection_acquisition")
-    shelf = reload_fn.index("collection_shelf")
+    assert "_auction_etl_collection_reload" in source
+    identity = block.index("discogs_identity")
+    fill = block.index("discogs_fill")
+    acquisition = block.index("collection_acquisition")
+    shelf = block.index("collection_shelf")
     assert identity < fill < acquisition < shelf
-    assert "_auction_etl_collection_reload" in reload_fn
-    assert "st_mtime" in reload_fn
 
 
 def test_shelf_update_message_prefers_catalog_over_listing_id() -> None:
@@ -6199,7 +6198,7 @@ def test_collection_page_is_an_intake() -> None:
         "Add these",
         "owned_copy",
         "Your shelf",
-        "importlib.reload",
+        "reload_modules_if_changed",
         "Save these bills",
         "Backfill a copy already on the shelf",
         "Pick a copy on the shelf",
@@ -6260,7 +6259,7 @@ def test_collection_page_is_an_intake() -> None:
         "EPs, sleeves, gatefolds, and box sets",
         "Fill same catalogs",
         "fill_same_catalog_identities",
-        "_reload_services_if_changed",
+        "reload_modules_if_changed",
         "Look up on Discogs",
         "apply_release_choice",
         "anatomy_values_from_choice",

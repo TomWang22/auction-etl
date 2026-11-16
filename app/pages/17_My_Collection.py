@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
-import sys
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import Any
 
 import altair as alt
@@ -37,14 +34,10 @@ from auction_etl.services.tracked_listing_scope import (
     listing_belongs_to_tracked_artists,
 )
 
-def _reload_services_if_changed() -> None:
-    """Reload service modules only when their files change.
+from auction_etl.streamlit_reload import reload_modules_if_changed
 
-    Reloading on every Streamlit run remounts widgets and AgGrid, which is
-    what makes the shelf flash after a save. Keep identity before acquisition.
-    """
-
-    modules = (
+reload_modules_if_changed(
+    (
         discogs_client,
         discogs_identity,
         discogs_fill,
@@ -55,28 +48,9 @@ def _reload_services_if_changed() -> None:
         fx,
         collector_review_support,
         app_navigation,
-    )
-    stamp = 0.0
-    for module in modules:
-        path = getattr(module, "__file__", None)
-        if not path:
-            continue
-        try:
-            stamp = max(stamp, Path(path).stat().st_mtime)
-        except OSError:
-            continue
-    cache = sys.modules.setdefault(
-        "_auction_etl_collection_reload",
-        {"stamp": 0.0},
-    )
-    if stamp and stamp <= float(cache.get("stamp") or 0.0):
-        return
-    for module in modules:
-        importlib.reload(module)
-    cache["stamp"] = stamp
-
-
-_reload_services_if_changed()
+    ),
+    cache_key="_auction_etl_collection_reload",
+)
 
 rate_on = fx.rate_on
 DiscogsClient = discogs_client.DiscogsClient

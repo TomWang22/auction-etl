@@ -19,7 +19,10 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from playwright.sync_api import Browser, Playwright, sync_playwright
 
-from auction_etl.browser.defaults import LOCAL_CHROME_IGNORE_DEFAULT_ARGS
+from auction_etl.browser.defaults import (
+    LOCAL_CHROME_IGNORE_DEFAULT_ARGS,
+    chrome_launch_window_args,
+)
 from auction_etl.browser.ebay_owner import OWNER_PROTOCOL_VERSION
 from auction_etl.runtime_authority import (
     LOCAL_DATABASE_TARGET,
@@ -273,13 +276,7 @@ def main() -> int:
         browser = playwright.chromium.launch(
             channel="chrome",
             headless=False,
-            args=[
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-popup-blocking",
-                "--window-position=80,80",
-                "--window-size=1200,900",
-            ],
+            args=list(chrome_launch_window_args()),
             ignore_default_args=list(
                 LOCAL_CHROME_IGNORE_DEFAULT_ARGS
             ),

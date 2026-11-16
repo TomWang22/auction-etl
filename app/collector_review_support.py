@@ -3212,8 +3212,14 @@ def normalize_pressing_token(value: Any) -> str:
 
 
 def _identity_module():
-    """Load Discogs helpers, reloading if Streamlit cached a stale module."""
+    """Load Discogs helpers, reloading only when the module file changed."""
+    from auction_etl.streamlit_reload import reload_modules_if_changed
+
     module = discogs_identity
+    reload_modules_if_changed(
+        (module,),
+        cache_key="_auction_etl_review_support_identity",
+    )
     extract = getattr(module, "extract_release_year", None)
     junk = getattr(module, "is_junk_catalog", None)
     artist_key = getattr(module, "canonical_artist_key", None)
@@ -3330,11 +3336,14 @@ def display_matrix_catalog(
 
 
 def _media_helpers():
-    """Load media helpers, reloading if Streamlit cached a stale module."""
-    import importlib
-
+    """Load media helpers, reloading only when the classifier file changed."""
     import auction_etl.classifiers.media as module
+    from auction_etl.streamlit_reload import reload_modules_if_changed
 
+    reload_modules_if_changed(
+        (module,),
+        cache_key="_auction_etl_review_support_media",
+    )
     if not hasattr(module, "is_job_lot"):
         module = importlib.reload(module)
     return module.classify_media_details, module.is_job_lot

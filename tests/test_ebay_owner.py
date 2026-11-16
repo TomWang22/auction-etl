@@ -44,6 +44,8 @@ def test_owner_server_pops_visible_chrome_and_has_no_cdp() -> None:
     assert "launch_persistent_context" not in source
     assert "chromium.launch(" in source
     assert "headless=False" in source
+    assert "chrome_launch_window_args" in source
+    assert "--window-position=80,80" not in source
     assert "--window-position=-32000,-32000" not in source
     assert "browser=self._browser" in source
     assert "storage_state=" in source

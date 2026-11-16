@@ -143,7 +143,7 @@ The key architectural boundary is deliberate:
 - **Git/GitHub** is the source and promotion boundary.
 - **Vercel, Railway, and Neon** are out of the local data plane.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full system architecture, including historical Vercel + Neon staging topology that no longer defines data authority.
+See [`docs/ENGINEERING.md`](docs/ENGINEERING.md) for stack, scrape, same-listing/OBO, and layout-change playbooks. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for incidents already fixed. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for historical Vercel + Neon topology that no longer defines data authority.
 
 ## Goals
 
