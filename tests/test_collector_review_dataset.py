@@ -190,13 +190,16 @@ def test_review_page_shows_unique_dataset_and_media_chips() -> None:
     assert "_identity_queue_changed" in source
     assert "Bulk lot review" in source
     assert '"BULK_LOT"' in source
-    assert "Records in the lot" in source
+    assert "Pieces in the lot" in source
     assert "lot_mode" in source
     assert "queue_records" in source
     assert "TWELVE_INCH_MEDIA" in source
     assert "r.effective_media_type = 'EP_7_INCH'" not in load_sql
-    assert "on_click=_open_identity_pile" in source
+    assert "else _open_identity_pile" in source
     assert "apply_local_identity(records)" in source
+    assert "complete_review_records(records)" in source
+    assert "collector_save_subject" in source
+    assert "invalidate_review_records" in source
     assert 'FILTER_WIDGET_KEYS["media_type"]] = "all"' in source
     assert "omit_no_bid_auctions(frame)" in source
     assert "Days to sell" in source
@@ -1538,6 +1541,9 @@ def test_a_finished_pile_row_opens_the_listing_below() -> None:
     assert "_advance_to_neighbor" not in commit
     assert "_keep_open:" in commit
     assert "_editor_revision:" not in commit
+    assert "invalidate_review_records()" not in commit
+    assert "merge_discogs_fill_into_row" in source
+    assert "_discogs_fill:" in source
     assert "_advance_to_neighbor(identity)" in source.split(
         "changed_rows = save_collector_record",
         1,

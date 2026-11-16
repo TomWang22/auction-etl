@@ -147,6 +147,7 @@ from app.collector_review_support import (
     lot_sale_points,
     chart_point_identity,
     marketplace_source_label,
+    collector_save_subject,
     no_bid_auction_rows,
     omit_no_bid_auctions,
     pressing_menu_year,
@@ -256,6 +257,8 @@ PENDING_JUMP_LISTING_KEY = "_pending_jump_listing_identity"
 RESET_JUMP_LISTING_KEY = "_reset_jump_listing"
 TABLE_SELECTION_REVISION_KEY = "_listing_table_selection_revision"
 LIVE_REVIEW_RENDERED_AT_KEY = "_collector_live_review_rendered_at"
+REVIEW_SAVE_PATCHES_KEY = "_review_save_patches"
+DISCOGS_FILL_KEY_PREFIX = "_discogs_fill:"
 
 MEDIA_OPTIONS = (
     "Automatic / unset",
@@ -544,7 +547,7 @@ def rerun_review_while_refresh_active(
     ):
         return
 
-    load_records.clear()
+    invalidate_review_records()
     st.rerun()
 
 
@@ -818,6 +821,31 @@ def load_records(account_id: str) -> pd.DataFrame:
             on=["marketplace", "listing_id"],
             how="left",
         )
+    # Drop non-tracked rows before the heavy Python passes so pressing /
+    # prepare / media classification only touch the kept pile.
+    tracked_names = enabled_tracked_artist_names(
+        get_engine(),
+        account_id=account_id,
+    )
+    if tracked_names and not combined.empty:
+        title_series = coalesce_series(combined, ("title",))
+        artist_series = coalesce_series(
+            combined,
+            ("effective_artist", "artist"),
+        )
+        keep = [
+            listing_belongs_to_tracked_artists(
+                title=title,
+                artist=artist,
+                tracked_names=tracked_names,
+            )
+            for title, artist in zip(
+                title_series,
+                artist_series,
+                strict=True,
+            )
+        ]
+        combined = combined.loc[keep].reset_index(drop=True)
     records = prepare_records(
         apply_pressing_copy_facts(
             combined,
@@ -842,24 +870,11 @@ def load_records(account_id: str) -> pd.DataFrame:
             ),
         )
     )
-    tracked_names = enabled_tracked_artist_names(
-        get_engine(),
-        account_id=account_id,
-    )
-    if tracked_names and not records.empty:
-        keep = [
-            listing_belongs_to_tracked_artists(
-                title=title,
-                artist=artist,
-                tracked_names=tracked_names,
-            )
-            for title, artist in zip(
-                records["title"],
-                records["artist_display"],
-                strict=True,
-            )
-        ]
-        records = records.loc[keep].reset_index(drop=True)
+    # Media chips + progress after the tracked filter. Cached for 180s so
+    # chip clicks do not redo this work on every Streamlit rerun.
+    records = complete_review_records(records)
+    records = apply_local_identity(records)
+    records = integrate_recent_activity(records)
     return records
 
 
@@ -1094,41 +1109,13 @@ def prepare_records(
         ),
     ).map(clean_text)
 
-    media_fills: list[str] = []
     catalog_fills: list[str] = []
-    if "collector_manual_media_type" in frame.columns:
-        saved_media = frame["collector_manual_media_type"]
-    elif "manual_media_type" in frame.columns:
-        saved_media = frame["manual_media_type"]
-    else:
-        saved_media = [""] * len(frame)
-    if "manual_media_type" in frame.columns:
-        shared_media = frame["manual_media_type"]
-    else:
-        shared_media = [""] * len(frame)
-    if "collector_manual_bulk_lot" in frame.columns:
-        account_lots = frame["collector_manual_bulk_lot"]
-    else:
-        account_lots = [None] * len(frame)
-    if "manual_bulk_lot" in frame.columns:
-        shared_lots = frame["manual_bulk_lot"]
-    else:
-        shared_lots = [None] * len(frame)
-    job_lots: list[bool] = []
-    for title, media, saved, shared, catalog, matrix, account_lot, shared_lot in zip(
-        frame["title"],
-        frame["media_display"],
-        saved_media,
-        shared_media,
+    for catalog, matrix, title in zip(
         frame["catalog_display"],
         frame["matrix_display"],
-        account_lots,
-        shared_lots,
+        frame["title"],
         strict=True,
     ):
-        chosen_media = clean_text(saved) or clean_text(shared)
-        display_media = review_media_slot(chosen_media, title, media)
-        media_fills.append(display_media)
         catalog_fills.append(
             display_matrix_catalog(
                 stored_catalog=catalog,
@@ -1136,13 +1123,7 @@ def prepare_records(
                 title=title,
             )
         )
-        bulk_flag = shared_lot if is_missing(account_lot) else account_lot
-        job_lots.append(listing_counts_as_lot(title, bulk_flag, chosen_media))
-
-    frame["media_display"] = media_fills
     frame["catalog_display"] = catalog_fills
-    frame["job_lot"] = job_lots
-    frame.loc[frame["job_lot"].fillna(False).astype(bool), "catalog_display"] = ""
 
     frame["label_display"] = coalesce_series(
         frame,
@@ -1197,43 +1178,14 @@ def prepare_records(
             "unmatched": "Unmatched",
         }.get(clean_text(value), clean_text(value) or "Unmatched")
     )
-    frame.loc[frame["job_lot"], "identity_status_display"] = "Lot"
 
-    frame["identity_updated_display"] = coalesce_series(
+    identity_changed = coalesce_series(
         frame,
         ("identity_status_changed_at", "identity_filled_at"),
-    ).map(
+    )
+    frame["identity_updated_display"] = identity_changed.map(
         lambda value: "Updated" if pd.notna(value) and str(value).strip() else ""
     )
-    recent_rows = frame.to_dict(orient="records")
-    progress_marks: list[str] = []
-    progress_labels: list[str] = []
-    progress_details: list[str] = []
-    progress_times: list[Any] = []
-    shared_saves = mass_saved_stamps(frame)
-    for row in recent_rows:
-        glyph, label, detail = review_progress(row, ignore_times=shared_saves)
-        mark, recent_detail, when = recent_change_facts(
-            [
-                ("Seller report", row.get("seller_report_updated_at")),
-                ("Identity", row.get("identity_status_changed_at")),
-                ("Identity", row.get("identity_filled_at")),
-                ("Saved", row.get("collector_updated_at")),
-            ]
-        )
-        if glyph and recent_detail:
-            detail = f"{detail}. {recent_detail}"
-        elif not glyph and mark and label != PROGRESS_NOT_DONE:
-            glyph = mark
-            detail = recent_detail
-        progress_marks.append(glyph)
-        progress_labels.append(label)
-        progress_details.append(detail)
-        progress_times.append(when if when is not None else pd.NaT)
-    frame["recent_change_display"] = progress_marks
-    frame["review_progress"] = progress_labels
-    frame["recent_change_detail"] = progress_details
-    frame["recent_change_at"] = progress_times
 
     frame["listing_image_url"] = coalesce_series(
         frame,
@@ -1295,18 +1247,159 @@ def prepare_records(
         ),
     ).map(clean_text)
 
-    frame["pressing_token"] = frame.apply(
-        lambda row: (
-            ""
-            if row["job_lot"] and not row["pressing_override"]
-            else derive_pressing_token(
-                override=row["pressing_override"],
-                catalog_number=row["catalog_display"],
-                title=row["title"],
-            )
-        ),
-        axis=1,
+    if "collector_manual_sale_type" in frame.columns:
+        sale_manual = frame["collector_manual_sale_type"]
+    elif "manual_sale_type" in frame.columns:
+        sale_manual = frame["manual_sale_type"]
+    else:
+        sale_manual = [None] * len(frame)
+    auction_formats = (
+        frame["auction_format"]
+        if "auction_format" in frame.columns
+        else [None] * len(frame)
     )
+    frame["sale_type_display"] = [
+        derive_sale_type(
+            manual_value=manual,
+            title=title,
+            starting_price=starting,
+            bid_count=bids,
+            buyout_price=buyout,
+            stored_format=stored_format,
+        )
+        for manual, title, starting, bids, buyout, stored_format in zip(
+            sale_manual,
+            frame["title"],
+            frame["starting_local"],
+            frame["bid_count_display"],
+            frame["buyout_local"],
+            auction_formats,
+            strict=True,
+        )
+    ]
+
+    return frame
+
+
+def complete_review_records(
+    frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Media chips, progress, and pressing keys after the tracked filter."""
+    if frame is None or frame.empty:
+        return frame
+
+    frame = place_review_media(frame)
+    if "job_lot" in frame.columns and "identity_status_display" in frame.columns:
+        frame.loc[
+            frame["job_lot"].fillna(False).astype(bool),
+            "identity_status_display",
+        ] = "Lot"
+
+    # Only columns review_progress / lot_fields_still_open read — full
+    # to_dict over 200+ columns was a major first-paint cost.
+    progress_columns = [
+        name
+        for name in (
+            "title",
+            "job_lot",
+            "identity_status",
+            "media_type",
+            "media_display",
+            "collector_updated_at",
+            "identity_status_changed_at",
+            "identity_filled_at",
+            "seller_report_updated_at",
+            "seller_report_text",
+            "manual_media_type",
+            "manual_catalog_number",
+            "manual_region",
+            "manual_disc_count",
+            "manual_pressing_type",
+            "manual_pressing_group",
+            "manual_condition_media",
+            "manual_condition_cover",
+            "manual_obi",
+            "manual_insert_present",
+            "manual_poster_present",
+            "manual_sealed",
+            "manual_completeness_notes",
+            "manual_collector_notes",
+            "manual_verdict",
+            "manual_importance_score",
+            "manual_bulk_lot",
+            "collector_manual_media_type",
+            "collector_manual_disc_count",
+            "collector_manual_condition_cover",
+            "collector_manual_condition_media",
+            "collector_manual_verdict",
+            "collector_manual_bulk_lot",
+            "collector_manual_lot_piece_count",
+            "manual_lot_piece_count",
+            "lot_piece_count",
+            "effective_media_type",
+            "effective_catalog_number",
+            "effective_disc_count",
+            "effective_condition_cover",
+            "effective_condition_media",
+            "effective_verdict",
+            "effective_bulk_lot",
+        )
+        if name in frame.columns
+    ]
+    progress_frame = frame.loc[:, progress_columns]
+    if isinstance(progress_frame, pd.DataFrame) and progress_frame.columns.duplicated().any():
+        progress_frame = progress_frame.loc[
+            :,
+            ~progress_frame.columns.duplicated(keep="last"),
+        ]
+    recent_rows = progress_frame.to_dict(orient="records")
+    progress_marks: list[str] = []
+    progress_labels: list[str] = []
+    progress_details: list[str] = []
+    progress_times: list[Any] = []
+    shared_saves = mass_saved_stamps(frame)
+    for row in recent_rows:
+        glyph, label, detail = review_progress(row, ignore_times=shared_saves)
+        mark, recent_detail, when = recent_change_facts(
+            [
+                ("Seller report", row.get("seller_report_updated_at")),
+                ("Identity", row.get("identity_status_changed_at")),
+                ("Identity", row.get("identity_filled_at")),
+                ("Saved", row.get("collector_updated_at")),
+            ]
+        )
+        if glyph and recent_detail:
+            detail = f"{detail}. {recent_detail}"
+        elif not glyph and mark and label != PROGRESS_NOT_DONE:
+            glyph = mark
+            detail = recent_detail
+        progress_marks.append(glyph)
+        progress_labels.append(label)
+        progress_details.append(detail)
+        progress_times.append(when if when is not None else pd.NaT)
+    frame["recent_change_display"] = progress_marks
+    frame["review_progress"] = progress_labels
+    frame["recent_change_detail"] = progress_details
+    frame["recent_change_at"] = progress_times
+
+    frame["pressing_token"] = [
+        (
+            ""
+            if job_lot and not override
+            else derive_pressing_token(
+                override=override,
+                catalog_number=catalog,
+                title=title,
+            )
+        )
+        for job_lot, override, catalog, title in zip(
+            frame["job_lot"],
+            frame["pressing_override"],
+            frame["catalog_display"],
+            frame["title"],
+            strict=True,
+        )
+    ]
 
     listing_source_counts = frame.groupby("listing_id")["marketplace"].transform(
         "nunique"
@@ -1336,26 +1429,30 @@ def prepare_records(
             overlap_notes.append("")
     frame["overlap_display"] = overlap_notes
 
-    frame["pressing_group_key"] = frame.apply(
-        derive_pressing_group_key,
-        axis=1,
-        result_type="reduce",
-    )
-
-    frame["sale_type_display"] = frame.apply(
-        lambda row: derive_sale_type(
-            manual_value=collector_value(
-                row,
-                "manual_sale_type",
-            ),
-            title=row["title"],
-            starting_price=row["starting_local"],
-            bid_count=row["bid_count_display"],
-            buyout_price=row["buyout_local"],
-            stored_format=row.get("auction_format"),
-        ),
-        axis=1,
-    )
+    pressing_key_rows = frame.loc[
+        :,
+        [
+            name
+            for name in (
+                "job_lot",
+                "pressing_override",
+                "discogs_release_id",
+                "pressing_token",
+                "artist_display",
+                "media_display",
+            )
+            if name in frame.columns
+        ],
+    ]
+    if pressing_key_rows.columns.duplicated().any():
+        pressing_key_rows = pressing_key_rows.loc[
+            :,
+            ~pressing_key_rows.columns.duplicated(keep="last"),
+        ]
+    frame["pressing_group_key"] = [
+        derive_pressing_group_key(row)
+        for row in pressing_key_rows.to_dict(orient="records")
+    ]
 
     frame = omit_no_bid_auctions(frame)
 
@@ -1585,6 +1682,142 @@ def render_pending_notification() -> None:
             message,
             icon="✅",
         )
+
+
+def invalidate_review_records() -> None:
+    """Drop the Review dataset cache and any save-time display patches."""
+    load_records.clear()
+    st.session_state.pop(REVIEW_SAVE_PATCHES_KEY, None)
+
+
+def remember_review_save_patch(
+    identity: str,
+    **fields: Any,
+) -> None:
+    """Overlay one row’s display fields without rebuilding load_records."""
+    key = clean_text(identity)
+    if not key:
+        return
+    bag = st.session_state.setdefault(REVIEW_SAVE_PATCHES_KEY, {})
+    merged = dict(bag.get(key) or {})
+    for name, value in fields.items():
+        if value is None:
+            continue
+        merged[name] = value
+    bag[key] = merged
+
+
+def apply_review_save_patches(
+    frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Apply in-session save overlays so the table updates without a 5s reload."""
+    bag = st.session_state.get(REVIEW_SAVE_PATCHES_KEY) or {}
+    if not bag or frame is None or frame.empty:
+        return frame
+    if "marketplace" not in frame.columns or "listing_id" not in frame.columns:
+        return frame
+    out = frame.copy()
+    marketplaces = out["marketplace"].map(clean_text).str.casefold()
+    listing_ids = out["listing_id"].map(clean_text)
+    for index, market, lid in zip(
+        out.index,
+        marketplaces,
+        listing_ids,
+        strict=True,
+    ):
+        patch = bag.get(listing_identity(market, lid))
+        if not patch:
+            continue
+        for column, value in patch.items():
+            if column in out.columns:
+                out.at[index, column] = value
+    return out
+
+
+def _discogs_fill_key(identity: str) -> str:
+    return f"{DISCOGS_FILL_KEY_PREFIX}{clean_text(identity)}"
+
+
+def _pressing_type_from_generation(generation: Any) -> str | None:
+    token = clean_text(generation).upper()
+    if not token:
+        return None
+    if token in {"PROMO", "PROMO_SAMPLE", "SAMPLE"}:
+        return "PROMO_SAMPLE"
+    if token in {"REISSUE", "RE_PRESS", "REPRESS"}:
+        return "REISSUE"
+    if token in {"FIRST_PRESS", "FIRST_PRESSING", "FIRST"}:
+        return "FIRST_PRESSING"
+    if token in {"STANDARD", "UNKNOWN"}:
+        return "STANDARD"
+    return None
+
+
+def _region_from_discogs_country(country: Any) -> str | None:
+    token = clean_text(country)
+    if not token:
+        return None
+    folded = token.casefold()
+    for option in REGION_OPTIONS:
+        if option.casefold() == folded:
+            return option
+    if "japan" in folded or token in {"日本", "国内"}:
+        return "Japan"
+    if "hong kong" in folded or "香港" in token:
+        return "Hong Kong"
+    if "taiwan" in folded or "台湾" in token or "台灣" in token:
+        return "Taiwan"
+    return None
+
+
+def merge_discogs_fill_into_row(
+    selected: pd.Series,
+    identity: str,
+) -> pd.Series:
+    """Paint Use-this fields onto the open row without reloading load_records."""
+    fill = st.session_state.get(_discogs_fill_key(identity))
+    if not isinstance(fill, dict) or not fill:
+        return selected
+    row = selected.copy()
+    catalog = clean_text(fill.get("catalog_number"))
+    if catalog:
+        row["effective_catalog_number"] = catalog
+        row["catalog_number"] = catalog
+        row["catalog_display"] = catalog
+    region = clean_text(fill.get("region")) or _region_from_discogs_country(
+        fill.get("country")
+    )
+    if region:
+        row["effective_region"] = region
+        row["region_display"] = region
+    disc_count = safe_int(fill.get("disc_count"))
+    if disc_count and disc_count > 0:
+        row["effective_disc_count"] = disc_count
+    year = fill.get("release_year")
+    if year not in (None, ""):
+        row["effective_release_year"] = year
+        row["release_year_display"] = str(year)
+    pressing = _pressing_type_from_generation(fill.get("generation"))
+    if pressing:
+        row["effective_pressing_type"] = pressing
+    thumb = clean_text(fill.get("discogs_thumb_url"))
+    if thumb:
+        row["discogs_thumb_url"] = thumb
+    labels = fill.get("label_names") or fill.get("label")
+    if isinstance(labels, str):
+        labels = [labels]
+    if isinstance(labels, (list, tuple)):
+        label_names = [
+            clean_text(item) for item in labels if clean_text(item)
+        ]
+        if label_names:
+            row["label_display"] = label_names[0]
+            row["effective_label"] = label_names[0]
+    row["identity_status"] = clean_text(fill.get("identity_status")) or "filled_manual"
+    row["identity_status_display"] = "Filled"
+    if fill.get("pressing_id") is not None:
+        row["pressing_id"] = fill["pressing_id"]
+    return row
 
 
 def save_collector_record(
@@ -2585,7 +2818,7 @@ def apply_filters(
             width="stretch",
             key="collector_refresh_database",
         ):
-            load_records.clear()
+            invalidate_review_records()
             relation_columns.clear()
             review_relation.clear()
             _reset_listing_results()
@@ -4577,6 +4810,15 @@ def _render_choice_cards(
                     listing_id,
                     int(release_id),
                     identity,
+                    {
+                        "catno": catno,
+                        "country": country,
+                        "year": year,
+                        "thumb": thumb,
+                        "title": title,
+                        "format": formats,
+                        "label_names": label_names,
+                    },
                 ),
             )
 
@@ -4648,6 +4890,15 @@ def _render_cover_grid(
                         listing_id,
                         int(release_id),
                         identity,
+                        {
+                            "catno": catno,
+                            "country": country,
+                            "year": year,
+                            "thumb": thumb,
+                            "title": hit.get("title") or "",
+                            "format": hit.get("format") or [],
+                            "label_names": hit.get("label") or [],
+                        },
                     ),
                 )
 
@@ -4805,18 +5056,100 @@ def _commit_discogs_choice(
     listing_id: str,
     release_id: int,
     identity: str,
+    preview: dict[str, Any] | None = None,
 ) -> None:
-    """Persist the clicked Discogs row before the next Review render."""
-    apply_release_choice(
+    """Persist Use this and fill the open form without rebuilding load_records.
+
+    The shortlist card already has catalog / country / year / cover. Paint
+    those into session immediately, write Discogs to the warehouse, then
+    patch the table row. Clearing load_records here forced a multi-second
+    rebuild and made Use this feel broken.
+    """
+    card = dict(preview or {})
+    optimistic = {
+        "catalog_number": clean_text(card.get("catno") or card.get("catalog_number")),
+        "country": clean_text(card.get("country")),
+        "region": _region_from_discogs_country(card.get("country")),
+        "release_year": card.get("year") or card.get("release_year"),
+        "discogs_thumb_url": clean_text(card.get("thumb") or card.get("discogs_thumb_url")),
+        "label_names": card.get("label_names") or card.get("label"),
+        "generation": (
+            "PROMO"
+            if re.search(
+                r"\bpromo\b|promotional|見本",
+                " ".join(
+                    str(item)
+                    for item in (
+                        card.get("format")
+                        if isinstance(card.get("format"), list)
+                        else [card.get("format") or card.get("format_label") or ""]
+                    )
+                ),
+                re.IGNORECASE,
+            )
+            else None
+        ),
+        "identity_status": "filled_manual",
+    }
+    st.session_state[_discogs_fill_key(identity)] = {
+        key: value for key, value in optimistic.items() if value not in (None, "", [])
+    }
+    # Keep grades already typed on the form. Do not bump editor revision.
+    st.session_state[f"_keep_open:{identity}"] = True
+
+    result = apply_release_choice(
         get_engine(),
         marketplace=marketplace,
         listing_id=listing_id,
         release_id=int(release_id),
     )
-    load_records.clear()
-    # Keep the grades and completeness already on the form. A new editor
-    # revision would throw those unsaved values away.
-    st.session_state[f"_keep_open:{identity}"] = True
+    merged = {
+        **st.session_state.get(_discogs_fill_key(identity), {}),
+        **{
+            key: value
+            for key, value in result.items()
+            if value not in (None, "", ())
+        },
+        "identity_status": "filled_manual",
+    }
+    if result.get("region"):
+        merged["region"] = result["region"]
+    elif result.get("country"):
+        merged["region"] = _region_from_discogs_country(result.get("country"))
+    st.session_state[_discogs_fill_key(identity)] = merged
+
+    catalog = clean_text(merged.get("catalog_number"))
+    year = merged.get("release_year")
+    labels = merged.get("label_names") or []
+    if isinstance(labels, str):
+        labels = [labels]
+    label_name = next(
+        (clean_text(item) for item in labels if clean_text(item)),
+        None,
+    )
+    remember_review_save_patch(
+        identity,
+        identity_status_display="Filled",
+        identity_status="filled_manual",
+        catalog_display=catalog or None,
+        effective_catalog_number=catalog or None,
+        region_display=clean_text(merged.get("region")) or None,
+        effective_region=clean_text(merged.get("region")) or None,
+        release_year_display=str(year) if year not in (None, "") else None,
+        effective_release_year=year if year not in (None, "") else None,
+        label_display=label_name,
+        discogs_thumb_url=clean_text(merged.get("discogs_thumb_url")) or None,
+        review_progress=PROGRESS_PROCESSED,
+        recent_change_display="✓",
+    )
+    subject = collector_save_subject(
+        marketplace=marketplace,
+        catalog=catalog,
+        matrix=None,
+        title=clean_text(card.get("title")),
+        listing_id=listing_id,
+    )
+    set_notification(f"Filled {subject} from Discogs.")
 
 
 _DISCOGS_JOBS: dict[str, str] = {}
@@ -4939,7 +5272,7 @@ def _poll_discogs_search(identity: str) -> None:
     search_key = f"_discogs_live:{identity}"
     if state == "done":
         st.session_state[search_key] = "done"
-        load_records.clear()
+        invalidate_review_records()
     elif state == "rate_limit":
         st.session_state[search_key] = "rate_limit"
     else:
@@ -5318,6 +5651,10 @@ def _render_listing_editor_body(
         marketplace,
         listing_id,
     )
+    selected = merge_discogs_fill_into_row(
+        selected,
+        identity,
+    )
 
     revision_key = (
         f"_editor_revision:{identity}"
@@ -5519,42 +5856,44 @@ def _render_listing_editor_body(
         )
     )
     media_automatic_choice = media_automatic
-    media_key = key_prefix + "manual_media_type"
-    if not saved_media_type:
-        media_key += ":" + (media_automatic_choice or "auto")
-    manual_media_type = optional_selectbox(
-        "Media type",
-        MEDIA_OPTIONS,
-        form_choice(
-            saved_media_type,
-            media_automatic_choice,
-            MEDIA_OPTIONS,
-        ),
-        key=media_key,
-        help=(
-            "LP, CD, EP, and cassette bulk lots are piles of that format. "
-            "Mixed bulk lot is a pile with more than one of those. "
-            "Magazine bulk lot is a pile of magazines. "
-            "Choose the formats, then enter how many of each. "
-            "Bulk lot is a pile with no single format. "
-            "The grades below follow the format you pick."
-        ),
-        format_func=lambda value: MEDIA_OPTION_LABELS.get(
-            value, value
-        ),
-    )
-
-    render_identity_shortlist(
-        selected,
-        account_context=account_context,
-        identity=identity,
-        chosen_media=manual_media_type,
-    )
-
     is_lot = as_boolean(selected.get("job_lot"))
 
     @st.fragment
     def _collector_editor_fragment() -> None:
+        # Media type lives inside the fragment so changing LP/cassette/lot
+        # does not rebuild AgGrid + charts on every pick (full-page lag).
+        media_key = key_prefix + "manual_media_type"
+        if not saved_media_type:
+            media_key += ":" + (media_automatic_choice or "auto")
+        manual_media_type = optional_selectbox(
+            "Media type",
+            MEDIA_OPTIONS,
+            form_choice(
+                saved_media_type,
+                media_automatic_choice,
+                MEDIA_OPTIONS,
+            ),
+            key=media_key,
+            help=(
+                "LP, CD, EP, and cassette bulk lots are piles of that format. "
+                "Mixed bulk lot is a pile with more than one of those. "
+                "Magazine bulk lot is a pile of magazines. "
+                "Choose the formats, then enter how many of each. "
+                "Bulk lot is a pile with no single format. "
+                "The grades below follow the format you pick."
+            ),
+            format_func=lambda value: MEDIA_OPTION_LABELS.get(
+                value, value
+            ),
+        )
+
+        render_identity_shortlist(
+            selected,
+            account_context=account_context,
+            identity=identity,
+            chosen_media=manual_media_type,
+        )
+
         lot_mode = bulk_lot_media(manual_media_type) or (
             is_lot and clean_text(manual_media_type) in {"", "Automatic / unset"}
         )
@@ -6828,6 +7167,36 @@ def _render_listing_editor_body(
             )
             return
 
+        subject = collector_save_subject(
+            marketplace=marketplace,
+            media_type=manual_media_type,
+            disc_count=manual_disc_count,
+            lot_mix=lot_mix_counts if mixed_lot else None,
+            catalog=manual_catalog_number
+            or selected.get("catalog_display"),
+            matrix=selected.get("matrix_display"),
+            title=selected.get("title"),
+            listing_id=listing_id,
+            job_lot=lot_mode,
+        )
+        remember_review_save_patch(
+            identity,
+            review_progress=PROGRESS_PROCESSED,
+            recent_change_display="✓",
+            identity_status_display=(
+                "Lot"
+                if lot_mode
+                else ("Filled" if mark_matched else None)
+            ),
+            media_display=(
+                clean_text(manual_media_type)
+                if clean_text(manual_media_type)
+                not in {"", "Automatic / unset"}
+                else None
+            ),
+            job_lot=True if lot_mode else None,
+        )
+
         if mark_matched:
             marked = mark_listing_matched(
                 str(account_context.account_id),
@@ -6839,7 +7208,7 @@ def _render_listing_editor_body(
                 st.error(
                     "The form was saved. This sale was not moved to Matched."
                 )
-                load_records.clear()
+                invalidate_review_records()
                 st.rerun()
                 return
             st.session_state[revision_key] = revision + 1
@@ -6852,8 +7221,8 @@ def _render_listing_editor_body(
             if not moved:
                 _request_clear_listing_identity()
             notice = (
-                f"{marketplace} {listing_id} is matched from this form "
-                f"and filed under {media_label}. Discogs was not required."
+                f"Matched {subject} under {media_label}. "
+                "Discogs was not required."
             )
             if moved == "below":
                 notice += " Opened the listing below."
@@ -6862,7 +7231,7 @@ def _render_listing_editor_body(
             else:
                 notice += " This pile is clear."
             set_notification(notice)
-            load_records.clear()
+            # Patch only — clearing load_records forced a multi-second rebuild.
             st.rerun()
             return
 
@@ -6874,7 +7243,7 @@ def _render_listing_editor_body(
 
         moved = _advance_to_neighbor(identity)
 
-        notice = f"Collector record saved for {marketplace} {listing_id}."
+        notice = f"Saved {subject}."
         if moved == "below":
             notice += " Opened the listing below."
         elif moved == "above":
@@ -6883,7 +7252,6 @@ def _render_listing_editor_body(
             notice += " The selected editor was refreshed."
         set_notification(notice)
 
-        load_records.clear()
         st.rerun()
 
     _collector_editor_fragment()
@@ -7520,10 +7888,9 @@ rerun_review_while_refresh_active(
 )
 
 try:
-    records = load_records(str(ACCOUNT_CONTEXT.account_id))
-    records = integrate_recent_activity(records)
-    records = place_review_media(records)
-    records = apply_local_identity(records)
+    records = apply_review_save_patches(
+        load_records(str(ACCOUNT_CONTEXT.account_id))
+    )
 except Exception as error:
     st.error(
         f"Could not load marketplace listings: {error}"

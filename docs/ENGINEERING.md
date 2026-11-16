@@ -190,13 +190,26 @@ Important `warehouse` tables: `auction`, `auction_detail`, `gripsweat_sale`, `re
 
 ## 9. Frontend performance contracts
 
-Streamlit re-runs the whole script on interaction. To stay usable:
+Streamlit re-runs the whole script on interaction. The browser “Running”
+accessibility status stays up until that run finishes — so Review first paint
+is dominated by Python over the kept pile, not by SQL (~0.5s).
 
 1. **Reload services only when files change** (mtime gate) — not on every click.
-2. **Cache warehouse loads** with a multi-minute TTL; clear explicitly after writes.
-3. **Stable AgGrid keys** unless the underlying row set changed.
-4. **One `st.rerun()` per intentional write**, not nested double-reruns.
-5. **Scrape Chrome off-desktop** so refresh does not fight the UI for focus/CPU.
+2. **Cache warehouse loads** with a multi-minute TTL (`load_records` ttl=180);
+   fold media chips, local identity, and recent-activity into that cache.
+3. **Do not clear that cache on every Save** — overlay the changed row via
+   session patches (`REVIEW_SAVE_PATCHES_KEY`). Clear only on Reload, refresh
+   catch-up, or Discogs identity writes.
+4. **Keep editor widgets in `@st.fragment`** (including media type) so filling
+   grades/counts does not remount AgGrid + charts.
+5. **Filter tracked artists before** pressing / prepare / title classification
+   so those passes see ~2k rows, not the full join.
+6. **Stable AgGrid keys** unless the underlying row set changed (never put
+   selection revision in the key).
+7. **One `st.rerun()` per intentional write**, not nested double-reruns.
+8. **Scrape Chrome off-desktop** so refresh does not fight the UI for focus/CPU.
+9. **Save toasts** name the sale for humans (`Buyee, 17 cassette lot` or
+   platform + matrix/catalog/title) — never lead with the raw listing id.
 
 ---
 

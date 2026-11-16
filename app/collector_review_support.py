@@ -171,20 +171,32 @@ def review_media_slot(
     manual: Any,
     title: Any,
     stored: Any,
+    *,
+    title_hint: str | None = None,
 ) -> str:
     """Media chip for one listing.
 
     A saved choice stays on that chip. Otherwise use the title, then the
     stored fact, so an LP that was just filled in is under LP.
+    Pass ``title_hint`` when the caller already classified the title so
+    this does not run the classifier twice on the same row.
     """
     saved = clean_text(manual)
     if saved:
         display = saved
     else:
-        hint_media, _hint_catalog, _bulk = title_classification(title)
+        hint_media = (
+            title_hint
+            if title_hint is not None
+            else title_classification(title)[0]
+        )
         display = hint_media or clean_text(stored) or ""
     if display.upper() == "VINYL":
-        hint_media, _hint_catalog, _bulk = title_classification(title)
+        hint_media = (
+            title_hint
+            if title_hint is not None
+            else title_classification(title)[0]
+        )
         display = hint_media or ""
     if display in TWELVE_INCH_MEDIA:
         return "LP"
@@ -615,6 +627,14 @@ def place_review_media(frame: pd.DataFrame) -> pd.DataFrame:
     """Put each listing on the chip its format identifies, on every rerun."""
     if frame is None or frame.empty or "title" not in frame.columns:
         return frame
+    # lot_format is only written here; surviving a filter/copy means chips
+    # are already placed and a second title-classify pass is wasted.
+    if (
+        "lot_format" in frame.columns
+        and "job_lot" in frame.columns
+        and "media_display" in frame.columns
+    ):
+        return frame
     saved = _frame_column(frame, "collector_manual_media_type")
     shared = _frame_column(frame, "manual_media_type")
     stored = _frame_column(frame, "effective_media_type")
@@ -624,6 +644,16 @@ def place_review_media(frame: pd.DataFrame) -> pd.DataFrame:
     media_display: list[str] = []
     job_lots: list[bool] = []
     lot_formats: list[str] = []
+    title_hint_cache: dict[str, str | None] = {}
+
+    def _cached_title_hint(title: Any) -> str | None:
+        text = clean_text(title)
+        if text in title_hint_cache:
+            return title_hint_cache[text]
+        hint_media, _hint_catalog, _hint_lot = title_classification(text)
+        title_hint_cache[text] = hint_media
+        return hint_media
+
     for title, account_media, shared_media, effective, auction, account_lot, shared_lot in zip(
         frame["title"],
         saved,
@@ -637,17 +667,54 @@ def place_review_media(frame: pd.DataFrame) -> pd.DataFrame:
         chosen = clean_text(account_media) or clean_text(shared_media)
         fact = clean_text(effective) or clean_text(auction)
         bulk_flag = shared_lot if is_missing(account_lot) else account_lot
+        # A saved non-lot format already names the chip — skip title regex.
+        if chosen and chosen.casefold() != "automatic / unset":
+            lot = bulk_lot_media(chosen)
+            slot = review_media_slot(
+                chosen,
+                title,
+                fact,
+                title_hint="",
+            )
+            media_display.append(slot)
+            job_lots.append(lot)
+            if lot:
+                mix = lot_mix_from_title(title)
+                format_slot = review_media_slot(
+                    None,
+                    title,
+                    fact,
+                    title_hint=_cached_title_hint(title),
+                )
+                if len(mix) >= 2:
+                    lot_formats.append("Mixed")
+                else:
+                    lot_formats.append(lot_format_name(format_slot))
+            else:
+                lot_formats.append("")
+            continue
         titled_lot = review_lot_flag(title, bulk_flag)
-        slot = review_media_slot(chosen, title, fact)
+        hint_media = _cached_title_hint(title)
+        slot = review_media_slot(
+            chosen,
+            title,
+            fact,
+            title_hint=hint_media,
+        )
         mix = lot_mix_from_title(title)
+        format_slot = review_media_slot(
+            None,
+            title,
+            fact,
+            title_hint=hint_media,
+        )
         if titled_lot and not chosen and len(mix) >= 2:
             slot = "MIXED_BULK_LOT"
         elif titled_lot and not chosen:
-            slot = bulk_lot_choice(lot_format_name(review_media_slot(None, title, fact)))
+            slot = bulk_lot_choice(lot_format_name(format_slot))
         lot = listing_counts_as_lot(title, bulk_flag, chosen)
         media_display.append(slot)
         job_lots.append(lot)
-        format_slot = review_media_slot(None, title, fact)
         if lot and len(mix) >= 2:
             lot_formats.append("Mixed")
         else:
@@ -947,7 +1014,96 @@ def marketplace_source_label(marketplace: Any) -> str:
         return "eBay"
     if value == "gripsweat":
         return "Gripsweat"
+    if value in {"yahoo_auction", "yahoo-auctions", "yahoo"}:
+        return "Yahoo Auctions"
+    if value in {"yahoo_fleamarket", "yahoo_frima", "paypay_fleamarket"}:
+        return "Yahoo フリマ"
     return clean_text(marketplace) or "Other"
+
+
+def collector_save_subject(
+    *,
+    marketplace: Any,
+    media_type: Any = None,
+    disc_count: Any = None,
+    lot_mix: dict[str, int] | None = None,
+    catalog: Any = None,
+    matrix: Any = None,
+    title: Any = None,
+    listing_id: Any = None,
+    job_lot: bool = False,
+) -> str:
+    """Human label for save toasts: platform + catalog/matrix or lot size.
+
+    Listing ids confuse operators. Prefer ``Buyee, 17 cassette lot`` or
+    ``eBay, SOLL-114`` / matrix / short title.
+    """
+    source = marketplace_source_label(marketplace)
+    media = clean_text(media_type)
+    mix = {
+        clean_text(name): int(count)
+        for name, count in (lot_mix or {}).items()
+        if clean_text(name) and safe_int(count)
+    }
+    lot = bulk_lot_media(media) or (
+        job_lot and media.casefold() in {"", "automatic / unset"}
+    )
+    if media == "MIXED_BULK_LOT" or (lot and mix):
+        total = sum(mix.values()) if mix else (safe_int(disc_count) or 0)
+        if mix:
+            bits = []
+            for name in ("LP", "EP", "CD", "Cassette"):
+                count = mix.get(name) or 0
+                if not count:
+                    continue
+                unit = {
+                    "LP": "LP",
+                    "EP": "EP",
+                    "CD": "CD",
+                    "Cassette": "cassette",
+                }[name]
+                bits.append(f"{count} {unit}")
+            detail = " + ".join(bits) + " lot" if bits else "mixed lot"
+            if total and not bits:
+                detail = f"{total}-piece mixed lot"
+            return f"{source}, {detail}"
+        if total:
+            return f"{source}, {total}-piece mixed lot"
+        return f"{source}, mixed lot"
+    if lot:
+        count = safe_int(disc_count) or 0
+        kind = lot_format_name(media) or "piece"
+        if kind == "Cassette":
+            unit = "cassette"
+        elif kind == "Magazine":
+            unit = "magazine"
+        elif kind == "Mixed":
+            return (
+                f"{source}, {count}-piece mixed lot"
+                if count
+                else f"{source}, mixed lot"
+            )
+        elif kind in {"LP", "EP", "CD"}:
+            unit = kind
+        else:
+            unit = kind.lower() or "piece"
+        if count:
+            return f"{source}, {count} {unit} lot"
+        return f"{source}, {unit} lot"
+    matrix_text = clean_text(matrix)
+    if matrix_text:
+        return f"{source}, {matrix_text}"
+    catalog_text = clean_text(catalog)
+    if catalog_text:
+        return f"{source}, {catalog_text}"
+    title_text = clean_text(title)
+    if title_text:
+        short = title_text if len(title_text) <= 64 else f"{title_text[:61]}…"
+        return f"{source}, {short}"
+    listing = clean_text(listing_id)
+    if listing:
+        return f"{source}, {listing}"
+    return source
 
 
 def drop_overlapping_gripsweat_rows(
@@ -2740,10 +2896,15 @@ def apply_pressing_copy_facts(
                 continue
             earliest[(master_key, str(key[1]))] = int(year)
 
-    by_id = (
+    by_id_frame = (
         facts.loc[facts["pressing_id"].map(lambda value: value is not None)]
+        .drop_duplicates(subset=["pressing_id"], keep="first")
         .set_index("pressing_id")
     )
+    by_id: dict[int, Any] = {
+        int(pressing_id): row
+        for pressing_id, row in by_id_frame.iterrows()
+    }
     type_column = (
         "effective_pressing_type"
         if "effective_pressing_type" in frame.columns
@@ -2790,6 +2951,17 @@ def apply_pressing_copy_facts(
         if "effective_region" in frame.columns
         else [""] * len(frame)
     )
+    seller_report_cache: dict[str, dict[str, Any]] = {}
+
+    def _seller_report(title: Any, seller: Any) -> dict[str, Any]:
+        body = f"{clean_text(title)}\n{clean_text(seller)}"
+        cached = seller_report_cache.get(body)
+        if cached is not None:
+            return cached
+        parsed = parse_seller_report(body)
+        seller_report_cache[body] = parsed
+        return parsed
+
     included_by_pressing: dict[int, set[str]] = {}
     for pressing_id, title, seller in zip(
         frame["pressing_id"],
@@ -2801,10 +2973,8 @@ def apply_pressing_copy_facts(
         if pressing_key is None:
             continue
         notes = ""
-        if pressing_key in by_id.index:
-            fact = by_id.loc[pressing_key]
-            if isinstance(fact, pd.DataFrame):
-                fact = fact.iloc[0]
+        fact = by_id.get(pressing_key)
+        if fact is not None:
             notes = fact.get("notes")
         included_by_pressing.setdefault(pressing_key, set()).update(
             _positive_catalog_parts(notes, title, seller)
@@ -2850,11 +3020,8 @@ def apply_pressing_copy_facts(
         strict=False,
     ):
         pressing_key = safe_int(pressing_id)
-        fact = None
-        if pressing_key is not None and pressing_key in by_id.index:
-            fact = by_id.loc[pressing_key]
-            if isinstance(fact, pd.DataFrame):
-                fact = fact.iloc[0]
+        fact = by_id.get(pressing_key) if pressing_key is not None else None
+        report = _seller_report(title, seller)
         if fact is None:
             types.append(current)
             stated = stated_completeness("", title)
@@ -2862,7 +3029,6 @@ def apply_pressing_copy_facts(
             if stated.get("poster") is False:
                 stated.pop("poster")
             reference = catalog_reference("", title)
-            report = parse_seller_report(f"{title}\n{seller}")
             parts = (
                 included_by_pressing.get(pressing_key, set())
                 if pressing_key is not None
@@ -2935,7 +3101,6 @@ def apply_pressing_copy_facts(
         stated.pop("sticker", None)
         if stated.get("poster") is False:
             stated.pop("poster")
-        report = parse_seller_report(f"{title}\n{seller}")
         reference = catalog_reference(fact.get("notes"), title)
         parts = included_by_pressing.get(pressing_key, set()) if pressing_key is not None else set()
         poster_source = (
