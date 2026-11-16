@@ -17,6 +17,7 @@ from auction_etl.browser.defaults import (
     TIMEZONE,
     USER_AGENT,
     VIEWPORT,
+    chrome_launch_window_args,
 )
 from auction_etl.browser.profiles import profile_path
 from auction_etl.browser.buyee_cdp import (
@@ -26,13 +27,7 @@ from auction_etl.browser.buyee_cdp import (
 )
 
 
-VISIBLE_CHROME_ARGS = (
-    "--window-position=80,80",
-    "--window-size=1200,900",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-popup-blocking",
-)
+VISIBLE_CHROME_ARGS = chrome_launch_window_args()
 EBAY_STORAGE_STATE_ENV = "AUCTION_LOCAL_EBAY_STATE_FILE"
 DEFAULT_EBAY_STORAGE_STATE = (
     Path.home() / ".auction-etl" / "private" / "ebay-storage-state.json"

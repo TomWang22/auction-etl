@@ -67,6 +67,8 @@ def test_owner_server_has_no_cdp_transport() -> None:
     assert 'channel="chrome"' in source
     assert "ignore_default_args" in source
     assert "LOCAL_CHROME_IGNORE_DEFAULT_ARGS" in source
+    assert "chrome_launch_window_args" in source
+    assert "--window-position=80,80" not in source
     assert "--window-position=-32000,-32000" not in source
 
 

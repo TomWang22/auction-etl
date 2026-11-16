@@ -27,7 +27,10 @@ from typing import Any, Iterator, Mapping
 from playwright.sync_api import BrowserContext, Playwright, sync_playwright
 
 from auction_etl.browser.buyee_owner import OWNER_PROTOCOL_VERSION
-from auction_etl.browser.defaults import LOCAL_CHROME_IGNORE_DEFAULT_ARGS
+from auction_etl.browser.defaults import (
+    LOCAL_CHROME_IGNORE_DEFAULT_ARGS,
+    chrome_launch_window_args,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -1233,13 +1236,7 @@ def main() -> int:
                     "width": 1600,
                     "height": 1200,
                 },
-                args=[
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-popup-blocking",
-                    "--window-position=80,80",
-                    "--window-size=1200,900",
-                ],
+                args=list(chrome_launch_window_args()),
                 ignore_default_args=list(
                     LOCAL_CHROME_IGNORE_DEFAULT_ARGS
                 ),

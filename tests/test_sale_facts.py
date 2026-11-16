@@ -207,7 +207,7 @@ def test_review_uses_stored_auction_format() -> None:
 def test_review_support_reloads_stale_year_helpers() -> None:
     source = REVIEW_SUPPORT.read_text(encoding="utf-8")
     assert "from auction_etl.services.discogs_identity import (" not in source
-    assert "importlib.reload" in source
+    assert "reload_modules_if_changed" in source
     from app.collector_review_support import extract_release_year
 
     assert extract_release_year("日本盤 1975年") == 1975

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import re
@@ -39,9 +38,27 @@ from auction_etl.auth.streamlit_auth import (
 from auction_etl.services.account_scope import account_transaction
 from auction_etl.runtime_authority import cloud_runtime_detected
 from auction_etl.services.fx import latest_rate
+from auction_etl.streamlit_reload import reload_modules_if_changed
 import auction_etl.services.tracked_listing_scope as _tracked_scope
+import auction_etl.classifiers.media as _media_classifier
+import app.collector_review_support as _collector_support
+import auction_etl.services.discogs_identity as _discogs_identity
+import auction_etl.services.discogs_cover as _discogs_cover
+import auction_etl.reporting.main_review_integration as _main_review_integration
+import auction_etl.services.discogs_fill as _discogs_fill
 
-importlib.reload(_tracked_scope)
+reload_modules_if_changed(
+    (
+        _tracked_scope,
+        _media_classifier,
+        _collector_support,
+        _discogs_identity,
+        _discogs_cover,
+        _main_review_integration,
+        _discogs_fill,
+    ),
+    cache_key="_auction_etl_review_reload",
+)
 
 from auction_etl.services.tracked_listing_scope import (
     enabled_tracked_artist_names,
@@ -53,14 +70,6 @@ from app.collector_analytics_editor import (
 )
 
 from app.collector_export import render_export_toolbar
-
-import auction_etl.classifiers.media as _media_classifier
-
-importlib.reload(_media_classifier)
-
-import app.collector_review_support as _collector_support
-
-importlib.reload(_collector_support)
 
 from app.collector_review_support import (
     _catalog_helpers,
@@ -184,10 +193,6 @@ from auction_etl.services.sold_item_overlap import (
     apply_gripsweat_official_usd,
     gripsweat_listing_id_from_row,
 )
-import auction_etl.services.discogs_identity as _discogs_identity
-
-importlib.reload(_discogs_identity)
-
 from auction_etl.services.discogs_identity import (
     discogs_format_label,
     listing_format_label,
@@ -205,19 +210,9 @@ from auction_etl.services.discogs_client import (
     DiscogsClient,
     DiscogsRateLimitError,
 )
-import auction_etl.services.discogs_cover as _discogs_cover
-
-importlib.reload(_discogs_cover)
-
 from auction_etl.services.discogs_cover import (
     rank_catalog_covers,
 )
-import auction_etl.reporting.main_review_integration as _main_review_integration
-import auction_etl.services.discogs_fill as _discogs_fill
-
-importlib.reload(_main_review_integration)
-importlib.reload(_discogs_fill)
-
 from auction_etl.services.discogs_fill import (
     apply_release_choice,
     research_listing_identity,
@@ -577,7 +572,7 @@ def quote_identifier(
 
 
 @st.cache_data(
-    ttl=30,
+    ttl=180,
     show_spinner=False,
 )
 def relation_columns(
@@ -608,7 +603,7 @@ def relation_columns(
 
 
 @st.cache_data(
-    ttl=30,
+    ttl=180,
     show_spinner=False,
 )
 def review_relation() -> str:
@@ -697,7 +692,7 @@ def collector_value(
 
 
 @st.cache_data(
-    ttl=30,
+    ttl=180,
     show_spinner=False,
 )
 def load_records(account_id: str) -> pd.DataFrame:
@@ -7795,12 +7790,14 @@ with tabs[0]:
             ),
         )
 
+        # Do not put selection revision in the AgGrid key: remounting the grid
+        # on every click is the main Review lag. Filter / page / row set only.
+        _ = table_selection_revision
         render_listing_table(
             page_rows,
             key=(
                 "listings:"
                 f"{filter_revision}:"
-                f"{table_selection_revision}:"
                 f"{page_number}:"
                 f"{row_signature}"
             ),

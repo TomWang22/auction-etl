@@ -9,7 +9,14 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from auction_etl.browser.defaults import chrome_window_position_arg  # noqa: E402
 
 
 DEFAULT_PORT = 9334
@@ -134,7 +141,7 @@ def launch_hidden_chrome(
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-popup-blocking",
-        "--window-position=80,80",
+        chrome_window_position_arg(),
         "--window-size=1200,900",
         "about:blank",
     ]
