@@ -24,6 +24,7 @@ import auction_etl.services.discogs_client as discogs_client
 import auction_etl.services.discogs_fill as discogs_fill
 import auction_etl.services.discogs_identity as discogs_identity
 import auction_etl.services.fx as fx
+import auction_etl.services.informal_lot as informal_lot
 from auction_etl.auth.streamlit_auth import (
     render_account_menu,
     require_authenticated_account,
@@ -43,13 +44,15 @@ reload_modules_if_changed(
         discogs_fill,
         collection_acquisition,
         collection_billing,
+        # informal_lot before collection_import: import re-binds LotDraftLine.
+        informal_lot,
         collection_import,
         collection_shelf,
         fx,
         collector_review_support,
         app_navigation,
     ),
-    cache_key="_auction_etl_collection_reload",
+    cache_key="_auction_etl_collection_reload_v2",
 )
 
 rate_on = fx.rate_on
@@ -99,7 +102,23 @@ bill_disagreements = collection_billing.bill_disagreements
 copy_charge_layout = collection_billing.copy_charge_layout
 parse_logged_table = collection_import.parse_logged_table
 logged_purchase = collection_import.logged_purchase
+parse_informal_seller_list = informal_lot.parse_informal_seller_list
+looks_like_informal_seller_list = informal_lot.looks_like_informal_seller_list
+allocate_lot_payments = informal_lot.allocate_lot_payments
+package_readout = informal_lot.package_readout
+list_subtotal = informal_lot.list_subtotal
+anatomy_values_from_lot_line = informal_lot.anatomy_values_from_lot_line
+LotDraftLine = informal_lot.LotDraftLine
+LotDraftPackage = informal_lot.LotDraftPackage
+purchase_from_lot_line = collection_import.purchase_from_lot_line
 ParseResult = collection_import.ParseResult
+map_release_payload = discogs_identity.map_release_payload
+draft_for_operator_choice = discogs_fill.draft_for_operator_choice
+collector_region_from_country = collection_shelf.collector_region_from_country
+collector_pressing_type_from_choice = (
+    collection_shelf.collector_pressing_type_from_choice
+)
+review_media_from_discogs = collector_review_support.review_media_from_discogs
 copy_costs = collection_import.copy_costs
 copy_refund = collection_import.copy_refund
 buyee_invoice_lines = collection_import.buyee_invoice_lines
@@ -161,9 +180,14 @@ obi_for_region = collector_review_support.obi_for_region
 obi_label_for_region = collector_review_support.obi_label_for_region
 obi_value_for_region = collector_review_support.obi_value_for_region
 FACTORY_NO_INSERT_NOTE = collector_review_support.FACTORY_NO_INSERT_NOTE
+FACTORY_NO_POSTER = collector_review_support.FACTORY_NO_POSTER
 INSERT_ONLY_NOTE = collector_review_support.INSERT_ONLY_NOTE
 MISSING_INSERT = collector_review_support.MISSING_INSERT
+MISSING_OBI = collector_review_support.MISSING_OBI
 PINUP_INSERT_NOTE = collector_review_support.PINUP_INSERT_NOTE
+LP_INSERT_OPTIONS = collector_review_support.LP_INSERT_OPTIONS
+LP_OBI_OPTIONS = collector_review_support.LP_OBI_OPTIONS
+LP_POSTER_OPTIONS = collector_review_support.LP_POSTER_OPTIONS
 sealed_allowed_for_grades = collector_review_support.sealed_allowed_for_grades
 sealed_choice_for_grades = collector_review_support.sealed_choice_for_grades
 search_visible_sales = collection_shelf.search_visible_sales
@@ -177,7 +201,26 @@ st.set_page_config(
 )
 render_navigation(current_page="pages/17_My_Collection.py")
 
-_CURRENCIES = ("USD", "JPY", "EUR", "GBP", "HKD", "SEK", "AUD")
+# Seller-facing codes for manual / lot intake. Frankfurter covers most;
+# TWD is kept for storage even when live FX preview is unavailable.
+_CURRENCIES = (
+    "USD",
+    "JPY",
+    "HKD",
+    "TWD",
+    "CNY",
+    "SGD",
+    "MYR",
+    "KRW",
+    "THB",
+    "EUR",
+    "GBP",
+    "CAD",
+    "AUD",
+    "NZD",
+    "SEK",
+    "CHF",
+)
 _BILL_UPLOAD_TYPES = (
     "pdf",
     "html",
@@ -235,20 +278,9 @@ _GRADE_OPTIONS = (
 )
 _TRI_OPTIONS = ("Automatic / unset", "Yes", "No")
 _UNSET = "Automatic / unset"
-_LP_INSERT_OPTIONS = (
-    "Automatic / unset",
-    "Yes",
-    MISSING_INSERT,
-    "Insert only",
-    "Pin-up is the insert",
-    "Factory no insert",
-)
-_LP_POSTER_OPTIONS = (
-    "Automatic / unset",
-    "Yes",
-    "No",
-    "Pin-up is the poster",
-)
+_LP_INSERT_OPTIONS = LP_INSERT_OPTIONS
+_LP_POSTER_OPTIONS = LP_POSTER_OPTIONS
+_LP_OBI_OPTIONS = LP_OBI_OPTIONS
 
 
 def query_dataframe(
@@ -406,7 +438,6 @@ def load_owned(account_id: str) -> pd.DataFrame:
             COALESCE(family.display_title, owned.title) AS album_title,
             COALESCE(pressing.catalog_number, owned.catalog_number) AS catalog_number,
             owned.pressing_id,
-            cover.cover_url,
             owned.paid_amount AS paid,
             owned.paid_currency,
             owned.paid_on,
@@ -430,16 +461,6 @@ def load_owned(account_id: str) -> pd.DataFrame:
           ON pressing.id = owned.pressing_id
         LEFT JOIN warehouse.release_family family
           ON family.id = pressing.release_family_id
-        LEFT JOIN LATERAL (
-            SELECT COALESCE(
-                NULLIF(BTRIM(sale.discogs_thumb_url), ''),
-                NULLIF(BTRIM(sale.image_url), '')
-            ) AS cover_url
-            FROM warehouse.auction_collector_effective sale
-            WHERE sale.effective_catalog_number =
-                  COALESCE(pressing.catalog_number, owned.catalog_number)
-            LIMIT 1
-        ) cover ON TRUE
         LEFT JOIN LATERAL (
             SELECT
                 line.shipping_amount,
@@ -475,7 +496,46 @@ def load_owned(account_id: str) -> pd.DataFrame:
         {"account_id": account_id},
     )
     if frame.empty:
+        frame["cover_url"] = pd.Series(dtype="object")
         return frame
+    # One cover map for all catalogs — not a per-row scan of every sale.
+    catalogs = sorted(
+        {
+            str(value).strip()
+            for value in frame.get("catalog_number", pd.Series(dtype="object"))
+            if value is not None and str(value).strip()
+        }
+    )
+    covers: dict[str, str] = {}
+    if catalogs:
+        cover_frame = query_dataframe(
+            """
+            SELECT DISTINCT ON (sale.effective_catalog_number)
+                sale.effective_catalog_number AS catalog_number,
+                COALESCE(
+                    NULLIF(BTRIM(sale.discogs_thumb_url), ''),
+                    NULLIF(BTRIM(sale.image_url), '')
+                ) AS cover_url
+            FROM warehouse.auction_collector_effective sale
+            WHERE sale.effective_catalog_number = ANY(:catalogs)
+            ORDER BY sale.effective_catalog_number,
+                     sale.ended_at DESC NULLS LAST
+            """,
+            {"catalogs": catalogs},
+        )
+        if not cover_frame.empty:
+            covers = {
+                str(row["catalog_number"]).strip(): str(row["cover_url"])
+                for row in cover_frame.to_dict("records")
+                if row.get("catalog_number") not in (None, "")
+                and row.get("cover_url") not in (None, "")
+            }
+    frame["cover_url"] = [
+        covers.get(str(catalog).strip(), None)
+        if catalog is not None and str(catalog).strip()
+        else None
+        for catalog in frame["catalog_number"]
+    ]
     titles = (
         frame["listing_title"]
         if "listing_title" in frame.columns
@@ -4028,11 +4088,1049 @@ def _review_purchases(
     )
 
 
-def _render_log(account_id: str, user_id: str) -> None:
-    """Ingest a copy when the order page is already gone."""
+_LOT_DRAFT_KEY = "collection-lot-draft"
+_LOT_EDIT_KEY = "collection-lot-edit-line"
+_LOT_FORM_REV_KEY = "collection-lot-form-rev"
+
+
+def _lot_form_rev() -> int:
+    return int(st.session_state.get(_LOT_FORM_REV_KEY) or 0)
+
+
+def _bump_lot_form_rev() -> None:
+    st.session_state[_LOT_FORM_REV_KEY] = _lot_form_rev() + 1
+
+
+def _lot_draft_from_session() -> LotDraftPackage | None:
+    raw = st.session_state.get(_LOT_DRAFT_KEY)
+    if not isinstance(raw, dict):
+        return None
+    return LotDraftPackage.from_dict(raw)
+
+
+def _store_lot_draft(package: LotDraftPackage) -> None:
+    st.session_state[_LOT_DRAFT_KEY] = package.to_dict()
+
+
+def _clear_lot_draft() -> None:
+    st.session_state.pop(_LOT_DRAFT_KEY, None)
+    st.session_state.pop(_LOT_EDIT_KEY, None)
+    _bump_lot_form_rev()
+
+
+def _stamp_manual_usd(
+    purchase: ParsedPurchase,
+    *,
+    paid_on: date | None = None,
+    foreign_anchor: Decimal | None = None,
+) -> ParsedPurchase:
+    """Keep original currency; stamp a USD rate pair like Bring-in / Buyee bills.
+
+    Shelf display converts via this printed pair (or Frankfurter on paid-on).
+    ``paid_amount`` / ``paid_currency`` stay in the seller's currency.
+    """
+
+    code = str(purchase.paid_currency or "USD").upper()
+    if code == "USD":
+        return purchase
+    anchor = foreign_anchor or purchase.paid_amount
+    if anchor is None or anchor <= 0:
+        return purchase
+    on = paid_on or purchase.paid_on
+    rate = _usd_per_unit(code, purchase.billing_note, on)
+    if rate is None:
+        return purchase
+    usd = to_usd(anchor, rate)
+    note = note_with_printed_usd_rate(
+        purchase.billing_note,
+        usd=usd,
+        foreign=anchor,
+        currency=code,
+    )
+    if purchase.paid_amount is not None:
+        paid_usd = to_usd(purchase.paid_amount, rate)
+        paid_line = f"Paid USD {paid_usd}"
+        if paid_line not in note:
+            note = f"{note}\n{paid_line}".strip()
+    return replace(purchase, billing_note=note)
+
+
+def _usd_preview(
+    amount: Decimal | None | float,
+    currency: str,
+    paid_on: date | None,
+) -> str:
+    """Short ≈ $… caption for manual forms."""
+
+    code = str(currency or "USD").upper()
+    if amount in (None, "", 0, 0.0):
+        return ""
+    try:
+        value = amount if isinstance(amount, Decimal) else Decimal(str(amount))
+    except Exception:
+        return ""
+    if value <= 0:
+        return ""
+    if code == "USD":
+        return _money(value, "USD")
+    rate = _usd_per_unit(code, "", paid_on)
+    if rate is None:
+        return ""
+    return f"≈ {_money(to_usd(value, rate), 'USD')}"
+
+
+def _money_input_value(amount: Decimal | None) -> float:
+    if amount is None:
+        return 0.0
+    return float(amount)
+
+
+def _confirm_informal_lot(
+    account_id: str,
+    user_id: str,
+    package: LotDraftPackage,
+) -> int:
+    """Persist every draft line: owned copy, anatomy, then one package bill."""
+
+    allocated = allocate_lot_payments(package)
+    copies: list[tuple[str, str, ParsedPurchase]] = []
+    saved = 0
+    for line in allocated.lines:
+        purchase = _stamp_manual_usd(
+            purchase_from_lot_line(allocated, line),
+            paid_on=allocated.paid_on,
+            foreign_anchor=line.paid_amount or allocated.merchandise,
+        )
+        matches = classify_purchases(engine, account_id, [purchase])
+        match = matches[0] if matches else None
+        pressing = None
+        if match is not None and match.pressings:
+            pressing = match.pressings[0]
+        catalog_number = (
+            (pressing.catalog_number if pressing is not None else "")
+            or line.catalog_number
+            or purchase.catalog_number
+            or ""
+        )
+        pressing_id = line.pressing_id or (
+            pressing.pressing_id if pressing is not None else None
+        )
+        marketplace = ""
+        listing_id = ""
+        if match is not None and match.status in {"ready", "new_copy"}:
+            marketplace = str(match.marketplace or "")
+            listing_id = str(match.listing_id or "")
+            _save_match(
+                account_id=account_id,
+                user_id=user_id,
+                purchase=purchase,
+                marketplace=marketplace,
+                listing_id=listing_id,
+                catalog_number=catalog_number,
+                pressing_id=pressing_id,
+                paid_amount=purchase.paid_amount,
+                paid_currency=purchase.paid_currency,
+                paid_on=purchase.paid_on,
+            )
+            saved += 1
+        elif match is not None and match.status == "already":
+            continue
+        else:
+            save_owned_copy(
+                engine,
+                account_id=account_id,
+                purchase=purchase,
+                catalog_number=catalog_number,
+                pressing_id=pressing_id,
+                paid_amount=purchase.paid_amount,
+                paid_currency=purchase.paid_currency,
+                paid_on=purchase.paid_on,
+            )
+            saved += 1
+        if not marketplace or not listing_id:
+            marketplace, listing_id = bill_copy_identity("", "", purchase)
+        if marketplace and listing_id:
+            ensure_anatomy_copy(
+                engine,
+                account_id=account_id,
+                user_id=user_id,
+                marketplace=marketplace,
+                listing_id=listing_id,
+            )
+            values = anatomy_values_from_lot_line(line)
+            if values:
+                save_copy_anatomy(
+                    engine,
+                    account_id=account_id,
+                    user_id=user_id,
+                    marketplace=marketplace,
+                    listing_id=listing_id,
+                    values=values,
+                )
+            copies.append((marketplace, listing_id, purchase))
+    if copies:
+        save_package_bill(
+            engine,
+            account_id=account_id,
+            copies=copies,
+            user_id=user_id,
+        )
+    return saved
+
+
+def _apply_discogs_to_lot_line(line: LotDraftLine, release_id: int) -> LotDraftLine:
+    """Fill draft fields from Discogs without writing the warehouse yet."""
+
+    client = DiscogsClient(timeout=8.0)
+    payload = client.get_release(release_id)
+    draft = draft_for_operator_choice(map_release_payload(payload))
+    choice = {
+        "catalog_number": draft.catalog_number,
+        "country": draft.country,
+        "region": draft.region,
+        "disc_count": draft.disc_count,
+        "release_year": draft.release_year,
+        "generation": draft.generation,
+        "format_detail": draft.format_detail,
+        "media_type": draft.media_type,
+        "label_catnos": tuple(
+            label.catno for label in draft.labels if (label.catno or "").strip()
+        ),
+    }
+    media = review_media_from_discogs(
+        media_type=draft.media_type,
+    ) or draft.media_type
+    region = collector_region_from_country(draft.country) or draft.region or ""
+    pressing = collector_pressing_type_from_choice(choice) or ""
+    catalog = draft.catalog_number or line.catalog_number
+    title = draft.display_title or line.title
+    discs = int(draft.disc_count or line.disc_count or 1)
+    if discs <= 0:
+        discs = 1
+    group = str(draft.catalog_number or line.pressing_group or "").replace("-", "")
+    return replace(
+        line,
+        catalog_number=catalog,
+        title=title,
+        media_type=str(media or line.media_type or ""),
+        region=str(region or line.region or ""),
+        disc_count=discs,
+        pressing_type=str(pressing or line.pressing_type or ""),
+        pressing_group=group or line.pressing_group,
+        discogs_release_id=int(draft.discogs_release_id or release_id),
+        release_year=draft.release_year,
+    )
+
+
+def _lot_form_prefix(identity: str) -> str:
+    return f"collection-lot-form:{_lot_form_rev()}:{identity}:"
+
+
+def _blank_lot_line() -> LotDraftLine:
+    return LotDraftLine(
+        line_id=f"lot-new-{_lot_form_rev() + 1}",
+        title="",
+        catalog_number="",
+        added=False,
+    )
+
+
+def _collect_lot_form_line(
+    *,
+    identity: str,
+    seed: LotDraftLine,
+    package: LotDraftPackage,
+) -> LotDraftLine:
+    """Review marketplace sales panel fields for one manual lot pressing."""
+
+    prefix = _lot_form_prefix(identity)
+
+    st.subheader("Look up on Discogs")
+    st.caption(
+        "Same look-up as Review marketplace sales. Use this fills the form only — "
+        "nothing is written to the shelf until Confirm lot."
+    )
+    query_key = prefix + "discogs-q"
+    if query_key not in st.session_state:
+        st.session_state[query_key] = (
+            seed.catalog_number or seed.seller_sku or seed.title
+        )
+    search_col, action_col = st.columns([3, 1])
+    with search_col:
+        query = st.text_input(
+            "Catalog, artist, or title",
+            key=query_key,
+            placeholder="1972, 安潔尼, or MR 9037",
+        )
+    with action_col:
+        st.write("")
+        run = st.button("Look up", key=prefix + "discogs-go")
+    hits_key = prefix + "discogs-hits"
+    if run:
+        client = DiscogsClient(timeout=8.0)
+        try:
+            hits = search_user_catalog(
+                client,
+                artist=None,
+                title=seed.title or None,
+                query=str(query or "").strip(),
+                listing_media=seed.media_type or None,
+            )
+        except DiscogsRateLimitError:
+            st.warning("Discogs rate limit — wait a minute, then search again.")
+            hits = []
+        except DiscogsUnavailableError:
+            st.warning("Discogs did not finish this search. Try again.")
+            hits = []
+        st.session_state[hits_key] = hits
+    hits = st.session_state.get(hits_key) or []
+    filled = seed
+    for hit in list(hits)[:8]:
+        cover, body, use = st.columns([1, 3, 1])
+        thumb = shortlist_field(hit, "thumb", "thumb_url")
+        if thumb:
+            cover.image(thumb, width=72)
+        body.write(str(shortlist_field(hit, "title") or ""))
+        formats = shortlist_field(hit, "format", "formats") or ()
+        if isinstance(formats, str):
+            format_label = formats
+        else:
+            format_label = ", ".join(str(part) for part in formats if part)
+        body.caption(
+            " · ".join(
+                part
+                for part in (
+                    str(shortlist_field(hit, "catno") or ""),
+                    str(shortlist_field(hit, "year") or ""),
+                    str(shortlist_field(hit, "country") or ""),
+                    format_label,
+                )
+                if part
+            )
+        )
+        discogs_id = shortlist_field(hit, "id", "discogs_id")
+        if use.button("Use this", key=prefix + f"discogs-use:{discogs_id}"):
+            try:
+                release_id = int(discogs_id)
+            except (TypeError, ValueError):
+                st.warning("That Discogs row has no release id.")
+                continue
+            try:
+                filled = _apply_discogs_to_lot_line(filled, release_id)
+            except DiscogsRateLimitError:
+                st.warning("Discogs rate limit — wait a minute, then try again.")
+                continue
+            except DiscogsUnavailableError:
+                st.warning("Discogs did not finish this release. Try Use this again.")
+                continue
+            _bump_lot_form_rev()
+            st.session_state[_LOT_EDIT_KEY] = filled.line_id
+            # Keep the filled values on the draft seed via session side channel.
+            st.session_state["collection-lot-form-seed"] = filled.to_dict()
+            st.rerun()
+            return filled
+
+    seed_payload = st.session_state.pop("collection-lot-form-seed", None)
+    if isinstance(seed_payload, dict) and seed_payload.get("line_id") == identity:
+        filled = LotDraftLine.from_dict(seed_payload)
+    else:
+        filled = seed
+
+    media_label = collection_media_label(filled.media_type)
+    media_choice = st.selectbox(
+        "Media type",
+        COLLECTION_MEDIA_LABELS,
+        index=_option_index(media_label, COLLECTION_MEDIA_LABELS),
+        key=prefix + "media",
+    )
+
+    st.subheader("Pressing identification")
+    core = st.columns(4)
+    with core[0]:
+        catalog = st.text_input(
+            "Catalog / matrix number",
+            value=filled.catalog_number,
+            key=prefix + "catalog",
+            help=(
+                "The label catalog, then the deadwax matrix when "
+                "Discogs or the seller description has one."
+            ),
+        )
+    with core[1]:
+        region = st.selectbox(
+            "Region",
+            _REGION_OPTIONS,
+            index=_option_index(
+                filled.region if filled.region in _REGION_OPTIONS else _UNSET,
+                _REGION_OPTIONS,
+            ),
+            key=prefix + "region",
+        )
+    with core[2]:
+        discs = st.number_input(
+            "Disc count",
+            min_value=1,
+            max_value=100,
+            value=max(1, int(filled.disc_count or 1)),
+            key=prefix + "discs",
+            help="How many discs this release contains. A single LP is 1.",
+        )
+    with core[3]:
+        pressing = st.selectbox(
+            "Pressing type",
+            _PRESSING_TYPE_OPTIONS,
+            index=_option_index(
+                filled.pressing_type
+                if filled.pressing_type in _PRESSING_TYPE_OPTIONS
+                else _UNSET,
+                _PRESSING_TYPE_OPTIONS,
+            ),
+            key=prefix + "press",
+            help=(
+                "First pressing means this copy's year is the earliest release "
+                "date of this record. A later year is a later press."
+            ),
+        )
+    pressing_group = st.text_input(
+        "Pressing group",
+        value=filled.pressing_group or filled.catalog_number.replace("-", ""),
+        key=prefix + "press-group",
+        placeholder="Optional canonical matrix/catalog identity",
+    )
+    title = st.text_input(
+        "Title",
+        value=filled.title,
+        key=prefix + "title",
+    )
+    sku = st.text_input(
+        "Seller SKU / list code",
+        value=filled.seller_sku,
+        key=prefix + "sku",
+        placeholder="O2, LP5874…",
+    )
+
+    profile = condition_profile(
+        collection_media_code(media_choice, filled.media_type) or filled.media_type
+    )
+    st.subheader("Condition and assessment")
+    if profile.get("caption"):
+        st.caption(str(profile["caption"]))
+    grades = st.columns(4)
+    with grades[0]:
+        media_grade = st.selectbox(
+            str(profile.get("media_label") or "Record"),
+            _GRADE_OPTIONS,
+            index=_option_index(
+                _grade_or_unset(filled.condition_media),
+                _GRADE_OPTIONS,
+            ),
+            key=prefix + "media-grade",
+        )
+    with grades[1]:
+        cover_grade = st.selectbox(
+            str(profile.get("cover_label") or "Jacket"),
+            _GRADE_OPTIONS,
+            index=_option_index(
+                _grade_or_unset(filled.condition_cover),
+                _GRADE_OPTIONS,
+            ),
+            key=prefix + "cover-grade",
+        )
+    with grades[2]:
+        verdict = st.selectbox(
+            "Verdict",
+            _VERDICT_OPTIONS,
+            index=_option_index(
+                filled.verdict if filled.verdict in _VERDICT_OPTIONS else _UNSET,
+                _VERDICT_OPTIONS,
+            ),
+            key=prefix + "verdict",
+        )
+    price_col, currency_col = st.columns([2, 1])
+    lot_currency = str(package.currency or "HKD").upper()
+    if lot_currency not in _CURRENCIES:
+        lot_currency = "HKD"
+    with price_col:
+        list_amount = st.number_input(
+            "Original / sticker",
+            min_value=0.0,
+            step=0.01,
+            value=_money_input_value(filled.list_amount),
+            key=prefix + "list-price",
+            help=(
+                f"Seller sticker in {lot_currency}. "
+                "Kept as-is; Confirm stamps a USD rate like Bring-in bills. "
+                "Allocated paid uses this weight; shipping stays package-fixed."
+            ),
+        )
+    with currency_col:
+        # Editable here so identification/price are not stuck on HKD.
+        # Writes the shared lot currency used by package totals + Confirm.
+        chosen_currency = st.selectbox(
+            "Currency",
+            _CURRENCIES,
+            index=_option_index(lot_currency, _CURRENCIES),
+            key="collection-lot-currency",
+            help=(
+                "Seller currency for this whole lot: HKD, JPY, TWD, CNY, SGD, "
+                "MYR, KRW, THB, USD, EUR, GBP, CAD, AUD, NZD, SEK, CHF. "
+                "Original amount is kept; USD is stamped on Confirm."
+            ),
+        )
+    sticker_usd = _usd_preview(
+        list_amount,
+        chosen_currency,
+        package.paid_on,
+    )
+    if sticker_usd:
+        st.caption(f"{chosen_currency} → {sticker_usd}")
+    else:
+        st.caption(
+            f"Amounts stay in {chosen_currency}. "
+            "USD conversion is stamped on Confirm when a rate is available."
+        )
+    completeness_notes = st.text_area(
+        "Completeness / pressing notes",
+        value=filled.completeness_notes,
+        height=90,
+        key=prefix + "completeness-notes",
+    )
+    collector_notes = st.text_area(
+        "Collector notes",
+        value=filled.collector_notes,
+        height=90,
+        key=prefix + "collector-notes",
+    )
+
+    st.subheader("Edition and completeness")
+    kind = str(profile.get("kind") or "lp")
+    lp_pack = kind == "lp"
+    show_obi = profile.get("show_obi") == "yes" and obi_for_region(region)
+    show_poster = profile.get("show_poster") == "yes"
+    if lp_pack:
+        st.caption(
+            "Complete means this copy still has what the factory included. "
+            "Insert and poster together, insert only, pin-up as the insert, "
+            "or pin-up as the poster only. "
+            "Obi is only on a Japanese pressing."
+        )
+    slots: list[str] = []
+    if show_obi:
+        slots.append("obi")
+    slots.append("insert")
+    if show_poster:
+        slots.append("poster")
+    slots.extend(("rental", "sealed"))
+    columns = st.columns(len(slots))
+    column_for = dict(zip(slots, columns, strict=True))
+    obi_choice = filled.obi_choice or _UNSET
+    if show_obi:
+        with column_for["obi"]:
+            obi_choice = st.selectbox(
+                "Obi",
+                _LP_OBI_OPTIONS,
+                index=_option_index(
+                    filled.obi_choice
+                    if filled.obi_choice in _LP_OBI_OPTIONS
+                    else _UNSET,
+                    _LP_OBI_OPTIONS,
+                ),
+                key=prefix + "obi",
+            )
+    insert_options = _LP_INSERT_OPTIONS if lp_pack else _TRI_OPTIONS
+    with column_for["insert"]:
+        insert_choice = st.selectbox(
+            str(profile.get("insert_label") or "Insert"),
+            insert_options,
+            index=_option_index(
+                filled.insert_choice
+                if filled.insert_choice in insert_options
+                else _UNSET,
+                insert_options,
+            ),
+            key=prefix + f"insert:{kind}",
+        )
+    poster_choice = filled.poster_choice or _UNSET
+    if show_poster:
+        poster_options = _LP_POSTER_OPTIONS if lp_pack else _TRI_OPTIONS
+        with column_for["poster"]:
+            poster_choice = st.selectbox(
+                str(profile.get("poster_label") or "Poster / pin up"),
+                poster_options,
+                index=_option_index(
+                    filled.poster_choice
+                    if filled.poster_choice in poster_options
+                    else _UNSET,
+                    poster_options,
+                ),
+                key=prefix + "poster",
+            )
+    with column_for["rental"]:
+        rental_choice = st.selectbox(
+            "Rental",
+            _TRI_OPTIONS,
+            index=_option_index(
+                filled.rental_choice
+                if filled.rental_choice in _TRI_OPTIONS
+                else _UNSET,
+                _TRI_OPTIONS,
+            ),
+            key=prefix + "rental",
+        )
+    with column_for["sealed"]:
+        sealed_choice = st.selectbox(
+            "Sealed",
+            _TRI_OPTIONS,
+            index=_option_index(
+                filled.sealed_choice
+                if filled.sealed_choice in _TRI_OPTIONS
+                else _UNSET,
+                _TRI_OPTIONS,
+            ),
+            key=prefix + "sealed",
+        )
+
+    return replace(
+        filled,
+        title=title.strip(),
+        seller_sku=sku.strip(),
+        catalog_number=catalog.strip(),
+        media_type=collection_media_code(media_choice, filled.media_type) or "",
+        region="" if region == _UNSET else region,
+        pressing_type="" if pressing == _UNSET else pressing,
+        pressing_group=pressing_group.strip(),
+        disc_count=int(discs),
+        condition_media="" if media_grade == _UNSET else media_grade,
+        condition_cover="" if cover_grade == _UNSET else cover_grade,
+        verdict="" if verdict == _UNSET else verdict,
+        list_amount=Decimal(str(list_amount)) if list_amount else None,
+        insert_choice="" if insert_choice == _UNSET else insert_choice,
+        poster_choice="" if poster_choice == _UNSET else poster_choice,
+        obi_choice="" if obi_choice == _UNSET else obi_choice,
+        rental_choice="" if rental_choice == _UNSET else rental_choice,
+        sealed_choice="" if sealed_choice == _UNSET else sealed_choice,
+        completeness_notes=completeness_notes.strip(),
+        collector_notes=collector_notes.strip(),
+        added=True,
+    )
+
+
+def _render_lot_add_panel(package: LotDraftPackage) -> LotDraftPackage:
+    """One Review-shaped form: Add to lot, or Update after a line is already in."""
+
+    edit_id = st.session_state.get(_LOT_EDIT_KEY)
+    seed = next((line for line in package.lines if line.line_id == edit_id), None)
+    updating = seed is not None and bool(seed.added)
+    if seed is None:
+        seed = _blank_lot_line()
+        identity = seed.line_id
+    else:
+        identity = seed.line_id
+
+    lot_currency = str(st.session_state.get("collection-lot-currency") or package.currency or "HKD").upper()
+    if lot_currency not in _CURRENCIES:
+        lot_currency = "HKD"
+    package = replace(package, currency=lot_currency)
+
+    st.subheader("Add a pressing" if not updating else "Update pressing in lot")
+    st.caption(
+        "Manual entry uses the same identification panel as Review marketplace sales. "
+        "Original sticker stays on the line; package shipping is fixed for the whole lot. "
+        "Pick any seller currency next to the sticker — not HKD-only."
+    )
+    with st.container(border=True):
+        draft_line = _collect_lot_form_line(
+            identity=identity,
+            seed=seed,
+            package=package,
+        )
+        chosen = str(st.session_state.get("collection-lot-currency") or package.currency).upper()
+        if chosen in _CURRENCIES:
+            package = replace(package, currency=chosen)
+        action_col, cancel_col, _ = st.columns([1, 1, 3])
+        with action_col:
+            clicked = st.button(
+                "Update in lot" if updating else "Add to lot",
+                type="primary",
+                key=_lot_form_prefix(identity) + "commit",
+            )
+        with cancel_col:
+            cancel = st.button(
+                "Cancel edit",
+                key=_lot_form_prefix(identity) + "cancel",
+                disabled=not updating and edit_id is None,
+            )
+    if cancel:
+        st.session_state.pop(_LOT_EDIT_KEY, None)
+        st.session_state.pop("collection-lot-form-seed", None)
+        _bump_lot_form_rev()
+        st.rerun()
+        return package
+    if not clicked:
+        return package
+    if not draft_line.title and not draft_line.catalog_number and not draft_line.seller_sku:
+        st.session_state["collection-lot-notice"] = (
+            "Type a title, catalog, or seller SKU before adding."
+        )
+        st.rerun()
+        return package
+    lines = list(package.lines)
+    if updating or any(line.line_id == draft_line.line_id for line in lines):
+        lines = [
+            draft_line if line.line_id == draft_line.line_id else line
+            for line in lines
+        ]
+        if draft_line.line_id not in {line.line_id for line in lines}:
+            lines.append(draft_line)
+    else:
+        lines.append(draft_line)
+    package = allocate_lot_payments(replace(package, lines=lines))
+    _store_lot_draft(package)
+    st.session_state.pop(_LOT_EDIT_KEY, None)
+    st.session_state.pop("collection-lot-form-seed", None)
+    _bump_lot_form_rev()
+    st.session_state["collection-lot-notice"] = (
+        f"{'Updated' if updating else 'Added'} "
+        f"{draft_line.seller_sku or draft_line.catalog_number or draft_line.title}."
+    )
+    st.rerun()
+    return package
+
+
+def _render_lot_line_roster(package: LotDraftPackage) -> LotDraftPackage:
+    """Compact list of pressings already in the lot."""
+
+    if not package.lines:
+        st.caption("No pressings in the lot yet. Add one below, or parse a seller list.")
+        return package
+    st.subheader(f"In this lot ({len(package.lines)})")
+    for index, line in enumerate(package.lines, start=1):
+        cols = st.columns([4, 1, 1])
+        with cols[0]:
+            st.markdown(
+                f"**{index}. {line.seller_sku or line.catalog_number or line.title or line.line_id}**"
+            )
+            st.caption(
+                " · ".join(
+                    part
+                    for part in (
+                        line.title,
+                        (
+                            f"List {_money(line.list_amount, package.currency)}"
+                            if line.list_amount is not None
+                            else ""
+                        ),
+                        (
+                            f"Allocated {_money(line.paid_amount, package.currency)}"
+                            if line.paid_amount is not None
+                            else ""
+                        ),
+                        line.condition_media or line.condition_hint,
+                        collection_media_label(line.media_type)
+                        if line.media_type
+                        else "",
+                    )
+                    if part and part != "Automatic / unset"
+                )
+            )
+        with cols[1]:
+            if st.button("Edit", key=f"collection-lot-edit:{line.line_id}"):
+                st.session_state[_LOT_EDIT_KEY] = line.line_id
+                _bump_lot_form_rev()
+                st.rerun()
+        with cols[2]:
+            if st.button("Remove", key=f"collection-lot-remove:{line.line_id}"):
+                kept = [item for item in package.lines if item.line_id != line.line_id]
+                package = allocate_lot_payments(replace(package, lines=kept))
+                if st.session_state.get(_LOT_EDIT_KEY) == line.line_id:
+                    st.session_state.pop(_LOT_EDIT_KEY, None)
+                _store_lot_draft(package)
+                _bump_lot_form_rev()
+                st.rerun()
+    return package
+
+
+def _render_lot_wizard(account_id: str, user_id: str) -> None:
+    """Package header + Review-style Add/Update + Confirm. Shipping is package-fixed."""
 
     st.caption(
-        "Use this when the order page is gone. "
+        "Paste a seller chat list, or add each pressing manually with the same "
+        "identification panel as Review marketplace sales. "
+        "Shipping is fixed for the whole package. "
+        "Negotiated merchandise (+ fee%) is allocated by original sticker prices. "
+        "Original currency is kept; Confirm stamps a USD conversion like Bring-in. "
+        "Nothing hits the shelf until Confirm lot."
+    )
+    notice = st.session_state.pop("collection-lot-notice", "")
+    saved = st.session_state.pop("collection-lot-saved", "")
+    if saved:
+        st.success(saved)
+    if notice:
+        st.info(notice)
+
+    if "collection-lot-currency" not in st.session_state:
+        st.session_state["collection-lot-currency"] = "HKD"
+    shop = st.text_input(
+        "Shop / seller",
+        placeholder="Hong Kong seller, Disc Union, friend…",
+        key="collection-lot-shop",
+    )
+    currency = str(st.session_state.get("collection-lot-currency") or "HKD").upper()
+    if currency not in _CURRENCIES:
+        currency = "HKD"
+    st.caption(
+        f"Lot currency starts as **{currency}** — change it next to "
+        "Original / sticker when adding a pressing "
+        "(HKD, JPY, TWD, CNY, SGD, USD, EUR, …). "
+        "One currency per lot; Confirm stamps USD."
+    )
+
+    pasted = st.text_area(
+        "Seller list (optional)",
+        height=140,
+        placeholder=(
+            "O2 蔓莉蔓莉我愛你 9成新 $590\n"
+            "O25 忘不了初戀的情人 近95成新 $470\n"
+            "運費$1476\n"
+            "好啦，$4300+10%=$4730"
+        ),
+        key="collection-lot-paste",
+    )
+    parse_col, clear_col = st.columns(2)
+    with parse_col:
+        parse_clicked = st.button(
+            "Parse into lot draft",
+            type="primary",
+            key="collection-lot-parse",
+        )
+    with clear_col:
+        if st.button("Clear lot draft", key="collection-lot-clear"):
+            _clear_lot_draft()
+            st.rerun()
+
+    if parse_clicked:
+        if not pasted.strip():
+            st.session_state["collection-lot-notice"] = "Paste a seller list first."
+            st.rerun()
+            return
+        draft = parse_informal_seller_list(
+            pasted,
+            currency=str(currency),
+            shop=str(shop or ""),
+        )
+        if not draft.lines:
+            st.session_state["collection-lot-notice"] = (
+                "No item lines found. Expected rows like "
+                "O2 title 9成新 $590."
+            )
+            st.rerun()
+            return
+        _store_lot_draft(draft)
+        st.session_state.pop(_LOT_EDIT_KEY, None)
+        _bump_lot_form_rev()
+        st.rerun()
+        return
+
+    package = _lot_draft_from_session()
+    if package is None:
+        package = LotDraftPackage(
+            shop=str(shop or "").strip() or "Seller list",
+            currency=str(currency),
+            lines=[],
+        )
+        if pasted.strip() and looks_like_informal_seller_list(pasted):
+            st.info(
+                "That paste looks like a seller list. "
+                "Parse into lot draft, then set currency next to Original / sticker "
+                "when you identify each pressing — or add pressings manually below."
+            )
+
+    if shop.strip():
+        package = replace(package, shop=shop.strip())
+    package = replace(package, currency=str(currency))
+
+    st.subheader("Package (fixed shipping + negotiated total)")
+    st.caption(
+        "Shipping is one package charge — not split into item prices. "
+        "Negotiated merchandise is what you agreed before the fee; "
+        "fee% (e.g. PayPal 10%) makes package total. "
+        "Each copy keeps its original sticker and gets an allocated paid share."
+    )
+    paid_col, dispatch_col, delivered_col = st.columns(3)
+    with paid_col:
+        paid_kwargs: dict[str, object] = {"key": "collection-lot-paid-on"}
+        if package.paid_on is not None:
+            paid_kwargs["value"] = package.paid_on
+        paid_on = st.date_input("Paid / order date", **paid_kwargs)
+    with dispatch_col:
+        use_dispatch = st.checkbox(
+            "Set dispatch date",
+            value=package.dispatch_on is not None,
+            key="collection-lot-dispatch-on-toggle",
+        )
+        dispatch_on = None
+        if use_dispatch:
+            dispatch_kwargs: dict[str, object] = {
+                "key": "collection-lot-dispatch-on",
+            }
+            if package.dispatch_on is not None:
+                dispatch_kwargs["value"] = package.dispatch_on
+            dispatch_on = st.date_input("Dispatch date", **dispatch_kwargs)
+    with delivered_col:
+        use_delivered = st.checkbox(
+            "Set delivered date",
+            value=package.delivered_on is not None,
+            key="collection-lot-delivered-on-toggle",
+        )
+        delivered_on = None
+        if use_delivered:
+            delivered_kwargs: dict[str, object] = {
+                "key": "collection-lot-delivered-on",
+            }
+            if package.delivered_on is not None:
+                delivered_kwargs["value"] = package.delivered_on
+            delivered_on = st.date_input("Delivered date", **delivered_kwargs)
+
+    ship_col, merch_col, fee_col, pct_col, total_col = st.columns(5)
+    with ship_col:
+        shipping = st.number_input(
+            "Shipping (fixed)",
+            min_value=0.0,
+            step=0.01,
+            value=_money_input_value(package.shipping),
+            key="collection-lot-shipping",
+            help="One shipping amount for the whole lot.",
+        )
+    with merch_col:
+        merchandise = st.number_input(
+            "Negotiated merchandise",
+            min_value=0.0,
+            step=0.01,
+            value=_money_input_value(package.merchandise),
+            key="collection-lot-merchandise",
+            help="Agreed goods total before PayPal/fee %.",
+        )
+    with fee_col:
+        fee_amount = st.number_input(
+            "Package fee",
+            min_value=0.0,
+            step=0.01,
+            value=_money_input_value(package.fee_amount),
+            key="collection-lot-fee",
+        )
+    with pct_col:
+        fee_percent = st.number_input(
+            "Fee %",
+            min_value=0.0,
+            max_value=100.0,
+            step=0.1,
+            value=_money_input_value(package.fee_percent),
+            key="collection-lot-fee-pct",
+            help="e.g. 10 for PayPal. Recalculates fee from merchandise when set.",
+        )
+    with total_col:
+        package_total = st.number_input(
+            "Package total",
+            min_value=0.0,
+            step=0.01,
+            value=_money_input_value(package.package_total),
+            key="collection-lot-total",
+        )
+
+    merch_dec = Decimal(str(merchandise)) if merchandise else None
+    fee_pct_dec = Decimal(str(fee_percent)) if fee_percent else None
+    fee_dec = Decimal(str(fee_amount)) if fee_amount else None
+    if merch_dec is not None and fee_pct_dec is not None and fee_pct_dec > 0:
+        fee_dec = (merch_dec * fee_pct_dec / Decimal("100")).quantize(
+            Decimal("0.01")
+        )
+    total_dec = Decimal(str(package_total)) if package_total else None
+    if total_dec is None and merch_dec is not None:
+        total_dec = merch_dec + (fee_dec or Decimal("0"))
+
+    package = replace(
+        package,
+        paid_on=paid_on if isinstance(paid_on, date) else package.paid_on,
+        dispatch_on=dispatch_on if isinstance(dispatch_on, date) else None,
+        delivered_on=delivered_on if isinstance(delivered_on, date) else None,
+        shipping=Decimal(str(shipping)) if shipping else None,
+        merchandise=merch_dec,
+        fee_amount=fee_dec,
+        fee_percent=fee_pct_dec,
+        package_total=total_dec,
+    )
+    package = allocate_lot_payments(package)
+    readout = package_readout(package)
+    rate = _usd_per_unit(package.currency, "", package.paid_on)
+    usd_bits = []
+    if rate is not None and readout["merchandise"] is not None:
+        usd_bits.append(
+            f"Merch ≈ {_money(to_usd(readout['merchandise'], rate), 'USD')}"
+        )
+    if rate is not None and readout["shipping"] is not None:
+        usd_bits.append(
+            f"Ship ≈ {_money(to_usd(readout['shipping'], rate), 'USD')} (fixed)"
+        )
+    st.caption(
+        " · ".join(
+            part
+            for part in (
+                f"List subtotal {_money(readout['list_subtotal'], package.currency)}",
+                (
+                    f"Shipping {_money(readout['shipping'], package.currency)} (fixed)"
+                    if readout["shipping"] is not None
+                    else ""
+                ),
+                (
+                    f"Fee {_money(readout['fee'], package.currency)}"
+                    if readout["fee"] is not None
+                    else ""
+                ),
+                (
+                    f"Merchandise {_money(readout['merchandise'], package.currency)}"
+                    if readout["merchandise"] is not None
+                    else ""
+                ),
+                (
+                    f"Total {_money(readout['package_total'], package.currency)}"
+                    if readout["package_total"] is not None
+                    else ""
+                ),
+                *usd_bits,
+            )
+            if part
+        )
+    )
+
+    package = _render_lot_line_roster(package)
+    package = _render_lot_add_panel(package)
+    _store_lot_draft(package)
+
+    confirm = st.button(
+        f"Confirm lot ({len(package.lines)} copies)",
+        type="primary",
+        key="collection-lot-confirm",
+        disabled=not package.lines,
+    )
+    if confirm:
+        wrote = _confirm_informal_lot(account_id, user_id, package)
+        if wrote:
+            _clear_lot_draft()
+            st.session_state["collection-lot-saved"] = (
+                f"Added {wrote} copies from the lot."
+            )
+            _refresh_shelf()
+        else:
+            st.session_state["collection-lot-notice"] = (
+                "Nothing new was saved. Those copies may already be on the shelf."
+            )
+            st.rerun()
+
+
+def _render_one_copy_log(account_id: str, user_id: str) -> None:
+    """Existing short form + CSV table paste for Disc Union–style one-offs."""
+
+    st.caption(
         "Type one copy, or paste a table with the same columns. "
         "The catalog and the title stay as you enter them."
     )
@@ -4060,19 +5158,27 @@ def _render_log(account_id: str, user_id: str) -> None:
     paid_column, currency_column, date_column = st.columns(3)
     with paid_column:
         paid_value = st.number_input(
-            "Paid",
+            "Paid (original currency)",
             min_value=0.0,
             step=0.01,
             key="collection-log-paid",
+            help="Kept in the currency you pick. Add stamps a USD rate for the shelf.",
         )
     with currency_column:
         currency = st.selectbox(
             "Currency",
             _CURRENCIES,
             key="collection-log-currency",
+            help=(
+                "Seller currency for this copy: HKD, JPY, TWD, CNY, SGD, "
+                "USD, EUR, and more. Kept as-is; Add stamps USD."
+            ),
         )
     with date_column:
         paid_on = st.date_input("Paid on", key="collection-log-date")
+    one_usd = _usd_preview(paid_value, str(currency), paid_on if isinstance(paid_on, date) else None)
+    if one_usd:
+        st.caption(f"USD conversion preview: {one_usd}")
     if st.button("Add this copy", type="primary", key="collection-log-add"):
         purchase = logged_purchase(
             where=where,
@@ -4086,6 +5192,7 @@ def _render_log(account_id: str, user_id: str) -> None:
             st.session_state["collection-log-notice"] = "Type a catalog or a title."
             st.rerun()
             return
+        purchase = _stamp_manual_usd(purchase)
         matches = classify_purchases(engine, account_id, [purchase])
         match = matches[0]
         if match.status in {"ready", "new_copy"}:
@@ -4147,6 +5254,30 @@ def _render_log(account_id: str, user_id: str) -> None:
         st.info(
             "Start with a header row: Where, Catalog, Title, Paid, Currency, Date."
         )
+
+
+def _render_log(account_id: str, user_id: str) -> None:
+    """Ingest when the order page is gone: one copy, or an informal seller lot."""
+
+    st.caption(
+        "Use this when the order page is gone. "
+        "One copy for a Disc Union–style purchase, "
+        "or Lot / seller list for a chat paste with sticker prices and shipping."
+    )
+    # Lot is the Review-style manual path (Discogs + pressing + condition).
+    # One copy stays for a quick Disc Union–style single row / CSV paste.
+    if "collection-log-mode" not in st.session_state:
+        st.session_state["collection-log-mode"] = "Lot / seller list"
+    mode = st.radio(
+        "Log mode",
+        ("One copy", "Lot / seller list"),
+        horizontal=True,
+        key="collection-log-mode",
+    )
+    if mode == "Lot / seller list":
+        _render_lot_wizard(account_id, user_id)
+    else:
+        _render_one_copy_log(account_id, user_id)
 
 
 def _render_add_one(account_id: str, user_id: str) -> None:

@@ -531,6 +531,10 @@ def load_sales(
     dataframe["point_size"] = recorded_bids.fillna(
         recorded_bids.median() if recorded_bids.notna().any() else 1
     )
+    bought = paid.notna() & paid.gt(0)
+    dataframe["ownership"] = [
+        "Bought" if flag else "Market" for flag in bought.tolist()
+    ]
 
     return dataframe
 
@@ -712,6 +716,9 @@ def render_price_history(
         ),
     )
 
+    if "ownership" not in chart_data.columns:
+        chart_data["ownership"] = "Market"
+
     sale_points = (
         alt.Chart(chart_data)
         .mark_circle(
@@ -723,6 +730,14 @@ def render_price_history(
             x=x_encoding,
             y=y_encoding,
             color=alt.Color(
+                "ownership:N",
+                title="Ownership",
+                scale=alt.Scale(
+                    domain=["Market", "Bought"],
+                    range=["#4C78A8", "#E45756"],
+                ),
+            ),
+            shape=alt.Shape(
                 "marketplace_display:N",
                 title="Marketplace",
             ),
@@ -747,6 +762,10 @@ def render_price_history(
                 alt.Tooltip(
                     "native_price:N",
                     title="Original price",
+                ),
+                alt.Tooltip(
+                    "ownership:N",
+                    title="Ownership",
                 ),
                 alt.Tooltip(
                     "media_condition_label:N",
@@ -907,6 +926,9 @@ def render_price_distribution(
         st.info("No prices are available.")
         return
 
+    if "ownership" not in chart_data.columns:
+        chart_data["ownership"] = "Market"
+
     box_plot = (
         alt.Chart(chart_data)
         .mark_boxplot(
@@ -929,15 +951,22 @@ def render_price_distribution(
                 ),
             ),
             color=alt.Color(
-                "marketplace_display:N",
-                title="Marketplace",
-                legend=None,
+                "ownership:N",
+                title="Ownership",
+                scale=alt.Scale(
+                    domain=["Market", "Bought"],
+                    range=["#4C78A8", "#E45756"],
+                ),
             ),
             tooltip=[
                 alt.Tooltip(
                     "marketplace_display:N",
                     title="Marketplace",
-                )
+                ),
+                alt.Tooltip(
+                    "ownership:N",
+                    title="Ownership",
+                ),
             ],
         )
         .properties(

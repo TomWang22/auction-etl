@@ -6164,12 +6164,14 @@ def test_collection_page_reloads_identity_before_acquisition() -> None:
     block = source.split("reload_modules_if_changed(", 1)[1].split(
         "cache_key=", 1
     )[0]
-    assert "_auction_etl_collection_reload" in source
+    assert "_auction_etl_collection_reload_v2" in source
     identity = block.index("discogs_identity")
     fill = block.index("discogs_fill")
     acquisition = block.index("collection_acquisition")
+    informal = block.index("informal_lot")
+    imported = block.index("collection_import")
     shelf = block.index("collection_shelf")
-    assert identity < fill < acquisition < shelf
+    assert identity < fill < acquisition < informal < imported < shelf
 
 
 def test_shelf_update_message_prefers_catalog_over_listing_id() -> None:

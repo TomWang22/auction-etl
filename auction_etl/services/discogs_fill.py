@@ -1362,7 +1362,13 @@ def apply_release_choice(
             "disc_count": draft.disc_count,
             "discogs_thumb_url": draft.discogs_thumb_url,
             "release_year": draft.release_year,
+            "original_release_year": draft.release_year,
             "generation": draft.generation,
+            "format_detail": draft.format_detail,
+            "media_type": draft.media_type,
+            "display_title": draft.display_title,
+            "matrix_number": draft.matrix_number,
+            "title": draft.display_title,
         }
 
 

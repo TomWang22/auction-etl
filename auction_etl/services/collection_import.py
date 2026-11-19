@@ -27,6 +27,17 @@ from pypdf.errors import PdfReadError
 
 from auction_etl.classifiers.media import classify_media
 from auction_etl.services.collection_billing import allocate_package_charges
+from auction_etl.services.informal_lot import (
+    LotDraftLine,
+    LotDraftPackage,
+    allocate_lot_payments,
+    anatomy_values_from_lot_line,
+    hk_condition_to_grade,
+    list_subtotal,
+    looks_like_informal_seller_list,
+    package_readout,
+    parse_informal_seller_list,
+)
 from auction_etl.services.discogs_identity import (
     catalog_token,
     equivalent_title_spellings,
@@ -525,7 +536,26 @@ def detect_purchase_source(raw: str) -> str:
     return ""
 
 
-_LOG_CURRENCIES = frozenset({"USD", "JPY", "EUR", "GBP", "HKD", "TWD", "SEK", "AUD"})
+_LOG_CURRENCIES = frozenset(
+    {
+        "USD",
+        "JPY",
+        "HKD",
+        "TWD",
+        "CNY",
+        "SGD",
+        "MYR",
+        "KRW",
+        "THB",
+        "EUR",
+        "GBP",
+        "CAD",
+        "AUD",
+        "NZD",
+        "SEK",
+        "CHF",
+    }
+)
 
 
 def logged_purchase(
@@ -3724,14 +3754,22 @@ def note_with_printed_usd_rate(
     note: str,
     *,
     usd: Decimal,
-    yen: Decimal,
+    yen: Decimal | None = None,
+    foreign: Decimal | None = None,
+    currency: str = "JPY",
 ) -> str:
-    """Keep yen lines and add the dollar pair used to convert them."""
+    """Keep foreign charge lines and add the dollar pair used to convert them.
 
-    if bill_usd_rate(note) is not None or yen == 0:
+    ``yen`` remains the Buyee/JPY call site. Informal HKD lots pass
+    ``foreign=`` with ``currency="HKD"``.
+    """
+
+    amount = foreign if foreign is not None else yen
+    code = (currency or "JPY").strip().upper() or "JPY"
+    if amount is None or bill_usd_rate(note) is not None or amount == 0:
         return note.strip()
     usd_text = f"{usd.quantize(Decimal('0.01')):.2f}"
-    line = f"USD rate {usd_text} for {_plain_amount(yen)} JPY"
+    line = f"USD rate {usd_text} for {_plain_amount(amount)} {code}"
     return f"{note.strip()}\n{line}".strip()
 
 
@@ -7006,3 +7044,42 @@ def _decimal(raw: str) -> Decimal | None:
         return Decimal(cleaned)
     except InvalidOperation:
         return None
+
+def purchase_from_lot_line(
+    package: LotDraftPackage,
+    line: LotDraftLine,
+) -> ParsedPurchase:
+    """Turn one confirmed lot line into a ParsedPurchase for shelf save."""
+
+    shop = re.sub(r"\s+", " ", package.shop or "").strip() or "Seller list"
+    catalog = re.sub(r"\s+", " ", line.catalog_number or "").strip()
+    title = re.sub(r"\s+", " ", line.title or "").strip()
+    sku = re.sub(r"\s+", " ", line.seller_sku or "").strip()
+    catalog_number = None
+    if catalog:
+        catalog_number = catalog_token(catalog_number=catalog) or catalog
+    day = package.paid_on.isoformat() if package.paid_on else ""
+    identity = re.sub(
+        r"[^a-z0-9]",
+        "",
+        (sku or catalog_number or title or line.line_id).casefold(),
+    )
+    paid_label = f"{line.paid_amount:.2f}" if line.paid_amount is not None else ""
+    note = (line.billing_note or "").strip()
+    return ParsedPurchase(
+        source=shop,
+        external_id=f"lot:{identity}:{day}:{paid_label}:{line.line_id}",
+        title=title or catalog_number or sku or line.line_id,
+        seller=shop,
+        paid_amount=line.paid_amount,
+        paid_currency=(package.currency or "HKD").upper(),
+        paid_on=package.paid_on,
+        catalog_number=catalog_number,
+        billing_note=note,
+        order_id=f"lot:{shop}:{day}" if day else f"lot:{shop}",
+        package_item=line.paid_amount,
+        package_shipping=package.shipping,
+        package_tax=package.fee_amount,
+        package_total=package.package_total,
+        delivered_on=package.delivered_on,
+    )
