@@ -132,9 +132,99 @@ scripts/
 
 ### Refresh orchestration
 
-`scripts/run_latest_auction_refresh.py` runs (optional Buyee) → eBay → Gripsweat → Yahoo Auctions → Yahoo フリマ → features/reclassify → FX → doctor → new-only export → backup. Progress lives in `ops.refresh_job` / `refresh_marketplace` / `refresh_event`. Planned UI sources: `ebay`, `gripsweat`, `yahoo_auction`, `yahoo_fleamarket` (Buyee not in the default four-marketplace progress strip).
+`scripts/run_latest_auction_refresh.py` runs Buyee → eBay → Gripsweat → Yahoo Auctions → Yahoo フリマ → features/reclassify → FX → doctor → new-only export → backup. Progress lives in `ops.refresh_job` / `refresh_marketplace` / `refresh_event`. UI planned sources (5): `ebay`, `gripsweat`, `yahoo_auction`, `yahoo_fleamarket`, `buyee`.
+
+**Daily lookback:** `--lookback-days` (default 3) computes
+`max(ended_at|sold_at) - N days` in PostgreSQL via `refresh_lookback.py`.
+Gripsweat probe/audit and Yahoo JP stop paging once a page is at/before that
+floor so daily refresh does not walk archives back to 2014. Empty warehouses
+return no cutoff (bootstrap still allowed). eBay keeps newest-first known-ID
+stop; Buyee watchlist is inherently recent-closed.
 
 Measured phase and HTTP percentiles: [`superpowers/specs/2026-11-19-performance-percentiles.md`](superpowers/specs/2026-11-19-performance-percentiles.md).
+
+### C4 — Level 1 Context
+
+```mermaid
+C4Context
+    title Auction ETL — system context (five marketplaces)
+
+    Person(collector, "Collector / operator", "Tracks artists; reviews comps; runs refresh")
+
+    System(etl, "Auction ETL", "Acquire → parse → warehouse → Review / Analytics / My collection")
+
+    System_Ext(ebay, "eBay", "Completed/sold search")
+    System_Ext(grip, "Gripsweat", "eBay archive / official USD")
+    System_Ext(yahoo_auc, "Yahoo!オークション", "Public closed Japan auctions")
+    System_Ext(yahoo_flea, "Yahoo!フリマ", "Public closed Japan flea sales")
+    System_Ext(buyee, "Buyee", "Closed watchlist + bills (JPY)")
+    System_Ext(discogs, "Discogs", "Pressing identity")
+    System_Ext(fx, "FX rates", "Local → USD")
+
+    Rel(collector, etl, "HTTPS localhost:8501")
+    Rel(etl, ebay, "Headed Chrome sold crawl")
+    Rel(etl, grip, "Probe / pagination audit")
+    Rel(etl, yahoo_auc, "HTTPS novelty + lookback")
+    Rel(etl, yahoo_flea, "HTTPS search-only + lookback")
+    Rel(etl, buyee, "Headed owner watchlist")
+    Rel(etl, discogs, "API")
+    Rel(etl, fx, "Stamp USD")
+```
+
+### C4 — Level 2 Containers
+
+```mermaid
+C4Container
+    title Auction ETL — containers
+
+    Person(collector, "Collector")
+
+    Container_Boundary(etl, "Auction ETL") {
+        Container(ui, "Streamlit UI", "Python", "Home, Review, Refresh, Artists, My collection")
+        Container(refresh, "Refresh runner", "run_latest_auction_refresh.py", "Five-marketplace orchestration + ops.*")
+        Container(services, "auction_etl services", "Python", "yahoo_jp_ingest, refresh_lookback, warehouse, collection_*")
+        Container(parsers, "Parsers", "Python", "Yahoo / Buyee / eBay / Gripsweat HTML → fields")
+        ContainerDb(db, "PostgreSQL", "127.0.0.1:5544", "warehouse + account + ops")
+    }
+
+    System_Ext(markets, "Marketplaces", "eBay, Gripsweat, Yahoo Auctions, Yahoo フリマ, Buyee")
+
+    Rel(collector, ui, "Operate")
+    Rel(ui, db, "Read/write review + shelf")
+    Rel(ui, refresh, "Enqueue / observe")
+    Rel(refresh, services, "Ingest + lookback cutoffs")
+    Rel(services, parsers, "Parse raw pages")
+    Rel(refresh, markets, "Scrape newest-first")
+    Rel(services, db, "Upsert (marketplace, listing_id)")
+```
+
+### C4 — Level 3 Refresh components
+
+```mermaid
+flowchart TB
+    subgraph refresh["run_latest_auction_refresh.py"]
+      LB["refresh_lookback<br/>max(ending) − N days"]
+      B["Buyee watchlist ± detail"]
+      E["eBay incremental newest-first"]
+      G["Gripsweat probe → audit<br/>--min-sold-at floor"]
+      YA["yahoo_auction novelty + lookback"]
+      YF["yahoo_fleamarket search-only + lookback"]
+      POST["features → reclassify → FX → doctor"]
+    end
+    DB[("PostgreSQL")]
+    LB --> B
+    LB --> E
+    LB --> G
+    LB --> YA
+    LB --> YF
+    B --> DB
+    E --> DB
+    G --> DB
+    YA --> DB
+    YF --> DB
+    YF --> POST
+    POST --> DB
+```
 
 ---
 

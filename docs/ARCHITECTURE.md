@@ -14,7 +14,7 @@
 
 ## 1. System purpose
 
-Auction ETL collects, normalizes, reviews, and enriches one collector's Buyee, eBay, and Gripsweat sales while preserving evidence, provenance, deterministic identity, and auditable user decisions.
+Auction ETL collects, normalizes, reviews, and enriches one collector's eBay, Gripsweat, Yahoo Auctions, Yahoo フリマ, and Buyee sales while preserving evidence, provenance, deterministic identity, and auditable user decisions.
 
 The system separates four responsibilities:
 
@@ -31,6 +31,34 @@ The Phase-C durable-refresh source has now been merged into `main`. The diagram 
 
 ### 2.1 Accepted local runtime topology
 
+#### C4 Level 1 — Context
+
+```mermaid
+C4Context
+    title Auction ETL — local system context
+
+    Person(collector, "Collector / operator", "Reviews comps; triggers refresh")
+
+    System(etl, "Auction ETL", "Local Streamlit + refresh runner + PostgreSQL warehouse")
+
+    System_Ext(ebay, "eBay", "Completed/sold listings")
+    System_Ext(grip, "Gripsweat", "Archive / official USD")
+    System_Ext(yahoo_auc, "Yahoo Auctions", "Public closed Japan auctions")
+    System_Ext(yahoo_flea, "Yahoo フリマ", "Public closed Japan flea sales")
+    System_Ext(buyee, "Buyee", "Closed watchlist + invoice bills")
+    System_Ext(discogs, "Discogs", "Pressing identity API")
+
+    Rel(collector, etl, "HTTPS localhost:8501")
+    Rel(etl, ebay, "Headed Chrome")
+    Rel(etl, grip, "Probe / audit")
+    Rel(etl, yahoo_auc, "HTTPS novelty + lookback")
+    Rel(etl, yahoo_flea, "HTTPS search-only + lookback")
+    Rel(etl, buyee, "Headed owner")
+    Rel(etl, discogs, "API")
+```
+
+#### C4 Level 2 — Containers
+
 ```mermaid
 flowchart LR
     Operator["Collector / operator"]
@@ -44,30 +72,45 @@ flowchart LR
     end
 
     subgraph Execution["Local execution"]
-        EbayOp["scripts/run_ebay_external_handoff.py<br/>headed persistent facerecords profile"]
         Refresh["scripts/run_latest_auction_refresh.py"]
+        EbayOp["Headed eBay sold crawl"]
+        YahooJP["Yahoo JP HTTPS novelty + lookback"]
         BuyeeOwner["Headed Buyee owner"]
-        Gripsweat["Gripsweat probe / import"]
+        Gripsweat["Gripsweat probe / audit"]
     end
 
     subgraph Sources["Marketplace sources"]
-        Buyee["Buyee"]
         Ebay["eBay completed/sold"]
         Grip["Gripsweat"]
+        YahooA["Yahoo Auctions"]
+        YahooF["Yahoo フリマ"]
+        Buyee["Buyee"]
     end
 
     Operator --> UI
     UI --> DB
-    Operator --> EbayOp
-    EbayOp --> Ebay
-    EbayOp --> DB
     Operator --> Refresh
+    Refresh --> EbayOp
+    Refresh --> YahooJP
     Refresh --> BuyeeOwner
     Refresh --> Gripsweat
+    EbayOp --> Ebay
+    YahooJP --> YahooA
+    YahooJP --> YahooF
     BuyeeOwner --> Buyee
     Gripsweat --> Grip
+    EbayOp --> DB
+    YahooJP --> DB
+    BuyeeOwner --> DB
+    Gripsweat --> DB
     Refresh --> DB
 ```
+
+#### C4 Level 3 — Refresh lookback
+
+Daily refresh uses PostgreSQL `max(ended_at|sold_at) - lookback_days` (default 3)
+so scrapes stop once pages fall below that floor. Gripsweat no longer walks
+archive pages back to 2014 on a routine run.
 
 Accepted local contracts:
 
@@ -75,11 +118,13 @@ Accepted local contracts:
   Yahoo OIDC identifies the operator; local warehouse listings are attached to
   that personal account in development.
 - Warehouse identity is `(marketplace, listing_id)` on `warehouse.auction`.
+- Five live marketplaces: eBay, Gripsweat, Yahoo Auctions, Yahoo フリマ, Buyee.
 - eBay acquisition is a generalized local sold+completed crawl (`LH_Sold=1`,
   `LH_Complete=1`, `_sop=13`) driven by tracked artists, using hidden headed
   Chrome. It must not set `_ipg` and is not a FaceRecords handoff.
 - After a structured eBay import, refresh consumes the exact raw-page ID and must not fall back to `crawl_ebay_sources.py`.
-- Buyee uses the headed owner; Gripsweat uses probe/import.
+- Yahoo JP uses public HTTPS + novelty/lookback; フリマ is search-only.
+- Buyee uses the headed owner; Gripsweat uses probe/import with `--min-sold-at`.
 - Vercel, Railway, and Neon must not connect to this loopback database.
 
 ### 2.1c My collection and service layout

@@ -5,16 +5,48 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, urlparse
 
+from bs4 import BeautifulSoup
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from auction_etl.services.marketplace_browser_runtime import browser
+from auction_etl.services.refresh_lookback import (
+    coerce_sale_date,
+    page_is_at_or_before_cutoff,
+)
+
+_SOLD_DATE_PATTERNS = (
+    re.compile(
+        r"(?:sold|ended|completed|sale\s+date)\s*[:\-]?\s*"
+        r"(?P<date>[A-Za-z]{3,9}\s+[0-9]{1,2},\s+[0-9]{4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:sold|ended|completed|sale\s+date)\s*[:\-]?\s*"
+        r"(?P<date>[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:sold|ended|completed|sale\s+date)\s*[:\-]?\s*"
+        r"(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})",
+        re.IGNORECASE,
+    ),
+)
+_SOLD_DATE_FORMATS = (
+    "%b %d, %Y",
+    "%B %d, %Y",
+    "%d %b %Y",
+    "%d %B %Y",
+    "%Y-%m-%d",
+)
 
 
 DEFAULT_CONFIG = Path("config/gripsweat_sources.json")
@@ -61,6 +93,7 @@ class PageAudit:
     page_signature: str | None = None
     item_ids: list[str] | None = None
     item_urls: list[str] | None = None
+    sold_dates: list[str] | None = None
     html_path: str | None = None
     screenshot_path: str | None = None
     error: str | None = None
@@ -140,7 +173,43 @@ def parse_args() -> argparse.Namespace:
             "no new numeric item IDs."
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--min-sold-at",
+        default=None,
+        help=(
+            "Stop paging once dated cards on a page are all on or before "
+            "this ISO date (warehouse max(sold_at) minus lookback days)."
+        ),
+    )
+    args = parser.parse_args()
+    if args.min_sold_at:
+        parsed = coerce_sale_date(args.min_sold_at)
+        if parsed is None:
+            parser.error("--min-sold-at must be an ISO date (YYYY-MM-DD).")
+        args.min_sold_at = parsed.isoformat()
+    return args
+
+
+def extract_sold_dates_from_html(html: str) -> list[str]:
+    """Best-effort sold/ended dates from a Gripsweat results HTML body."""
+
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    found: list[str] = []
+    for pattern in _SOLD_DATE_PATTERNS:
+        for match in pattern.finditer(text):
+            raw = " ".join(str(match.group("date")).split())
+            for format_string in _SOLD_DATE_FORMATS:
+                try:
+                    found.append(
+                        datetime.strptime(raw, format_string)
+                        .date()
+                        .isoformat()
+                    )
+                    break
+                except ValueError:
+                    continue
+    return found
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -470,6 +539,7 @@ def inspect_page(
             )
 
         result.title = page.title()
+        html = page.content()
 
         item_ids, item_urls = extract_items(
             page
@@ -477,6 +547,7 @@ def inspect_page(
 
         result.item_ids = item_ids
         result.item_urls = item_urls
+        result.sold_dates = extract_sold_dates_from_html(html)
         result.item_count = len(item_urls)
         result.unique_item_count = len(item_ids)
 
@@ -603,6 +674,7 @@ def audit_source(
     delay_seconds: float,
     empty_page_limit: int,
     diagnostics_dir: Path,
+    min_sold_at: str | None = None,
 ) -> SourceAudit:
     """Audit sequential pagination for one source."""
     summary = SourceAudit(
@@ -711,6 +783,16 @@ def audit_source(
             summary.stopped_reason = (
                 f"{consecutive_no_new} consecutive "
                 "pages added no new item IDs"
+            )
+            break
+
+        if page_is_at_or_before_cutoff(
+            result.sold_dates or [],
+            min_sold_at,
+        ):
+            summary.stopped_reason = (
+                "page sales are at/before lookback floor "
+                f"{min_sold_at}"
             )
             break
 
@@ -823,6 +905,7 @@ def main() -> int:
                     delay,
                     args.empty_page_limit,
                     args.diagnostics_dir,
+                    min_sold_at=args.min_sold_at,
                 )
             )
     finally:

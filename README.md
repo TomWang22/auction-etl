@@ -56,6 +56,36 @@ Measured latency and warehouse counts: [docs/superpowers/specs/2026-11-19-perfor
 
 ## Architecture overview
 
+C4 diagrams (Level 1 context, Level 2 containers, Level 3 refresh). Full history lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/ENGINEERING.md`](docs/ENGINEERING.md).
+
+### C4 Level 1 — System context
+
+```mermaid
+C4Context
+    title Auction ETL — system context
+
+    Person(collector, "Collector / operator", "Reviews comps; triggers refresh")
+
+    System(etl, "Auction ETL", "Local Streamlit + refresh + PostgreSQL warehouse")
+
+    System_Ext(ebay, "eBay", "Completed/sold")
+    System_Ext(grip, "Gripsweat", "Archive / official USD")
+    System_Ext(yahoo_auc, "Yahoo Auctions", "Public closed Japan auctions")
+    System_Ext(yahoo_flea, "Yahoo フリマ", "Public closed Japan flea")
+    System_Ext(buyee, "Buyee", "Watchlist + bills")
+    System_Ext(discogs, "Discogs", "Pressing identity")
+
+    Rel(collector, etl, "HTTPS localhost:8501")
+    Rel(etl, ebay, "Headed Chrome")
+    Rel(etl, grip, "Probe / audit + lookback")
+    Rel(etl, yahoo_auc, "HTTPS novelty + lookback")
+    Rel(etl, yahoo_flea, "HTTPS search-only + lookback")
+    Rel(etl, buyee, "Headed owner")
+    Rel(etl, discogs, "API")
+```
+
+### C4 Level 2 — Containers
+
 ```mermaid
 flowchart TB
     Operator["Collector / operator"]
@@ -70,9 +100,10 @@ flowchart TB
     subgraph Services["Python backend services · auction_etl/"]
         Shelf["collection_shelf<br/>owned copies · anatomy · same-catalog fill"]
         Billing["collection_billing<br/>yen bills · gaps · order"]
-        Import["collection_import<br/>Buyee / Record City OCR"]
+        Import["collection_import<br/>Buyee / Record City / informal lots"]
         Acquire["collection_acquisition<br/>type · shop · artist · package charts"]
         Identity["discogs_identity + discogs_fill<br/>search · release · pressing assign"]
+        YahooIngest["yahoo_jp_ingest + refresh_lookback"]
         Scope["tracked_listing_scope · warehouse · fx"]
     end
 
@@ -80,12 +111,12 @@ flowchart TB
         DB[("PostgreSQL 127.0.0.1:5544<br/>auction_warehouse")]
     end
 
-    subgraph Execution["Local execution"]
+    subgraph Execution["Local execution · five marketplaces"]
         Refresh["scripts/run_latest_auction_refresh.py"]
         EbayOp["Headed eBay sold crawl"]
-        YahooJP["Yahoo JP HTTPS novelty ingest"]
-        BuyeeOwner["Headed Buyee owner (optional)"]
-        Gripsweat["Gripsweat probe / import"]
+        YahooJP["Yahoo JP HTTPS novelty + lookback"]
+        BuyeeOwner["Headed Buyee owner"]
+        Gripsweat["Gripsweat probe / audit + lookback"]
     end
 
     subgraph Sources["Marketplace sources"]
@@ -93,7 +124,7 @@ flowchart TB
         YahooF["Yahoo フリマ closed"]
         Ebay["eBay completed/sold"]
         Grip["Gripsweat"]
-        Buyee["Buyee watchlist (legacy)"]
+        Buyee["Buyee watchlist"]
         Discogs["Discogs API"]
     end
 
@@ -112,6 +143,7 @@ flowchart TB
     Identity --> Discogs
     Identity --> DB
     Scope --> DB
+    YahooIngest --> DB
     Refresh --> EbayOp
     Refresh --> YahooJP
     Refresh --> Gripsweat
@@ -122,6 +154,17 @@ flowchart TB
     Gripsweat --> Grip
     BuyeeOwner --> Buyee
     Refresh --> DB
+```
+
+### C4 Level 3 — Daily refresh lookback
+
+```mermaid
+flowchart LR
+    PG["PostgreSQL<br/>max(ended_at|sold_at)"]
+    LB["refresh_lookback<br/>cutoff = max − N days<br/>default N=3"]
+    SCRAPE["Newest-first scrape<br/>eBay · Buyee · Gripsweat · Yahoo ×2"]
+    STOP["Stop when page ≤ cutoff<br/>or novelty / known-ID gate"]
+    PG --> LB --> SCRAPE --> STOP
 ```
 
 ### Backend breakdown

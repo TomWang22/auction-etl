@@ -145,6 +145,16 @@ def parse_arguments() -> argparse.Namespace:
         help="Max newest-first Yahoo search pages per artist per marketplace.",
     )
     parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=3,
+        help=(
+            "Daily scrape floor: stop once pages are at/before "
+            "max(ending)-N days from PostgreSQL (default 3). "
+            "Applies to Gripsweat pagination; Yahoo already uses novelty."
+        ),
+    )
+    parser.add_argument(
         "--ebay-structured-raw-page-id",
         type=int,
         default=None,
@@ -5466,24 +5476,62 @@ def main() -> int:
             / "gripsweat-pagination-audit.json"
         )
 
+        from sqlalchemy import create_engine as create_lookback_engine
+
+        from auction_etl.services.refresh_lookback import (
+            gripsweat_sold_cutoff,
+            normalize_lookback_days,
+        )
+
+        lookback_days = normalize_lookback_days(
+            getattr(arguments, "lookback_days", 3)
+        )
+        lookback_engine = create_lookback_engine(
+            sqlalchemy_database_url
+        )
+        try:
+            with lookback_engine.connect() as lookback_connection:
+                gripsweat_min_sold_at = gripsweat_sold_cutoff(
+                    lookback_connection,
+                    lookback_days=lookback_days,
+                )
+        finally:
+            lookback_engine.dispose()
+        if gripsweat_min_sold_at is not None:
+            logger.info(
+                "Gripsweat daily lookback floor: sold_at >= %s "
+                "(max(sold_at) - %s day(s))",
+                gripsweat_min_sold_at.isoformat(),
+                lookback_days,
+            )
+
+        gripsweat_probe_command = [
+            sys.executable,
+            "scripts/probe_gripsweat.py",
+            "--config",
+            str(gripsweat_config_path),
+            "--max-pages",
+            "5" if gripsweat_min_sold_at is not None else "1",
+            "--wait-seconds",
+            "8",
+            "--output",
+            str(probe_path),
+            "--diagnostic-dir",
+            str(run_dir / "gripsweat-probe"),
+        ]
+        if gripsweat_min_sold_at is not None:
+            gripsweat_probe_command.extend(
+                [
+                    "--min-sold-at",
+                    gripsweat_min_sold_at.isoformat(),
+                ]
+            )
+
         (
             gripsweat_probe_status,
             gripsweat_probe_output,
         ) = run_command(
-            [
-                sys.executable,
-                "scripts/probe_gripsweat.py",
-                "--config",
-                str(gripsweat_config_path),
-                "--max-pages",
-                "1",
-                "--wait-seconds",
-                "8",
-                "--output",
-                str(probe_path),
-                "--diagnostic-dir",
-                str(run_dir / "gripsweat-probe"),
-            ],
+            gripsweat_probe_command,
             root=root,
             environment=environment,
             logger=logger,
@@ -5696,25 +5744,33 @@ def main() -> int:
             "yes" if gripsweat_probe_window_fully_known else "no",
         )
         if not gripsweat_stop_after_probe:
+            gripsweat_audit_command = [
+                sys.executable,
+                "scripts/audit_gripsweat_pagination.py",
+                "--config",
+                str(gripsweat_config_path),
+                "--pages",
+                "10",
+                "--delay",
+                "2",
+                "--wait-seconds",
+                "6",
+                "--output",
+                str(audit_path),
+                "--diagnostics-dir",
+                str(run_dir / "gripsweat-pagination"),
+                "--empty-page-limit",
+                "2",
+            ]
+            if gripsweat_min_sold_at is not None:
+                gripsweat_audit_command.extend(
+                    [
+                        "--min-sold-at",
+                        gripsweat_min_sold_at.isoformat(),
+                    ]
+                )
             run_command(
-                [
-                    sys.executable,
-                    "scripts/audit_gripsweat_pagination.py",
-                    "--config",
-                    str(gripsweat_config_path),
-                    "--pages",
-                    "10",
-                    "--delay",
-                    "2",
-                    "--wait-seconds",
-                    "6",
-                    "--output",
-                    str(audit_path),
-                    "--diagnostics-dir",
-                    str(run_dir / "gripsweat-pagination"),
-                    "--empty-page-limit",
-                    "2",
-                ],
+                gripsweat_audit_command,
                 root=root,
                 environment=environment,
                 logger=logger,
@@ -6126,6 +6182,9 @@ def main() -> int:
         )
 
         from sqlalchemy import create_engine
+        from auction_etl.services.refresh_lookback import (
+            normalize_lookback_days as yahoo_lookback_days,
+        )
         from auction_etl.services.yahoo_jp_ingest import (
             refresh_yahoo_marketplace_for_account,
         )
@@ -6142,6 +6201,9 @@ def main() -> int:
                     2,
                 )
             ),
+        )
+        yahoo_lookback = yahoo_lookback_days(
+            getattr(arguments, "lookback_days", 3)
         )
 
         for yahoo_label, yahoo_key in (
@@ -6160,6 +6222,7 @@ def main() -> int:
                 marketplace=yahoo_key,
                 pages=yahoo_pages,
                 stop_on_novelty=True,
+                lookback_days=yahoo_lookback,
             )
             yahoo_state = str(
                 yahoo_result.get(

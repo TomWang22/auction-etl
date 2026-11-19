@@ -21,6 +21,10 @@ from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from auction_etl.services.marketplace_browser_runtime import browser
+from auction_etl.services.refresh_lookback import (
+    coerce_sale_date,
+    page_is_at_or_before_cutoff,
+)
 from sqlalchemy import text
 from auction_etl.database.session import engine as database_engine
 
@@ -232,12 +236,25 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_DIAGNOSTIC_DIR,
     )
+    parser.add_argument(
+        "--min-sold-at",
+        default=None,
+        help=(
+            "Stop paging once every dated card on a page is on or before "
+            "this ISO date (daily lookback floor from warehouse max(sold_at))."
+        ),
+    )
     arguments = parser.parse_args()
 
     if arguments.navigation_timeout_seconds <= 0:
         parser.error(
             "--navigation-timeout-seconds must be positive."
         )
+    if arguments.min_sold_at:
+        parsed_cutoff = coerce_sale_date(arguments.min_sold_at)
+        if parsed_cutoff is None:
+            parser.error("--min-sold-at must be an ISO date (YYYY-MM-DD).")
+        arguments.min_sold_at = parsed_cutoff.isoformat()
 
     return arguments
 
@@ -941,6 +958,7 @@ def probe_source(
     diagnostic_dir: Path,
     summary: ProbeSummary,
     known_item_keys: set[str],
+    min_sold_at: str | None = None,
 ) -> None:
     html_dir = diagnostic_dir / "html"
     screenshot_dir = diagnostic_dir / "screenshots"
@@ -1122,6 +1140,20 @@ def probe_source(
                 )
                 break
 
+            sold_values = [
+                item.sold_at
+                for item in items
+            ]
+            if page_is_at_or_before_cutoff(
+                sold_values,
+                min_sold_at,
+            ):
+                print(
+                    "Stopping source: page sales are at/before "
+                    f"lookback floor {min_sold_at}."
+                )
+                break
+
             if not next_detected:
                 print("Stopping source: no next page detected.")
                 break
@@ -1243,6 +1275,7 @@ def main() -> int:
                 diagnostic_dir=args.diagnostic_dir,
                 summary=summary,
                 known_item_keys=known_item_keys,
+                min_sold_at=args.min_sold_at,
             )
     finally:
         page.close()

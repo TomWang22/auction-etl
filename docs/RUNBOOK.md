@@ -48,9 +48,15 @@ See also [`ENGINEERING.md`](ENGINEERING.md).
 
 ### Full refresh ~23 minutes / Yahoo not the culprit
 
-- **Symptom:** Four-marketplace refresh wall clock ~20–25 minutes.
-- **Cause:** Buyee WAF headed detail + post-pass features/reclassify/FX/doctor dominate; Yahoo novelty is seconds.
-- **Fix:** Default `--skip-buyee-detail` from UI multisource; see [`superpowers/specs/2026-11-19-performance-percentiles.md`](superpowers/specs/2026-11-19-performance-percentiles.md) and [`superpowers/specs/2026-11-19-refresh-latency-investigation.md`](superpowers/specs/2026-11-19-refresh-latency-investigation.md).
+- **Symptom:** Five-marketplace refresh wall clock ~20–25 minutes.
+- **Cause:** Buyee WAF headed detail + post-pass features/reclassify/FX/doctor dominate; Yahoo novelty is seconds. Gripsweat pagination can also walk deep history when the newest probe page is not fully known.
+- **Fix:** Default `--skip-buyee-detail` from UI multisource; keep `--lookback-days 3` (PostgreSQL `max(sold_at|ended_at) - N`) so Gripsweat/Yahoo stop at the daily floor instead of 2014. See [`superpowers/specs/2026-11-19-performance-percentiles.md`](superpowers/specs/2026-11-19-performance-percentiles.md).
+
+### Gripsweat refresh walks back to 2014
+
+- **Symptom:** Pagination audit keeps loading old archive pages; warehouse `sold_at` spans a decade.
+- **Cause:** Newest-first crawl continues while “new” IDs still appear on older pages; no date floor.
+- **Fix:** Refresh passes `--min-sold-at` from `refresh_lookback.gripsweat_sold_cutoff` (default 3 days before `max(sold_at)`). Do not disable lookback for daily runs; use a larger `--lookback-days` only for intentional backfill.
 
 ### eBay later pages HTTP 403 / Akamai
 

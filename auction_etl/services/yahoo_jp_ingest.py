@@ -14,6 +14,7 @@ from sqlalchemy.engine import Engine
 
 from auction_etl.parsers.yahoo_auction import parse_closedsearch_html
 from auction_etl.parsers.yahoo_fleamarket import parse_sold_search_html
+from auction_etl.services.refresh_lookback import auction_ending_cutoff
 from auction_etl.services.artist_tracking import (
     build_yahoo_auction_search_url,
     build_yahoo_fleamarket_search_url,
@@ -274,6 +275,30 @@ def page_is_all_older_or_equal(
     return True
 
 
+def page_is_at_or_before_lookback(
+    items: list[dict[str, Any]],
+    lookback_cutoff: datetime | None,
+) -> bool:
+    """True when every dated card closes at/before the daily lookback floor."""
+
+    if lookback_cutoff is None or not items:
+        return False
+    cutoff = lookback_cutoff
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    known = 0
+    for item in items:
+        closing = _parse_time(item.get("closing_at"))
+        if closing is None:
+            continue
+        known += 1
+        if closing.tzinfo is None:
+            closing = closing.replace(tzinfo=cutoff.tzinfo)
+        if closing > cutoff:
+            return False
+    return known > 0
+
+
 def enabled_yahoo_queries(
     engine: Engine,
     marketplace: str,
@@ -306,6 +331,7 @@ def ingest_yahoo_auctions(
     pause_s: float = DEFAULT_AUCTION_PAUSE_S,
     known_ids: set[str] | None = None,
     watermark: datetime | None = None,
+    lookback_cutoff: datetime | None = None,
     stop_on_novelty: bool = True,
 ) -> dict[str, Any]:
     """Paginate closedsearch newest-first and upsert auction comps."""
@@ -369,6 +395,9 @@ def ingest_yahoo_auctions(
             if stop_on_novelty and page_is_all_older_or_equal(items, watermark):
                 stopped_reason = "watermark"
                 break
+            if page_is_at_or_before_lookback(items, lookback_cutoff):
+                stopped_reason = "lookback"
+                break
             if not items:
                 stopped_reason = "empty"
                 break
@@ -402,6 +431,7 @@ def ingest_yahoo_fleamarket(
     pause_s: float = DEFAULT_FLEA_PAUSE_S,
     known_ids: set[str] | None = None,
     watermark: datetime | None = None,
+    lookback_cutoff: datetime | None = None,
     stop_on_novelty: bool = True,
 ) -> dict[str, Any]:
     """Paginate フリマ sold search (search-only) and upsert comps."""
@@ -465,6 +495,9 @@ def ingest_yahoo_fleamarket(
                 break
             if stop_on_novelty and page_is_all_older_or_equal(items, watermark):
                 stopped_reason = "watermark"
+                break
+            if page_is_at_or_before_lookback(items, lookback_cutoff):
+                stopped_reason = "lookback"
                 break
             if not items:
                 stopped_reason = "empty"
@@ -553,6 +586,7 @@ def refresh_yahoo_marketplace_for_account(
     page_size: int = 100,
     pause_s: float | None = None,
     stop_on_novelty: bool = True,
+    lookback_days: int | None = 3,
     fallback_queries: list[str] | None = None,
 ) -> dict[str, Any]:
     """Refresh one Yahoo marketplace from enabled artist targets."""
@@ -582,6 +616,13 @@ def refresh_yahoo_marketplace_for_account(
         }
 
     known_ids, watermark = load_known_listings(engine, marketplace)
+    lookback_cutoff = None
+    if lookback_days is not None:
+        lookback_cutoff = auction_ending_cutoff(
+            engine,
+            marketplace,
+            lookback_days=lookback_days,
+        )
     steps: list[dict[str, Any]] = []
     rate_limited = False
     for query in queries:
@@ -597,6 +638,7 @@ def refresh_yahoo_marketplace_for_account(
                     ),
                     known_ids=known_ids,
                     watermark=watermark,
+                    lookback_cutoff=lookback_cutoff,
                     stop_on_novelty=stop_on_novelty,
                 )
             else:
@@ -609,6 +651,7 @@ def refresh_yahoo_marketplace_for_account(
                     ),
                     known_ids=known_ids,
                     watermark=watermark,
+                    lookback_cutoff=lookback_cutoff,
                     stop_on_novelty=stop_on_novelty,
                 )
         except YahooFetchError as exc:
