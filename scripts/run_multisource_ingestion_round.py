@@ -109,6 +109,20 @@ def parse_args(
         "--require-all-sources",
         action="store_true",
     )
+    parser.add_argument(
+        "--skip-buyee-detail",
+        action="store_true",
+        default=True,
+        help=(
+            "Skip Buyee WAF headed detail fallback (default on; "
+            "largest refresh latency source)."
+        ),
+    )
+    parser.add_argument(
+        "--keep-buyee-detail",
+        action="store_true",
+        help="Run Buyee HTTPS/WAF detail enrichment despite latency.",
+    )
 
     return parser.parse_args(argv)
 
@@ -1517,6 +1531,11 @@ def main(
             )
         if arguments.require_all_sources:
             command.append("--require-all-sources")
+        if (
+            arguments.skip_buyee_detail
+            and not arguments.keep_buyee_detail
+        ):
+            command.append("--skip-buyee-detail")
 
         return_code = stream_command(
             command,

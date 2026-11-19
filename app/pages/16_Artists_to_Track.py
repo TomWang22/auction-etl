@@ -25,6 +25,8 @@ from auction_etl.services.artist_tracking import (
     SUPPORTED_MARKETPLACES,
     build_ebay_search_url,
     build_gripsweat_search_url,
+    build_yahoo_auction_search_url,
+    build_yahoo_fleamarket_search_url,
     list_account_tracked_artists,
     remove_account_artist,
     set_account_artist_enabled,
@@ -473,7 +475,7 @@ def render_refresh_workspace(
 
             if all_done:
                 st.success(
-                    "All three marketplaces completed.",
+                    "All live marketplaces completed.",
                     icon="✅",
                 )
             else:
@@ -574,6 +576,8 @@ def render_refresh_workspace(
                 3,
                 2,
                 2,
+                2,
+                2,
             ]
         )
 
@@ -610,6 +614,14 @@ def render_refresh_workspace(
             (
                 2,
                 "gripsweat",
+            ),
+            (
+                3,
+                "yahoo_auction",
+            ),
+            (
+                4,
+                "yahoo_fleamarket",
             ),
         ):
             target = (
@@ -806,11 +818,18 @@ with st.form(
         options=[
             "eBay",
             "Gripsweat",
+            "Yahoo Auctions",
+            "Yahoo フリマ",
         ],
         default=[
             "eBay",
             "Gripsweat",
+            "Yahoo Auctions",
         ],
+        help=(
+            "Japan auction defaults on; フリマ is opt-in because "
+            "PayPay rate-limits more tightly."
+        ),
     )
 
     if artist_name.strip():
@@ -819,7 +838,7 @@ with st.form(
         )
 
         preview_columns = st.columns(
-            2
+            4
         )
 
         with preview_columns[
@@ -846,6 +865,34 @@ with st.form(
             render_search_link(
                 "Open generated search",
                 build_gripsweat_search_url(
+                    artist_name
+                ),
+            )
+
+        with preview_columns[
+            2
+        ]:
+            st.write(
+                "**Yahoo Auctions**"
+            )
+
+            render_search_link(
+                "Open generated search",
+                build_yahoo_auction_search_url(
+                    artist_name
+                ),
+            )
+
+        with preview_columns[
+            3
+        ]:
+            st.write(
+                "**Yahoo フリマ**"
+            )
+
+            render_search_link(
+                "Open generated search",
+                build_yahoo_fleamarket_search_url(
                     artist_name
                 ),
             )
@@ -1065,6 +1112,8 @@ for artist in artists:
                 options=[
                     "eBay",
                     "Gripsweat",
+                    "Yahoo Auctions",
+                    "Yahoo フリマ",
                 ],
                 default=current_labels,
                 key=(

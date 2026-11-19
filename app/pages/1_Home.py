@@ -179,8 +179,10 @@ st.title(
 
 st.write(
     "Auction ETL is the sales desk for collectors and record shops. "
-    "Completed sales from Buyee, eBay, and Gripsweat sit in one place, "
-    "with the price that was paid, the pressing, and the shape of the lot."
+    "Completed sales from Yahoo Auctions, Yahoo フリマ, eBay, and "
+    "Gripsweat sit in one place, with the price that was paid, the "
+    "pressing, and the shape of the lot. Buyee watchlist history stays "
+    "readable as a legacy Japan path."
 )
 
 left_who, right_who = st.columns(2)
@@ -225,8 +227,8 @@ with left_top:
         icon="🔎",
         title="Review sales",
         description=(
-            "Search existing eBay, Buyee, and Gripsweat sales, "
-            "inspect listing details, and review pressing information."
+            "Search Yahoo Auctions, Yahoo フリマ, eBay, and Gripsweat "
+            "sales, inspect listing details, and review pressings."
         ),
         destination="collector_review.py",
         key="home-task-card-review-sales",
@@ -237,8 +239,8 @@ with right_top:
         icon="🔄",
         title="Update marketplace data",
         description=(
-            "Check all configured marketplaces for the latest available "
-            "sales and process the refreshed data."
+            "Refresh eBay, Gripsweat, Yahoo Auctions, and Yahoo フリマ "
+            "(Buyee optional). Long scrapes run outside the UI process."
         ),
         destination="pages/15_Ingest_New_Auctions.py",
         key="home-task-card-refresh-marketplace-sales",

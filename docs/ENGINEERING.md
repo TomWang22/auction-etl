@@ -1,8 +1,9 @@
 # Auction ETL — engineering guide
 
-Single local product: one collector’s Buyee / eBay / Gripsweat sales in one
-PostgreSQL warehouse, reviewed in Streamlit. This document is the high-level
-map of stack, scrape, intake, duplicates, and how to survive site layout changes.
+Single local product: one collector’s Yahoo Auctions / Yahoo フリマ / eBay /
+Gripsweat sales (Buyee optional legacy) in one PostgreSQL warehouse, reviewed
+in Streamlit. This document is the high-level map of stack, scrape, intake,
+duplicates, and how to survive site layout changes.
 
 Companion ops history: [`RUNBOOK.md`](RUNBOOK.md). Architecture history:
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
@@ -18,9 +19,9 @@ Companion ops history: [`RUNBOOK.md`](RUNBOOK.md). Architecture history:
 | Warehouse | PostgreSQL `127.0.0.1:5544/auction_warehouse` | Sole data authority |
 | ORM / SQL | SQLAlchemy 2 + Alembic | Engines, migrations, raw SQL where needed |
 | UI | Streamlit + streamlit-aggrid + Altair | Operator UI on HTTPS localhost:8501 |
-| Auth | Yahoo OIDC (Authlib) | Identifies the collector; does not import Yahoo inventory |
+| Auth | Yahoo OIDC (Authlib) | Identifies the collector; does not scrape Yahoo Auctions |
 | Browser | Playwright + real Google Chrome (`channel=chrome`) | Headed only; eBay/Buyee block true headless |
-| HTTP | httpx / BeautifulSoup / lxml | Gripsweat + Buyee HTTPS when WAF allows |
+| HTTP | httpx / BeautifulSoup / lxml | Yahoo JP public HTTPS + `__NEXT_DATA__`; Gripsweat; Buyee HTTPS when WAF allows |
 | Discogs | Discogs API client in `discogs_client` | Pressing identity after ingest |
 | FX | `auction_etl.services.fx` + `scripts/update_auction_fx.py` | Local→USD |
 | Jobs | `ops.refresh_*` tables + `run_latest_auction_refresh.py` | Durable refresh outside HTTP |
@@ -48,9 +49,10 @@ app/                          Streamlit pages
 auction_etl/
   browser/                    Chrome owner clients, defaults
   classifiers/                Media / lot / magazine rules
-  parsers/                    Buyee, eBay HTML → structured fields
+  parsers/                    Yahoo JP, Buyee, eBay HTML → structured fields
   services/
     warehouse.py              Upsert auctions
+    yahoo_jp_ingest.py        Yahoo Auctions + フリマ novelty ingest
     sold_item_overlap.py      eBay ↔ Gripsweat same listing + OBO USD
     discogs_identity.py       Search keys, aliases, catalog fold
     discogs_fill.py           Assign pressings
@@ -60,6 +62,7 @@ scripts/
   run_latest_auction_refresh.py
   run_ebay_owner.py / ensure_ebay_owner.py
   run_buyee_owner.py / ensure_buyee_owner.py
+  verify_yahoo_jp_scrape.py / smoke_yahoo_jp_ingest.py
   acquire_ebay_structured.py
 ```
 
@@ -71,8 +74,8 @@ scripts/
 | --- | --- |
 | **Review** | Search/filter sales; grades; Discogs fill; scenes; bulk lots |
 | **My collection** | Bring in bills; shelf anatomy; speed fill; same-catalog Discogs; acquisition charts |
-| **Latest refresh** | Kick / watch Buyee+eBay+Gripsweat ingest |
-| **Tracked artists** | Scope which artists drive eBay/Gripsweat search |
+| **Latest refresh** | Kick / watch eBay+Gripsweat+Yahoo Auctions+Yahoo フリマ (Buyee optional) |
+| **Tracked artists** | Scope which artists drive eBay/Gripsweat/Yahoo JP search |
 | **Pressing library** | Reference pressings, evidence, matrices |
 | **Analytics** | Sales by pressing / readiness |
 | **FX / doctor** | USD values; warehouse health |
@@ -90,13 +93,28 @@ scripts/
 5. **Enrich** (optional detail crawl, Discogs, FX).
 6. **Never delete** a baseline identity without an explicit prune path.
 
-### Buyee
+### Yahoo Auctions (`yahoo_auction`)
+
+- **Path:** public HTTPS closed search + item detail; parse `__NEXT_DATA__` (`parsers/yahoo_auction.py`).
+- **Ingest:** `yahoo_jp_ingest` with novelty watermark (stop when a page is all already-seen ids).
+- **Money:** JPY; page size default 100.
+- **Identity:** Yahoo auction id digits. When the same id also exists on フリマ, **auction wins**.
+
+### Yahoo フリマ (`yahoo_fleamarket`)
+
+- **Path:** public HTTPS closed **search only** (item detail bursts trip host 429).
+- **Ingest:** same novelty service; skips listing ids already stored as `yahoo_auction`.
+- **Money:** JPY from search cards (`endTime` ranking; `taxFlag` when present).
+- **Soft state:** `rate_limited` is not a hard job failure — pause and continue later.
+
+### Buyee (optional / legacy)
 
 - **Owner:** long-lived headed Chrome with Buyee login cookies.
 - **Primary path:** authenticated HTTPS closed-watchlist crawl.
-- **Fallback:** when AWS WAF serves a challenge page, the owner browser opens the item.
+- **Fallback:** when AWS WAF serves a challenge page, the owner browser opens the item (~15–27s inter-arrival per listing in measured runs).
 - **Money:** JPY hammers; tax-inclusive 10/110 when the bill says so.
 - **Identity:** Buyee item id (letter + digits or digits).
+- **Default:** UI multisource refresh passes `--skip-buyee-detail` so WAF headed detail does not dominate wall clock. Japan comps for Review prefer Yahoo JP (ADR 2026-11-19).
 
 ### eBay
 
@@ -114,16 +132,20 @@ scripts/
 
 ### Refresh orchestration
 
-`scripts/run_latest_auction_refresh.py` runs Buyee → eBay → Gripsweat → FX → doctor → new-only export → backup. Progress lives in `ops.refresh_job` / `refresh_marketplace` / `refresh_event`.
+`scripts/run_latest_auction_refresh.py` runs (optional Buyee) → eBay → Gripsweat → Yahoo Auctions → Yahoo フリマ → features/reclassify → FX → doctor → new-only export → backup. Progress lives in `ops.refresh_job` / `refresh_marketplace` / `refresh_event`. Planned UI sources: `ebay`, `gripsweat`, `yahoo_auction`, `yahoo_fleamarket` (Buyee not in the default four-marketplace progress strip).
+
+Measured phase and HTTP percentiles: [`superpowers/specs/2026-11-19-performance-percentiles.md`](superpowers/specs/2026-11-19-performance-percentiles.md).
 
 ---
 
 ## 5. Classic question: site layout changes
 
-When Buyee, eBay, or Gripsweat changes markup, symptoms are empty parses, zero new rows, or WAF/challenge pages.
+When Yahoo JP, Buyee, eBay, or Gripsweat changes markup, symptoms are empty parses, zero new rows, WAF/challenge pages, or 429s.
 
 | Site | What usually breaks | How we counter |
 | --- | --- | --- |
+| **Yahoo Auctions** | `__NEXT_DATA__` shape / closed-search query params | Fixtures under `tests/fixtures/yahoo_auction/`; parsers only; novelty stop; verify with `verify_yahoo_jp_scrape.py` |
+| **Yahoo フリマ** | Search card JSON; detail 429 under burst | Search-only ingest; skip auction-overlap ids; treat sticky 429 as soft `rate_limited` |
 | **Buyee** | Watchlist card CSS / item detail DOM; WAF interstitial | Keep HTTPS selectors in `parsers/buyee.py` + crawl scripts; fail closed on challenge HTML; fall back to headed owner for those listing ids; store raw HTML so selectors can be re-tuned offline |
 | **eBay** | Sold-card structure, CAPTCHA, Akamai 403 on page 2+ | Headed Chrome + storage state; load ebay.com before search; keep page-1 results if later pages 403; parse from stored raw pages; never switch to true headless |
 | **Gripsweat** | Search result DOM / item URL shape | Probe scripts + `gripsweat_original_listing_id` URL parsers; compare against known eBay ids; re-run probe only after fixture HTML is updated |
@@ -141,6 +163,12 @@ Do **not** “fix” scrape failures by enabling headless or by pointing cloud h
 ---
 
 ## 6. Same listing, OBO, and same title
+
+### Same listing (Yahoo Auctions ↔ Yahoo フリマ)
+
+- Same numeric listing id can appear on both Yahoo surfaces.
+- **Ingest:** flea skip set includes auction ids already in warehouse.
+- **UI:** Review drops fleamarket rows that share an id with auction (`drop_overlapping_yahoo_jp_rows`); auction wins.
 
 ### Same listing (eBay ↔ Gripsweat)
 
@@ -200,8 +228,11 @@ is dominated by Python over the kept pile, not by SQL (~0.5s).
 3. **Do not clear that cache on every Save** — overlay the changed row via
    session patches (`REVIEW_SAVE_PATCHES_KEY`). Clear only on Reload, refresh
    catch-up, or Discogs identity writes.
-4. **Keep editor widgets in `@st.fragment`** (including media type) so filling
-   grades/counts does not remount AgGrid + charts.
+4. **Keep the listing editor in one `@st.fragment`** so media/grade typing does
+   not remount AgGrid. Intentional writes (Use this, Save, Mark matched) still
+   `st.rerun(scope="app")` so session patches paint Status ✓/✎ on the table.
+   Coerce patch values to column dtypes (year must be numeric, not `'1980'`).
+   Do not nest a second fragment around only the form.
 5. **Filter tracked artists before** pressing / prepare / title classification
    so those passes see ~2k rows, not the full join.
 6. **Stable AgGrid keys** unless the underlying row set changed (never put

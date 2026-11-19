@@ -1,0 +1,27 @@
+{
+  "url": "https://www.ebay.com/sch/i.html?_nkw=Teresa+Teng&LH_Complete=1&LH_Sold=1&_sop=13",
+  "runs": [
+    {
+      "mode": "headed_with_storage_state",
+      "status": 403,
+      "final_url": "https://www.ebay.com/sch/i.html?_nkw=Teresa+Teng&LH_Complete=1&LH_Sold=1&_sop=13",
+      "ms": 25437,
+      "title": "Error Page | eBay",
+      "is_signin": false,
+      "is_captcha": false,
+      "item_link_count": 0,
+      "looks_results": false
+    },
+    {
+      "mode": "headed_empty_persistent_profile",
+      "status": 200,
+      "final_url": "https://signin.ebay.com/signin/s",
+      "ms": 30122,
+      "title": "Error Page | eBay",
+      "is_signin": true,
+      "is_captcha": false,
+      "item_link_count": 0,
+      "looks_results": false
+    }
+  ]
+}

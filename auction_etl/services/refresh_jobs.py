@@ -21,6 +21,8 @@ MARKETPLACES: tuple[tuple[str, int], ...] = (
     ("buyee", 1),
     ("ebay", 2),
     ("gripsweat", 3),
+    ("yahoo_auction", 4),
+    ("yahoo_fleamarket", 5),
 )
 
 JOB_STATES = frozenset(
@@ -40,6 +42,7 @@ MARKETPLACE_STATES = frozenset(
         "done",
         "failed",
         "skipped",
+        "rate_limited",
         "authentication_required",
         "awaiting_handoff",
     }
@@ -50,6 +53,7 @@ COMPLETABLE_MARKETPLACE_STATES = frozenset(
     {
         "done",
         "skipped",
+        "rate_limited",
         "authentication_required",
         "awaiting_handoff",
     }

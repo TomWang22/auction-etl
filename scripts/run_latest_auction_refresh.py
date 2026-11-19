@@ -124,6 +124,27 @@ def parse_arguments() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--skip-buyee",
+        action="store_true",
+        help=(
+            "Skip the Buyee watchlist step (Yahoo JP is the Japan comps path)."
+        ),
+    )
+    parser.add_argument(
+        "--skip-buyee-detail",
+        action="store_true",
+        help=(
+            "Skip Buyee HTTPS detail and WAF headed fallback "
+            "(largest refresh latency source)."
+        ),
+    )
+    parser.add_argument(
+        "--yahoo-pages",
+        type=int,
+        default=2,
+        help="Max newest-first Yahoo search pages per artist per marketplace.",
+    )
+    parser.add_argument(
         "--ebay-structured-raw-page-id",
         type=int,
         default=None,
@@ -292,12 +313,16 @@ def emit_source_state(
         "Buyee": "buyee",
         "eBay": "ebay",
         "Gripsweat": "gripsweat",
+        "Yahoo Auctions": "yahoo_auction",
+        "Yahoo フリマ": "yahoo_fleamarket",
     }
     allowed_states = {
         "running",
         "done",
         "unavailable",
         "failed",
+        "skipped",
+        "rate_limited",
         "awaiting_handoff",
         "authentication_required",
     }
@@ -334,6 +359,8 @@ def emit_source_state(
             "buyee": "running",
             "ebay": "waiting",
             "gripsweat": "waiting",
+            "yahoo_auction": "waiting",
+            "yahoo_fleamarket": "waiting",
         }
         status["marketplace_timing"] = {
             "buyee": {
@@ -341,6 +368,8 @@ def emit_source_state(
             },
             "ebay": {},
             "gripsweat": {},
+            "yahoo_auction": {},
+            "yahoo_fleamarket": {},
         }
     else:
         marketplace_states = status.setdefault(
@@ -349,6 +378,8 @@ def emit_source_state(
                 "buyee": "waiting",
                 "ebay": "waiting",
                 "gripsweat": "waiting",
+                "yahoo_auction": "waiting",
+                "yahoo_fleamarket": "waiting",
             },
         )
         marketplace_states[
@@ -1490,6 +1521,8 @@ def publish_source_visibility(
         "Buyee": "buyee",
         "eBay": "ebay",
         "Gripsweat": "gripsweat",
+        "Yahoo Auctions": "yahoo_auction",
+        "Yahoo フリマ": "yahoo_fleamarket",
     }[source]
     result = publish_current_refresh_visibility(
         database_url,
@@ -2439,1211 +2472,2458 @@ def main() -> int:
                 "is unavailable."
             )
 
-        emit_source_state(
-            logger,
-            "Buyee",
-            "running",
-            status_file=status_file,
-            status=status,
-        )
-
-        buyee_owner_socket = Path(
-            environment.get(
-                "AUCTION_BUYEE_OWNER_SOCKET",
-                str(
-                    Path.home()
-                    / ".auction-etl"
-                    / "runtime"
-                    / "buyee-owner"
-                    / "owner.sock"
-                ),
-            )
-        ).expanduser().resolve()
-
-        environment["AUCTION_BUYEE_PROFILE"] = (
-            arguments.buyee_profile
-        )
-
-        default_buyee_profile_dir = (
-            root
-            / "profiles"
-            / arguments.buyee_profile
-        ).resolve()
-
-        buyee_profile_dir = Path(
-            environment.get(
-                "AUCTION_BUYEE_PROFILE_DIR",
-                str(
-                    default_buyee_profile_dir
-                ),
-            )
-        ).expanduser()
-
-        if not buyee_profile_dir.is_absolute():
-            buyee_profile_dir = (
-                root
-                / buyee_profile_dir
-            )
-
-        buyee_profile_dir = (
-            buyee_profile_dir.resolve()
-        )
-
-        buyee_profile_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        environment[
-            "AUCTION_BUYEE_PROFILE_DIR"
-        ] = str(
-            buyee_profile_dir
-        )
-
-        configured_buyee_storage_state = (
-            environment.get(
-                "AUCTION_BUYEE_STORAGE_STATE",
-                "",
-            ).strip()
-            or environment.get(
-                "BUYEE_STORAGE_STATE_FILE",
-                "",
-            ).strip()
-        )
-
-        if configured_buyee_storage_state:
-            buyee_storage_state = Path(
-                configured_buyee_storage_state
-            ).expanduser()
-        else:
-            buyee_storage_state = (
-                buyee_profile_dir
-                / ".auction-etl"
-                / "private"
-                / "buyee-storage-state.json"
-            )
-
-        if not buyee_storage_state.is_absolute():
-            buyee_storage_state = (
-                root
-                / buyee_storage_state
-            )
-
-        buyee_storage_state = (
-            buyee_storage_state.resolve()
-        )
-
-        buyee_storage_state.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        environment[
-            "AUCTION_BUYEE_STORAGE_STATE"
-        ] = str(
-            buyee_storage_state
-        )
-
-        environment[
-            "BUYEE_STORAGE_STATE_FILE"
-        ] = str(
-            buyee_storage_state
-        )
-
-        environment["AUCTION_BUYEE_OWNER_SOCKET"] = str(
-            buyee_owner_socket
-        )
-        environment.pop(
-            "AUCTION_BUYEE_CDP_URL",
-            None,
-        )
-
-        run_command(
-            [
-                sys.executable,
-                "scripts/ensure_buyee_owner.py",
-                "--profile-dir",
-                str(
-                    buyee_profile_dir
-                ),
-                "--socket-path",
-                str(
-                    buyee_owner_socket
-                ),
-                "--timeout-seconds",
-                "60",
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Ensure reusable Buyee browser owner",
-            status_file=status_file,
-            status=status,
-        )
-        logger.info(
-            "Buyee browser owner ready; "
-            "authenticated HTTPS mode is active."
-        )
-
-        status["buyee_profile"] = (
-            arguments.buyee_profile
-        )
-        status["buyee_owner_socket"] = str(
-            buyee_owner_socket
-        )
-        status.pop(
-            "buyee_cdp_url",
-            None,
-        )
-
-        auth_status, _ = run_command(
-            [
-                sys.executable,
-                "scripts/verify_buyee_session.py",
-                "--storage-state",
-                str(buyee_storage_state),
-                "--profile-dir",
-                str(
-                    buyee_profile_dir
-                ),
-                "--headless",
-                "--timeout-minutes",
-                "1",
-                "--evidence-dir",
-                str(run_dir / "buyee-auth-check"),
-            ],
-            root=root,
-            environment=environment,
-            logger=logger,
-            phase="Verify reusable Buyee HTTPS authentication",
-            status_file=status_file,
-            status=status,
-            allow_failure=True,
-        )
-
-        status["buyee_verifier_exit_code"] = auth_status
-        status["authentication_required"] = False
-        status["degraded"] = False
-
-        if auth_status == BUYEE_AUTHENTICATION_REQUIRED_EXIT_CODE:
-            logger.info(
-                "Saved Buyee session needs sign-in. "
-                "Opening the Buyee profile for 8 minutes."
-            )
-            headed_status, _headed_output = run_command(
-                [
-                    sys.executable,
-                    "scripts/verify_buyee_session.py",
-                    "--storage-state",
-                    str(buyee_storage_state),
-                    "--profile-dir",
-                    str(buyee_profile_dir),
-                    "--skip-http-preflight",
-                    "--timeout-minutes",
-                    "8",
-                    "--evidence-dir",
-                    str(run_dir / "buyee-sign-in"),
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase="Open Buyee so the saved profile can be signed in",
-                status_file=status_file,
-                status=status,
-                allow_failure=True,
-            )
-            status["buyee_sign_in_exit_code"] = headed_status
-            if headed_status == 0:
-                auth_status = 0
-                status["buyee_verifier_exit_code"] = 0
-                status["message"] = (
-                    "Buyee sign-in was saved. Continuing the Buyee crawl."
-                )
-
-        buyee_available = auth_status == 0
-
-        if auth_status == 0:
-            status["buyee_source_state"] = "available"
-            status["buyee_runtime_semantics"] = (
-                BUYEE_SOURCE_AVAILABLE
-            )
-        elif (
-            auth_status
-            == BUYEE_AUTHENTICATION_REQUIRED_EXIT_CODE
-        ):
-            status["authentication_required"] = True
-            status["buyee_source_state"] = (
-                "authentication_required"
-            )
-            status["buyee_runtime_semantics"] = (
-                "BUYEE_AUTHENTICATION_REQUIRED"
-            )
-
-            status["degraded"] = True
-            auth_message = (
-                "Buyee authentication is required; "
-                "continuing eBay and Gripsweat."
-            )
-            status["message"] = auth_message
-            set_marketplace_diagnostic(
-                status,
-                "buyee",
-                message=auth_message,
-                return_code=auth_status,
-            )
-            status["updated_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
-            write_json_atomic(
-                status_file,
-                status,
-            )
+        if arguments.skip_buyee:
             emit_source_state(
                 logger,
                 "Buyee",
-                "authentication_required",
+                "skipped",
                 status_file=status_file,
                 status=status,
             )
-        elif (
-            auth_status
-            == BUYEE_VERIFICATION_TIMEOUT_EXIT_CODE
-        ):
-            status["buyee_source_state"] = (
-                "verification_timeout"
-            )
-            status["buyee_runtime_semantics"] = (
-                "BUYEE_AUTHENTICATION_STATE_"
-                "INDETERMINATE_TIMEOUT"
-            )
-
-            status["degraded"] = True
-            status["message"] = (
-                "Buyee authentication verification timed out; "
-                "continuing eBay and Gripsweat."
-            )
-            status["updated_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
-            write_json_atomic(
-                status_file,
-                status,
-            )
-            emit_source_state(
-                logger,
-                "Buyee",
-                "failed",
-                status_file=status_file,
-                status=status,
-            )
-        elif (
-            auth_status
-            == BUYEE_ACCESS_BLOCKED_EXIT_CODE
-        ):
-            status["buyee_source_state"] = (
-                "unavailable_access_blocked"
-            )
-            status["buyee_runtime_semantics"] = (
-                BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED
-            )
-            status["degraded"] = True
-            status["message"] = (
-                "Buyee programmatic access is blocked; "
-                "continuing the remaining sources."
-            )
-            status["updated_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
-
-            write_json_atomic(
-                status_file,
-                status,
-            )
-
-            logger.warning("")
-            emit_source_state(
-                logger,
-                "Buyee",
-                "unavailable",
-                status_file=status_file,
-                status=status,
-            )
-
-            logger.warning(
-                "Buyee source unavailable: programmatic "
-                "access is blocked."
-            )
-            logger.warning(
-                "Skipping Buyee crawl, parse, synchronization, "
-                "and detail enrichment."
-            )
-            logger.warning(
-                "Continuing eBay and Gripsweat refreshes."
-            )
-
-            if arguments.require_all_sources:
-                status["message"] = (
-                    "Required source Buyee is unavailable; "
-                    "remaining marketplaces will still be attempted."
-                )
-                write_json_atomic(
-                    status_file,
-                    status,
-                )
-        elif (
-            auth_status
-            == BUYEE_MAINTENANCE_EXIT_CODE
-        ):
-            status["buyee_source_state"] = (
-                "unavailable_maintenance"
-            )
-            status["buyee_runtime_semantics"] = (
-                BUYEE_SOURCE_UNAVAILABLE_MAINTENANCE
-            )
-            status["degraded"] = True
-            status["message"] = (
-                "Buyee is undergoing maintenance; "
-                "continuing the remaining sources."
-            )
-            status["updated_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
-
-            write_json_atomic(
-                status_file,
-                status,
-            )
-
-            logger.warning("")
-            emit_source_state(
-                logger,
-                "Buyee",
-                "unavailable",
-                status_file=status_file,
-                status=status,
-            )
-
-            logger.warning(
-                "Buyee source unavailable: site maintenance "
-                "was detected."
-            )
-            logger.warning(
-                "Skipping Buyee crawl, parse, synchronization, "
-                "and detail enrichment."
-            )
-            logger.warning(
-                "Continuing eBay and Gripsweat refreshes."
-            )
-        else:
-            status["buyee_source_state"] = (
-                "verifier_error"
-            )
-            status["buyee_runtime_semantics"] = (
-                "BUYEE_VERIFIER_ERROR"
-            )
-
-            status["degraded"] = True
-            status["message"] = (
-                "Buyee authentication verifier failed with "
-                f"unexpected exit status {auth_status}; "
-                "continuing eBay and Gripsweat."
-            )
-            status["updated_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
-            write_json_atomic(
-                status_file,
-                status,
-            )
-            emit_source_state(
-                logger,
-                "Buyee",
-                "failed",
-                status_file=status_file,
-                status=status,
-            )
-
-        create_backup(
-            psql_url=psql_url,
-            backup_dir=(
-                root
-                / "backups"
-                / "private"
-                / "postgres"
-            ),
-            label=(
-                "auction_warehouse-before-latest-refresh"
-            ),
-            logger=logger,
-        )
-
-        buyee_public_status = 0
-        buyee_crawl_output = ""
-
-        if buyee_available:
-            (
-                buyee_public_status,
-                buyee_crawl_output,
-            ) = run_command(
-                [
-                    sys.executable,
-                    "scripts/crawl_buyee_public_sources.py",
-                    "--config",
-                    str(
-                        root
-                        / "config"
-                        / "buyee_sources.json"
-                    ),
-                    "--apply",
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase="Crawl public Buyee completed-auction sources",
-                status_file=status_file,
-                status=status,
-                allow_failure=True,
-            )
-
-        normalized_buyee_output = "\n".join(
-            line.strip()
-            for line in buyee_crawl_output.splitlines()
-        )
-
-        buyee_authentication_required = (
-            BUYEE_PUBLIC_AUTHENTICATION_REDIRECT_MARKER
-            in normalized_buyee_output
-        )
-
-        status["buyee_public_exit_code"] = (
-            buyee_public_status
-        )
-
-        if (
-            buyee_available
-            and buyee_public_status != 0
-        ):
-            status["degraded"] = True
-            status["updated_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
-
-            if buyee_authentication_required:
-                public_failure_message = (
-                    "Public Buyee acquisition was redirected to "
-                    "authentication; skipping remaining Buyee "
-                    "acquisition and continuing other marketplaces."
-                )
-                status["authentication_required"] = True
-                status["buyee_source_state"] = (
-                    "authentication_required"
-                )
-                status["buyee_runtime_semantics"] = (
-                    "BUYEE_PUBLIC_AUTHENTICATION_REDIRECT"
-                )
-                source_state = "authentication_required"
-            elif (
-                "BUYEE_PUBLIC_RESULT=ACCESS_BLOCKED"
-                in normalized_buyee_output
-            ):
-                public_failure_message = (
-                    "Public Buyee acquisition encountered an "
-                    "access-control block; skipping remaining Buyee "
-                    "acquisition and continuing other marketplaces."
-                )
-                status["buyee_source_state"] = (
-                    "unavailable_access_blocked"
-                )
-                status["buyee_runtime_semantics"] = (
-                    "BUYEE_PUBLIC_ACCESS_BLOCKED"
-                )
-                source_state = "unavailable"
-            elif (
-                "BUYEE_PUBLIC_RESULT=NO_USABLE_RESULTS"
-                in normalized_buyee_output
-            ):
-                public_failure_message = (
-                    "Public Buyee acquisition produced no usable "
-                    "results; skipping remaining Buyee acquisition "
-                    "and continuing other marketplaces."
-                )
-                status["buyee_source_state"] = (
-                    "unavailable_no_results"
-                )
-                status["buyee_runtime_semantics"] = (
-                    "BUYEE_PUBLIC_NO_USABLE_RESULTS"
-                )
-                source_state = "unavailable"
-            else:
-                public_failure_message = (
-                    "Public Buyee acquisition failed with status "
-                    f"{buyee_public_status}; skipping remaining "
-                    "Buyee acquisition and continuing other "
-                    "marketplaces."
-                )
-                status["buyee_source_state"] = (
-                    "public_crawl_failed"
-                )
-                status["buyee_runtime_semantics"] = (
-                    "BUYEE_PUBLIC_CRAWL_FAILED"
-                )
-                source_state = "failed"
-
-            status["message"] = (
-                public_failure_message
-            )
-
-            set_marketplace_diagnostic(
-                status,
-                "buyee",
-                message=public_failure_message,
-                return_code=buyee_public_status,
-                command_output_tail=(
-                    bounded_command_output(
-                        buyee_crawl_output
-                    )
-                ),
-            )
-
-            write_json_atomic(
-                status_file,
-                status,
-            )
-
-            emit_source_state(
-                logger,
-                "Buyee",
-                source_state,
-                status_file=status_file,
-                status=status,
-            )
-
-            logger.warning(
-                public_failure_message
-            )
-
             buyee_available = False
-
-        if buyee_available:
-            _, buyee_crawl_output = run_command(
-                [
-                    sys.executable,
-                    "scripts/crawl_buyee_http.py",
-                    "--state-file",
-                    environment.get(
-                        "AUCTION_BUYEE_STORAGE_STATE",
-                        str(buyee_storage_state),
-                    ),
-                    "--url",
-                    BUYEE_URL,
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase="Crawl authenticated Buyee closed watchlist",
+            status["buyee_source_state"] = "skipped"
+            status["buyee_runtime_semantics"] = (
+                "BUYEE_SKIPPED_OPTIONAL"
+            )
+            status["message"] = (
+                "Buyee skipped; Yahoo JP is the Japan comps path."
+            )
+            write_json_atomic(
+                status_file,
+                status,
+            )
+        else:
+            emit_source_state(
+                logger,
+                "Buyee",
+                "running",
                 status_file=status_file,
                 status=status,
             )
 
-            fetched_match = re.search(
-                r"Fetched\s+(\d+)\s+page",
-                buyee_crawl_output,
-                re.IGNORECASE,
+
+            buyee_owner_socket = Path(
+
+                environment.get(
+
+                    "AUCTION_BUYEE_OWNER_SOCKET",
+
+                    str(
+
+                        Path.home()
+
+                        / ".auction-etl"
+
+                        / "runtime"
+
+                        / "buyee-owner"
+
+                        / "owner.sock"
+
+                    ),
+
+                )
+
+            ).expanduser().resolve()
+
+
+
+            environment["AUCTION_BUYEE_PROFILE"] = (
+
+                arguments.buyee_profile
+
             )
+
+
+
+            default_buyee_profile_dir = (
+
+                root
+
+                / "profiles"
+
+                / arguments.buyee_profile
+
+            ).resolve()
+
+
+
+            buyee_profile_dir = Path(
+
+                environment.get(
+
+                    "AUCTION_BUYEE_PROFILE_DIR",
+
+                    str(
+
+                        default_buyee_profile_dir
+
+                    ),
+
+                )
+
+            ).expanduser()
+
+
+
+            if not buyee_profile_dir.is_absolute():
+
+                buyee_profile_dir = (
+
+                    root
+
+                    / buyee_profile_dir
+
+                )
+
+
+
+            buyee_profile_dir = (
+
+                buyee_profile_dir.resolve()
+
+            )
+
+
+
+            buyee_profile_dir.mkdir(
+
+                parents=True,
+
+                exist_ok=True,
+
+            )
+
+
+
+            environment[
+
+                "AUCTION_BUYEE_PROFILE_DIR"
+
+            ] = str(
+
+                buyee_profile_dir
+
+            )
+
+
+
+            configured_buyee_storage_state = (
+
+                environment.get(
+
+                    "AUCTION_BUYEE_STORAGE_STATE",
+
+                    "",
+
+                ).strip()
+
+                or environment.get(
+
+                    "BUYEE_STORAGE_STATE_FILE",
+
+                    "",
+
+                ).strip()
+
+            )
+
+
+
+            if configured_buyee_storage_state:
+
+                buyee_storage_state = Path(
+
+                    configured_buyee_storage_state
+
+                ).expanduser()
+
+            else:
+
+                buyee_storage_state = (
+
+                    buyee_profile_dir
+
+                    / ".auction-etl"
+
+                    / "private"
+
+                    / "buyee-storage-state.json"
+
+                )
+
+
+
+            if not buyee_storage_state.is_absolute():
+
+                buyee_storage_state = (
+
+                    root
+
+                    / buyee_storage_state
+
+                )
+
+
+
+            buyee_storage_state = (
+
+                buyee_storage_state.resolve()
+
+            )
+
+
+
+            buyee_storage_state.parent.mkdir(
+
+                parents=True,
+
+                exist_ok=True,
+
+            )
+
+
+
+            environment[
+
+                "AUCTION_BUYEE_STORAGE_STATE"
+
+            ] = str(
+
+                buyee_storage_state
+
+            )
+
+
+
+            environment[
+
+                "BUYEE_STORAGE_STATE_FILE"
+
+            ] = str(
+
+                buyee_storage_state
+
+            )
+
+
+
+            environment["AUCTION_BUYEE_OWNER_SOCKET"] = str(
+
+                buyee_owner_socket
+
+            )
+
+            environment.pop(
+
+                "AUCTION_BUYEE_CDP_URL",
+
+                None,
+
+            )
+
+
+
+            run_command(
+
+                [
+
+                    sys.executable,
+
+                    "scripts/ensure_buyee_owner.py",
+
+                    "--profile-dir",
+
+                    str(
+
+                        buyee_profile_dir
+
+                    ),
+
+                    "--socket-path",
+
+                    str(
+
+                        buyee_owner_socket
+
+                    ),
+
+                    "--timeout-seconds",
+
+                    "60",
+
+                ],
+
+                root=root,
+
+                environment=environment,
+
+                logger=logger,
+
+                phase="Ensure reusable Buyee browser owner",
+
+                status_file=status_file,
+
+                status=status,
+
+            )
+
+            logger.info(
+
+                "Buyee browser owner ready; "
+
+                "authenticated HTTPS mode is active."
+
+            )
+
+
+
+            status["buyee_profile"] = (
+
+                arguments.buyee_profile
+
+            )
+
+            status["buyee_owner_socket"] = str(
+
+                buyee_owner_socket
+
+            )
+
+            status.pop(
+
+                "buyee_cdp_url",
+
+                None,
+
+            )
+
+
+
+            auth_status, _ = run_command(
+
+                [
+
+                    sys.executable,
+
+                    "scripts/verify_buyee_session.py",
+
+                    "--storage-state",
+
+                    str(buyee_storage_state),
+
+                    "--profile-dir",
+
+                    str(
+
+                        buyee_profile_dir
+
+                    ),
+
+                    "--headless",
+
+                    "--timeout-minutes",
+
+                    "1",
+
+                    "--evidence-dir",
+
+                    str(run_dir / "buyee-auth-check"),
+
+                ],
+
+                root=root,
+
+                environment=environment,
+
+                logger=logger,
+
+                phase="Verify reusable Buyee HTTPS authentication",
+
+                status_file=status_file,
+
+                status=status,
+
+                allow_failure=True,
+
+            )
+
+
+
+            status["buyee_verifier_exit_code"] = auth_status
+
+            status["authentication_required"] = False
+
+            status["degraded"] = False
+
+
+
+            if auth_status == BUYEE_AUTHENTICATION_REQUIRED_EXIT_CODE:
+
+                logger.info(
+
+                    "Saved Buyee session needs sign-in. "
+
+                    "Opening the Buyee profile for 8 minutes."
+
+                )
+
+                headed_status, _headed_output = run_command(
+
+                    [
+
+                        sys.executable,
+
+                        "scripts/verify_buyee_session.py",
+
+                        "--storage-state",
+
+                        str(buyee_storage_state),
+
+                        "--profile-dir",
+
+                        str(buyee_profile_dir),
+
+                        "--skip-http-preflight",
+
+                        "--timeout-minutes",
+
+                        "8",
+
+                        "--evidence-dir",
+
+                        str(run_dir / "buyee-sign-in"),
+
+                    ],
+
+                    root=root,
+
+                    environment=environment,
+
+                    logger=logger,
+
+                    phase="Open Buyee so the saved profile can be signed in",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                    allow_failure=True,
+
+                )
+
+                status["buyee_sign_in_exit_code"] = headed_status
+
+                if headed_status == 0:
+
+                    auth_status = 0
+
+                    status["buyee_verifier_exit_code"] = 0
+
+                    status["message"] = (
+
+                        "Buyee sign-in was saved. Continuing the Buyee crawl."
+
+                    )
+
+
+
+            buyee_available = auth_status == 0
+
+
+
+            if auth_status == 0:
+
+                status["buyee_source_state"] = "available"
+
+                status["buyee_runtime_semantics"] = (
+
+                    BUYEE_SOURCE_AVAILABLE
+
+                )
+
+            elif (
+
+                auth_status
+
+                == BUYEE_AUTHENTICATION_REQUIRED_EXIT_CODE
+
+            ):
+
+                status["authentication_required"] = True
+
+                status["buyee_source_state"] = (
+
+                    "authentication_required"
+
+                )
+
+                status["buyee_runtime_semantics"] = (
+
+                    "BUYEE_AUTHENTICATION_REQUIRED"
+
+                )
+
+
+
+                status["degraded"] = True
+
+                auth_message = (
+
+                    "Buyee authentication is required; "
+
+                    "continuing eBay and Gripsweat."
+
+                )
+
+                status["message"] = auth_message
+
+                set_marketplace_diagnostic(
+
+                    status,
+
+                    "buyee",
+
+                    message=auth_message,
+
+                    return_code=auth_status,
+
+                )
+
+                status["updated_at"] = datetime.now(
+
+                    timezone.utc
+
+                ).isoformat()
+
+                write_json_atomic(
+
+                    status_file,
+
+                    status,
+
+                )
+
+                emit_source_state(
+
+                    logger,
+
+                    "Buyee",
+
+                    "authentication_required",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+            elif (
+
+                auth_status
+
+                == BUYEE_VERIFICATION_TIMEOUT_EXIT_CODE
+
+            ):
+
+                status["buyee_source_state"] = (
+
+                    "verification_timeout"
+
+                )
+
+                status["buyee_runtime_semantics"] = (
+
+                    "BUYEE_AUTHENTICATION_STATE_"
+
+                    "INDETERMINATE_TIMEOUT"
+
+                )
+
+
+
+                status["degraded"] = True
+
+                status["message"] = (
+
+                    "Buyee authentication verification timed out; "
+
+                    "continuing eBay and Gripsweat."
+
+                )
+
+                status["updated_at"] = datetime.now(
+
+                    timezone.utc
+
+                ).isoformat()
+
+                write_json_atomic(
+
+                    status_file,
+
+                    status,
+
+                )
+
+                emit_source_state(
+
+                    logger,
+
+                    "Buyee",
+
+                    "failed",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+            elif (
+
+                auth_status
+
+                == BUYEE_ACCESS_BLOCKED_EXIT_CODE
+
+            ):
+
+                status["buyee_source_state"] = (
+
+                    "unavailable_access_blocked"
+
+                )
+
+                status["buyee_runtime_semantics"] = (
+
+                    BUYEE_SOURCE_UNAVAILABLE_ACCESS_BLOCKED
+
+                )
+
+                status["degraded"] = True
+
+                status["message"] = (
+
+                    "Buyee programmatic access is blocked; "
+
+                    "continuing the remaining sources."
+
+                )
+
+                status["updated_at"] = datetime.now(
+
+                    timezone.utc
+
+                ).isoformat()
+
+
+
+                write_json_atomic(
+
+                    status_file,
+
+                    status,
+
+                )
+
+
+
+                logger.warning("")
+
+                emit_source_state(
+
+                    logger,
+
+                    "Buyee",
+
+                    "unavailable",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+
+
+                logger.warning(
+
+                    "Buyee source unavailable: programmatic "
+
+                    "access is blocked."
+
+                )
+
+                logger.warning(
+
+                    "Skipping Buyee crawl, parse, synchronization, "
+
+                    "and detail enrichment."
+
+                )
+
+                logger.warning(
+
+                    "Continuing eBay and Gripsweat refreshes."
+
+                )
+
+
+
+                if arguments.require_all_sources:
+
+                    status["message"] = (
+
+                        "Required source Buyee is unavailable; "
+
+                        "remaining marketplaces will still be attempted."
+
+                    )
+
+                    write_json_atomic(
+
+                        status_file,
+
+                        status,
+
+                    )
+
+            elif (
+
+                auth_status
+
+                == BUYEE_MAINTENANCE_EXIT_CODE
+
+            ):
+
+                status["buyee_source_state"] = (
+
+                    "unavailable_maintenance"
+
+                )
+
+                status["buyee_runtime_semantics"] = (
+
+                    BUYEE_SOURCE_UNAVAILABLE_MAINTENANCE
+
+                )
+
+                status["degraded"] = True
+
+                status["message"] = (
+
+                    "Buyee is undergoing maintenance; "
+
+                    "continuing the remaining sources."
+
+                )
+
+                status["updated_at"] = datetime.now(
+
+                    timezone.utc
+
+                ).isoformat()
+
+
+
+                write_json_atomic(
+
+                    status_file,
+
+                    status,
+
+                )
+
+
+
+                logger.warning("")
+
+                emit_source_state(
+
+                    logger,
+
+                    "Buyee",
+
+                    "unavailable",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+
+
+                logger.warning(
+
+                    "Buyee source unavailable: site maintenance "
+
+                    "was detected."
+
+                )
+
+                logger.warning(
+
+                    "Skipping Buyee crawl, parse, synchronization, "
+
+                    "and detail enrichment."
+
+                )
+
+                logger.warning(
+
+                    "Continuing eBay and Gripsweat refreshes."
+
+                )
+
+            else:
+
+                status["buyee_source_state"] = (
+
+                    "verifier_error"
+
+                )
+
+                status["buyee_runtime_semantics"] = (
+
+                    "BUYEE_VERIFIER_ERROR"
+
+                )
+
+
+
+                status["degraded"] = True
+
+                status["message"] = (
+
+                    "Buyee authentication verifier failed with "
+
+                    f"unexpected exit status {auth_status}; "
+
+                    "continuing eBay and Gripsweat."
+
+                )
+
+                status["updated_at"] = datetime.now(
+
+                    timezone.utc
+
+                ).isoformat()
+
+                write_json_atomic(
+
+                    status_file,
+
+                    status,
+
+                )
+
+                emit_source_state(
+
+                    logger,
+
+                    "Buyee",
+
+                    "failed",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+
+
+            create_backup(
+
+                psql_url=psql_url,
+
+                backup_dir=(
+
+                    root
+
+                    / "backups"
+
+                    / "private"
+
+                    / "postgres"
+
+                ),
+
+                label=(
+
+                    "auction_warehouse-before-latest-refresh"
+
+                ),
+
+                logger=logger,
+
+            )
+
+
+
+            buyee_public_status = 0
+
+            buyee_crawl_output = ""
+
+
+
+            if buyee_available:
+
+                (
+
+                    buyee_public_status,
+
+                    buyee_crawl_output,
+
+                ) = run_command(
+
+                    [
+
+                        sys.executable,
+
+                        "scripts/crawl_buyee_public_sources.py",
+
+                        "--config",
+
+                        str(
+
+                            root
+
+                            / "config"
+
+                            / "buyee_sources.json"
+
+                        ),
+
+                        "--apply",
+
+                    ],
+
+                    root=root,
+
+                    environment=environment,
+
+                    logger=logger,
+
+                    phase="Crawl public Buyee completed-auction sources",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                    allow_failure=True,
+
+                )
+
+
+
+            normalized_buyee_output = "\n".join(
+
+                line.strip()
+
+                for line in buyee_crawl_output.splitlines()
+
+            )
+
+
+
+            buyee_authentication_required = (
+
+                BUYEE_PUBLIC_AUTHENTICATION_REDIRECT_MARKER
+
+                in normalized_buyee_output
+
+            )
+
+
+
+            status["buyee_public_exit_code"] = (
+
+                buyee_public_status
+
+            )
+
+
 
             if (
-                fetched_match is not None
-                and int(fetched_match.group(1)) < 1
+
+                buyee_available
+
+                and buyee_public_status != 0
+
             ):
-                status["authentication_required"] = True
-                raise RuntimeError(
-                    "Buyee returned zero fetched pages."
-                )
 
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "auction_etl.cli.main",
-                    "parse",
-                    "latest",
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase="Parse latest Buyee pages",
-                status_file=status_file,
-                status=status,
-            )
+                status["degraded"] = True
 
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "auction_etl.cli.main",
-                    "normalize",
-                    "staging",
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase="Normalize Buyee staging",
-                status_file=status_file,
-                status=status,
-            )
+                status["updated_at"] = datetime.now(
 
-            with psycopg.connect(
-                psql_url,
-                row_factory=dict_row,
-            ) as connection:
-                buyee_staged = staging_count(
-                    connection,
-                    "buyee",
-                )
+                    timezone.utc
+
+                ).isoformat()
 
 
-                run_started = str(
-                    status[
-                        "started_at"
-                    ]
-                )
-                buyee_discovery_pages = int(
-                    scalar(
-                        connection,
-                        """
-                        SELECT COUNT(*)
-                        FROM raw.page
-                        WHERE source = 'buyee'
-                          AND downloaded_at
-                              >= %s::timestamptz
-                        """,
-                        (
-                            run_started,
-                        ),
+
+                if buyee_authentication_required:
+
+                    public_failure_message = (
+
+                        "Public Buyee acquisition was redirected to "
+
+                        "authentication; skipping remaining Buyee "
+
+                        "acquisition and continuing other marketplaces."
+
                     )
-                )
-                buyee_discovered_count = int(
-                    scalar(
-                        connection,
-                        """
-                        SELECT COUNT(
-                            DISTINCT listing.listing_id
-                        )
-                        FROM staging.listing AS listing
-                        JOIN raw.page AS page
-                          ON page.id
-                             = listing.raw_page_id
-                        WHERE page.source = 'buyee'
-                          AND page.downloaded_at
-                              >= %s::timestamptz
-                        """,
-                        (
-                            run_started,
-                        ),
+
+                    status["authentication_required"] = True
+
+                    status["buyee_source_state"] = (
+
+                        "authentication_required"
+
                     )
-                )
 
-            if buyee_staged < 1:
-                raise RuntimeError(
-                    "No Buyee identities exist in staging."
-                )
+                    status["buyee_runtime_semantics"] = (
 
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "auction_etl.cli.main",
-                    "sync",
-                    "warehouse",
-                    "--marketplace",
-                    "buyee",
-                    "--no-prune",
-                ],
-                root=root,
-                environment=environment,
-                logger=logger,
-                phase=(
-                    "Safely synchronize Buyee without pruning"
-                ),
-                status_file=status_file,
-                status=status,
-            )
+                        "BUYEE_PUBLIC_AUTHENTICATION_REDIRECT"
 
-            with psycopg.connect(
-                psql_url,
-                row_factory=dict_row,
-            ) as connection:
-                buyee_listing_ids_after = {
-                    str(row["listing_id"])
-                    for row in connection.execute(
-                        """
-                        SELECT listing_id
-                        FROM warehouse.auction
-                        WHERE marketplace = %s
-                        """,
-                        ("buyee",),
-                    ).fetchall()
-                }
-                buyee_retry_detail_ids = sorted(
-                    {
-                        str(row["listing_id"])
-                        for row in connection.execute(
-                            """
-                            SELECT auction.listing_id
-                            FROM warehouse.auction
-                                AS auction
-                            JOIN staging.listing
-                                AS listing
-                              ON listing.marketplace
-                                 = auction.marketplace
-                             AND listing.listing_id
-                                 = auction.listing_id
-                            JOIN raw.page AS page
-                              ON page.id
-                                 = listing.raw_page_id
-                            LEFT JOIN warehouse.auction_detail
-                                AS detail
-                              ON detail.marketplace
-                                 = auction.marketplace
-                             AND detail.listing_id
-                                 = auction.listing_id
-                            WHERE auction.marketplace = %s
-                              AND page.downloaded_at
-                                  >= %s::timestamptz
-                              AND (
-                                (
-                                  auction.ended_at IS NULL
-                                  AND auction.closing_at
-                                      IS NULL
-                                )
-                                OR detail.listing_id IS NULL
-                                OR detail.detail_status
-                                   IS DISTINCT FROM
-                                   'complete'
-                              )
-                            """,
-                            (
-                                "buyee",
-                                str(
-                                    status[
-                                        "started_at"
-                                    ]
-                                ),
-                            ),
-                        ).fetchall()
-                    }
-                )
+                    )
 
-            buyee_new_listing_ids = sorted(
-                buyee_listing_ids_after
-                - buyee_listing_ids_before
-            )
-            buyee_detail_listing_ids = sorted(
-                set(buyee_new_listing_ids)
-                | set(buyee_retry_detail_ids)
-            )
+                    source_state = "authentication_required"
 
+                elif (
 
-            buyee_new_count = len(
-                buyee_new_listing_ids
-            )
+                    "BUYEE_PUBLIC_RESULT=ACCESS_BLOCKED"
 
-            buyee_already_known = max(
-                0,
-                buyee_discovered_count
-                - buyee_new_count,
-            )
+                    in normalized_buyee_output
 
-            _set_incremental_progress(
-                status,
-                status_file,
-                "buyee",
-                {
-                    "discovered":
-                        buyee_discovered_count,
-                    "already_known":
-                        buyee_already_known,
-                    "new":
-                        buyee_new_count,
-                    "detail_scraped":
-                        0,
-                    "detail_skipped":
-                        buyee_already_known,
-                    "discovery_pages":
-                        buyee_discovery_pages,
-                    "consecutive_known_at_stop":
-                        0,
-                },
-            )
-
-            publish_source_visibility(
-                database_url=psql_url,
-                logger=logger,
-                source="Buyee",
-            )
-
-            status[
-                "buyee_new_listing_count"
-            ] = len(
-                buyee_new_listing_ids
-            )
-            status[
-                "buyee_detail_candidate_count"
-            ] = len(
-                buyee_detail_listing_ids
-            )
-            status[
-                "buyee_existing_listing_count"
-            ] = len(
-                buyee_listing_ids_before
-            )
-            status["message"] = (
-                "Buyee identity synchronization complete: "
-                f"{len(buyee_new_listing_ids)} new listing(s) "
-                "require detail enrichment."
-            )
-            status["updated_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
-
-            write_json_atomic(
-                status_file,
-                status,
-            )
-
-            logger.info("")
-            logger.info(
-                "Buyee new-only detail enrichment"
-            )
-            logger.debug(
-                "Buyee internal-owner compatibility: %s %s",
-                "scripts/run_buyee_owner_job.py",
-                "crawl_live_details",
-            )
-            logger.info(
-                "--------------------------------"
-            )
-            logger.info(
-                "Existing before refresh : %s",
-                len(
-                    buyee_listing_ids_before
-                ),
-            )
-            logger.info(
-                "Warehouse after refresh : %s",
-                len(
-                    buyee_listing_ids_after
-                ),
-            )
-            logger.info(
-                "New detail candidates   : %s",
-                len(
-                    buyee_new_listing_ids
-                ),
-            )
-            logger.info(
-                "Retry incomplete details: %s",
-                len(
-                    buyee_retry_detail_ids
-                ),
-            )
-            logger.info(
-                "Complete existing listing details are not "
-                "revisited by the normal latest refresh."
-            )
-
-            if buyee_new_listing_ids or buyee_retry_detail_ids:
-                buyee_detail_command = [
-                    sys.executable,
-                    "scripts/crawl_buyee_http_details.py",
-                    "--state-file",
-                    str(
-                        buyee_storage_state
-                    ),
-                    "--apply",
-                    "--delay",
-                    "2",
-                    "--timeout",
-                    "45",
-                    "--log-dir",
-                    str(
-                        run_dir
-                        / "buyee-details"
-                    ),
-                ]
-
-                for listing_id in (
-                    buyee_detail_listing_ids
                 ):
-                    buyee_detail_command.extend(
-                        [
-                            "--listing-id",
-                            listing_id,
-                        ]
+
+                    public_failure_message = (
+
+                        "Public Buyee acquisition encountered an "
+
+                        "access-control block; skipping remaining Buyee "
+
+                        "acquisition and continuing other marketplaces."
+
                     )
 
-                buyee_detail_status, _ = run_command(
-                    buyee_detail_command,
-                    root=root,
-                    environment=environment,
-                    logger=logger,
-                    phase=(
-                        "Apply new-only Buyee HTTPS "
-                        "detail enrichment"
+                    status["buyee_source_state"] = (
+
+                        "unavailable_access_blocked"
+
+                    )
+
+                    status["buyee_runtime_semantics"] = (
+
+                        "BUYEE_PUBLIC_ACCESS_BLOCKED"
+
+                    )
+
+                    source_state = "unavailable"
+
+                elif (
+
+                    "BUYEE_PUBLIC_RESULT=NO_USABLE_RESULTS"
+
+                    in normalized_buyee_output
+
+                ):
+
+                    public_failure_message = (
+
+                        "Public Buyee acquisition produced no usable "
+
+                        "results; skipping remaining Buyee acquisition "
+
+                        "and continuing other marketplaces."
+
+                    )
+
+                    status["buyee_source_state"] = (
+
+                        "unavailable_no_results"
+
+                    )
+
+                    status["buyee_runtime_semantics"] = (
+
+                        "BUYEE_PUBLIC_NO_USABLE_RESULTS"
+
+                    )
+
+                    source_state = "unavailable"
+
+                else:
+
+                    public_failure_message = (
+
+                        "Public Buyee acquisition failed with status "
+
+                        f"{buyee_public_status}; skipping remaining "
+
+                        "Buyee acquisition and continuing other "
+
+                        "marketplaces."
+
+                    )
+
+                    status["buyee_source_state"] = (
+
+                        "public_crawl_failed"
+
+                    )
+
+                    status["buyee_runtime_semantics"] = (
+
+                        "BUYEE_PUBLIC_CRAWL_FAILED"
+
+                    )
+
+                    source_state = "failed"
+
+
+
+                status["message"] = (
+
+                    public_failure_message
+
+                )
+
+
+
+                set_marketplace_diagnostic(
+
+                    status,
+
+                    "buyee",
+
+                    message=public_failure_message,
+
+                    return_code=buyee_public_status,
+
+                    command_output_tail=(
+
+                        bounded_command_output(
+
+                            buyee_crawl_output
+
+                        )
+
                     ),
+
+                )
+
+
+
+                write_json_atomic(
+
+                    status_file,
+
+                    status,
+
+                )
+
+
+
+                emit_source_state(
+
+                    logger,
+
+                    "Buyee",
+
+                    source_state,
+
                     status_file=status_file,
+
                     status=status,
-                    allow_failure=True,
+
                 )
 
-                buyee_detail_summary = (
-                    run_dir
-                    / "buyee-details"
-                    / "crawl_summary.json"
+
+
+                logger.warning(
+
+                    public_failure_message
+
                 )
 
-                if not buyee_detail_summary.is_file():
-                    raise RuntimeError(
-                        "Buyee HTTPS detail crawler did not "
-                        "produce crawl_summary.json."
-                    )
 
-                buyee_detail_results = json.loads(
-                    buyee_detail_summary.read_text(
-                        encoding="utf-8",
-                    )
-                )
 
-                if not isinstance(
-                    buyee_detail_results,
-                    list,
-                ):
-                    raise RuntimeError(
-                        "Buyee HTTPS detail summary must be an array."
-                    )
+                buyee_available = False
 
-                buyee_waf_listing_ids: list[str] = []
-                buyee_non_waf_failures: list[str] = []
 
-                for result in buyee_detail_results:
-                    if not isinstance(
-                        result,
-                        dict,
-                    ):
-                        raise RuntimeError(
-                            "Buyee HTTPS detail summary row "
-                            "must be an object."
-                        )
 
-                    if (
-                        str(
-                            result.get(
-                                "detail_status",
-                                "",
-                            )
-                        )
-                        != "error"
-                    ):
-                        continue
+            if buyee_available:
 
-                    listing_id = str(
-                        result.get(
-                            "listing_id",
-                            "",
-                        )
-                    ).strip()
+                _, buyee_crawl_output = run_command(
 
-                    error_message = str(
-                        result.get(
-                            "error_message",
-                            "",
-                        )
-                    )
+                    [
 
-                    if (
-                        listing_id
-                        and "AWS_WAF_CHALLENGE"
-                        in error_message
-                    ):
-                        buyee_waf_listing_ids.append(
-                            listing_id
-                        )
-                    else:
-                        buyee_non_waf_failures.append(
-                            (
-                                listing_id
-                                or "<unknown>"
-                            )
-                            + ": "
-                            + (
-                                error_message
-                                or "<missing error>"
-                            )
-                        )
-
-                if buyee_non_waf_failures:
-                    logger.warning(
-                        "Buyee HTTPS detail enrichment had "
-                        "non-WAF failures; continuing refresh: "
-                        + " | ".join(
-                            buyee_non_waf_failures
-                        )
-                    )
-                    status["degraded"] = True
-
-                if buyee_waf_listing_ids:
-                    logger.warning(
-                        "Buyee HTTPS detail WAF fallback: "
-                        "%d listing(s) require the authenticated "
-                        "persistent browser owner.",
-                        len(
-                            buyee_waf_listing_ids
-                        ),
-                    )
-
-                    buyee_browser_fallback_command = [
                         sys.executable,
-                        "scripts/run_buyee_owner_job.py",
-                        "crawl_live_details",
-                        "--socket-path",
-                        str(
-                            buyee_owner_socket
+
+                        "scripts/crawl_buyee_http.py",
+
+                        "--state-file",
+
+                        environment.get(
+
+                            "AUCTION_BUYEE_STORAGE_STATE",
+
+                            str(buyee_storage_state),
+
                         ),
-                        "--timeout-seconds",
-                        "600",
-                        "--",
+
+                        "--url",
+
+                        BUYEE_URL,
+
+                    ],
+
+                    root=root,
+
+                    environment=environment,
+
+                    logger=logger,
+
+                    phase="Crawl authenticated Buyee closed watchlist",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+
+
+                fetched_match = re.search(
+
+                    r"Fetched\s+(\d+)\s+page",
+
+                    buyee_crawl_output,
+
+                    re.IGNORECASE,
+
+                )
+
+
+
+                if (
+
+                    fetched_match is not None
+
+                    and int(fetched_match.group(1)) < 1
+
+                ):
+
+                    status["authentication_required"] = True
+
+                    raise RuntimeError(
+
+                        "Buyee returned zero fetched pages."
+
+                    )
+
+
+
+                run_command(
+
+                    [
+
+                        sys.executable,
+
+                        "-m",
+
+                        "auction_etl.cli.main",
+
+                        "parse",
+
+                        "latest",
+
+                    ],
+
+                    root=root,
+
+                    environment=environment,
+
+                    logger=logger,
+
+                    phase="Parse latest Buyee pages",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+
+
+                run_command(
+
+                    [
+
+                        sys.executable,
+
+                        "-m",
+
+                        "auction_etl.cli.main",
+
+                        "normalize",
+
+                        "staging",
+
+                    ],
+
+                    root=root,
+
+                    environment=environment,
+
+                    logger=logger,
+
+                    phase="Normalize Buyee staging",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+
+
+                with psycopg.connect(
+
+                    psql_url,
+
+                    row_factory=dict_row,
+
+                ) as connection:
+
+                    buyee_staged = staging_count(
+
+                        connection,
+
+                        "buyee",
+
+                    )
+
+
+
+
+
+                    run_started = str(
+
+                        status[
+
+                            "started_at"
+
+                        ]
+
+                    )
+
+                    buyee_discovery_pages = int(
+
+                        scalar(
+
+                            connection,
+
+                            """
+
+                            SELECT COUNT(*)
+
+                            FROM raw.page
+
+                            WHERE source = 'buyee'
+
+                              AND downloaded_at
+
+                                  >= %s::timestamptz
+
+                            """,
+
+                            (
+
+                                run_started,
+
+                            ),
+
+                        )
+
+                    )
+
+                    buyee_discovered_count = int(
+
+                        scalar(
+
+                            connection,
+
+                            """
+
+                            SELECT COUNT(
+
+                                DISTINCT listing.listing_id
+
+                            )
+
+                            FROM staging.listing AS listing
+
+                            JOIN raw.page AS page
+
+                              ON page.id
+
+                                 = listing.raw_page_id
+
+                            WHERE page.source = 'buyee'
+
+                              AND page.downloaded_at
+
+                                  >= %s::timestamptz
+
+                            """,
+
+                            (
+
+                                run_started,
+
+                            ),
+
+                        )
+
+                    )
+
+
+
+                if buyee_staged < 1:
+
+                    raise RuntimeError(
+
+                        "No Buyee identities exist in staging."
+
+                    )
+
+
+
+                run_command(
+
+                    [
+
+                        sys.executable,
+
+                        "-m",
+
+                        "auction_etl.cli.main",
+
+                        "sync",
+
+                        "warehouse",
+
+                        "--marketplace",
+
+                        "buyee",
+
+                        "--no-prune",
+
+                    ],
+
+                    root=root,
+
+                    environment=environment,
+
+                    logger=logger,
+
+                    phase=(
+
+                        "Safely synchronize Buyee without pruning"
+
+                    ),
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
+
+
+                with psycopg.connect(
+
+                    psql_url,
+
+                    row_factory=dict_row,
+
+                ) as connection:
+
+                    buyee_listing_ids_after = {
+
+                        str(row["listing_id"])
+
+                        for row in connection.execute(
+
+                            """
+
+                            SELECT listing_id
+
+                            FROM warehouse.auction
+
+                            WHERE marketplace = %s
+
+                            """,
+
+                            ("buyee",),
+
+                        ).fetchall()
+
+                    }
+
+                    buyee_retry_detail_ids = sorted(
+
+                        {
+
+                            str(row["listing_id"])
+
+                            for row in connection.execute(
+
+                                """
+
+                                SELECT auction.listing_id
+
+                                FROM warehouse.auction
+
+                                    AS auction
+
+                                JOIN staging.listing
+
+                                    AS listing
+
+                                  ON listing.marketplace
+
+                                     = auction.marketplace
+
+                                 AND listing.listing_id
+
+                                     = auction.listing_id
+
+                                JOIN raw.page AS page
+
+                                  ON page.id
+
+                                     = listing.raw_page_id
+
+                                LEFT JOIN warehouse.auction_detail
+
+                                    AS detail
+
+                                  ON detail.marketplace
+
+                                     = auction.marketplace
+
+                                 AND detail.listing_id
+
+                                     = auction.listing_id
+
+                                WHERE auction.marketplace = %s
+
+                                  AND page.downloaded_at
+
+                                      >= %s::timestamptz
+
+                                  AND (
+
+                                    (
+
+                                      auction.ended_at IS NULL
+
+                                      AND auction.closing_at
+
+                                          IS NULL
+
+                                    )
+
+                                    OR detail.listing_id IS NULL
+
+                                    OR detail.detail_status
+
+                                       IS DISTINCT FROM
+
+                                       'complete'
+
+                                  )
+
+                                """,
+
+                                (
+
+                                    "buyee",
+
+                                    str(
+
+                                        status[
+
+                                            "started_at"
+
+                                        ]
+
+                                    ),
+
+                                ),
+
+                            ).fetchall()
+
+                        }
+
+                    )
+
+
+
+                buyee_new_listing_ids = sorted(
+
+                    buyee_listing_ids_after
+
+                    - buyee_listing_ids_before
+
+                )
+
+                buyee_detail_listing_ids = sorted(
+
+                    set(buyee_new_listing_ids)
+
+                    | set(buyee_retry_detail_ids)
+
+                )
+
+
+
+
+
+                buyee_new_count = len(
+
+                    buyee_new_listing_ids
+
+                )
+
+
+
+                buyee_already_known = max(
+
+                    0,
+
+                    buyee_discovered_count
+
+                    - buyee_new_count,
+
+                )
+
+
+
+                _set_incremental_progress(
+
+                    status,
+
+                    status_file,
+
+                    "buyee",
+
+                    {
+
+                        "discovered":
+
+                            buyee_discovered_count,
+
+                        "already_known":
+
+                            buyee_already_known,
+
+                        "new":
+
+                            buyee_new_count,
+
+                        "detail_scraped":
+
+                            0,
+
+                        "detail_skipped":
+
+                            buyee_already_known,
+
+                        "discovery_pages":
+
+                            buyee_discovery_pages,
+
+                        "consecutive_known_at_stop":
+
+                            0,
+
+                    },
+
+                )
+
+
+
+                publish_source_visibility(
+
+                    database_url=psql_url,
+
+                    logger=logger,
+
+                    source="Buyee",
+
+                )
+
+
+
+                status[
+
+                    "buyee_new_listing_count"
+
+                ] = len(
+
+                    buyee_new_listing_ids
+
+                )
+
+                status[
+
+                    "buyee_detail_candidate_count"
+
+                ] = len(
+
+                    buyee_detail_listing_ids
+
+                )
+
+                status[
+
+                    "buyee_existing_listing_count"
+
+                ] = len(
+
+                    buyee_listing_ids_before
+
+                )
+
+                status["message"] = (
+
+                    "Buyee identity synchronization complete: "
+
+                    f"{len(buyee_new_listing_ids)} new listing(s) "
+
+                    "require detail enrichment."
+
+                )
+
+                status["updated_at"] = datetime.now(
+
+                    timezone.utc
+
+                ).isoformat()
+
+
+
+                write_json_atomic(
+
+                    status_file,
+
+                    status,
+
+                )
+
+
+
+                logger.info("")
+
+                logger.info(
+
+                    "Buyee new-only detail enrichment"
+
+                )
+
+                logger.debug(
+
+                    "Buyee internal-owner compatibility: %s %s",
+
+                    "scripts/run_buyee_owner_job.py",
+
+                    "crawl_live_details",
+
+                )
+
+                logger.info(
+
+                    "--------------------------------"
+
+                )
+
+                logger.info(
+
+                    "Existing before refresh : %s",
+
+                    len(
+
+                        buyee_listing_ids_before
+
+                    ),
+
+                )
+
+                logger.info(
+
+                    "Warehouse after refresh : %s",
+
+                    len(
+
+                        buyee_listing_ids_after
+
+                    ),
+
+                )
+
+                logger.info(
+
+                    "New detail candidates   : %s",
+
+                    len(
+
+                        buyee_new_listing_ids
+
+                    ),
+
+                )
+
+                logger.info(
+
+                    "Retry incomplete details: %s",
+
+                    len(
+
+                        buyee_retry_detail_ids
+
+                    ),
+
+                )
+
+                logger.info(
+
+                    "Complete existing listing details are not "
+
+                    "revisited by the normal latest refresh."
+
+                )
+
+
+
+                if buyee_new_listing_ids or buyee_retry_detail_ids:
+
+                    buyee_detail_command = [
+
+                        sys.executable,
+
+                        "scripts/crawl_buyee_http_details.py",
+
+                        "--state-file",
+
+                        str(
+
+                            buyee_storage_state
+
+                        ),
+
                         "--apply",
-                        "--refresh",
-                        "--headed",
-                        "--authentication-timeout-minutes",
-                        "8",
-                        "--profile-dir",
-                        str(
-                            buyee_profile_dir
-                        ),
+
                         "--delay",
-                        "1",
+
+                        "2",
+
                         "--timeout",
+
                         "45",
+
                         "--log-dir",
+
                         str(
+
                             run_dir
-                            / "buyee-details-browser-fallback"
+
+                            / "buyee-details"
+
                         ),
+
                     ]
+
+
 
                     for listing_id in (
-                        buyee_waf_listing_ids
+
+                        buyee_detail_listing_ids
+
                     ):
-                        buyee_browser_fallback_command.extend(
+
+                        buyee_detail_command.extend(
+
                             [
+
                                 "--listing-id",
+
                                 listing_id,
+
                             ]
+
                         )
 
-                    (
-                        buyee_browser_fallback_status,
-                        buyee_browser_fallback_output,
-                    ) = run_command(
-                        buyee_browser_fallback_command,
+
+
+                    buyee_detail_status, _ = run_command(
+
+                        buyee_detail_command,
+
                         root=root,
+
                         environment=environment,
+
                         logger=logger,
+
                         phase=(
-                            "Apply WAF-only Buyee browser "
-                            "detail fallback"
+
+                            "Apply new-only Buyee HTTPS "
+
+                            "detail enrichment"
+
                         ),
+
                         status_file=status_file,
+
                         status=status,
+
                         allow_failure=True,
+
                     )
 
-                    if (
-                        buyee_browser_fallback_status
-                        != 0
+
+
+                    buyee_detail_summary = (
+
+                        run_dir
+
+                        / "buyee-details"
+
+                        / "crawl_summary.json"
+
+                    )
+
+
+
+                    if not buyee_detail_summary.is_file():
+
+                        raise RuntimeError(
+
+                            "Buyee HTTPS detail crawler did not "
+
+                            "produce crawl_summary.json."
+
+                        )
+
+
+
+                    buyee_detail_results = json.loads(
+
+                        buyee_detail_summary.read_text(
+
+                            encoding="utf-8",
+
+                        )
+
+                    )
+
+
+
+                    if not isinstance(
+
+                        buyee_detail_results,
+
+                        list,
+
                     ):
-                        partial_message = (
-                            "Buyee sales were added successfully, "
-                            "but some protected listing details "
-                            "could not be enriched. "
-                            "Continuing eBay and Gripsweat."
+
+                        raise RuntimeError(
+
+                            "Buyee HTTPS detail summary must be an array."
+
                         )
 
-                        status[
-                            "buyee_runtime_semantics"
-                        ] = (
-                            "BUYEE_DETAIL_ENRICHMENT_PARTIAL"
+
+
+                    buyee_waf_listing_ids: list[str] = []
+
+                    buyee_non_waf_failures: list[str] = []
+
+
+
+                    for result in buyee_detail_results:
+
+                        if not isinstance(
+
+                            result,
+
+                            dict,
+
+                        ):
+
+                            raise RuntimeError(
+
+                                "Buyee HTTPS detail summary row "
+
+                                "must be an object."
+
+                            )
+
+
+
+                        if (
+
+                            str(
+
+                                result.get(
+
+                                    "detail_status",
+
+                                    "",
+
+                                )
+
+                            )
+
+                            != "error"
+
+                        ):
+
+                            continue
+
+
+
+                        listing_id = str(
+
+                            result.get(
+
+                                "listing_id",
+
+                                "",
+
+                            )
+
+                        ).strip()
+
+
+
+                        error_message = str(
+
+                            result.get(
+
+                                "error_message",
+
+                                "",
+
+                            )
+
                         )
 
-                        status[
-                            "buyee_detail_incomplete"
-                        ] = len(
-                            buyee_waf_listing_ids
+
+
+                        if (
+
+                            listing_id
+
+                            and "AWS_WAF_CHALLENGE"
+
+                            in error_message
+
+                        ):
+
+                            buyee_waf_listing_ids.append(
+
+                                listing_id
+
+                            )
+
+                        else:
+
+                            buyee_non_waf_failures.append(
+
+                                (
+
+                                    listing_id
+
+                                    or "<unknown>"
+
+                                )
+
+                                + ": "
+
+                                + (
+
+                                    error_message
+
+                                    or "<missing error>"
+
+                                )
+
+                            )
+
+
+
+                    if buyee_non_waf_failures:
+
+                        logger.warning(
+
+                            "Buyee HTTPS detail enrichment had "
+
+                            "non-WAF failures; continuing refresh: "
+
+                            + " | ".join(
+
+                                buyee_non_waf_failures
+
+                            )
+
                         )
 
                         status["degraded"] = True
 
-                        set_marketplace_diagnostic(
-                            status,
-                            "buyee",
-                            message=partial_message,
-                            return_code=(
-                                buyee_browser_fallback_status
-                            ),
-                            incomplete_details=len(
-                                buyee_waf_listing_ids
-                            ),
-                            command_output_tail=(
-                                bounded_command_output(
-                                    buyee_browser_fallback_output
-                                )
-                            ),
-                        )
+
+
+                    if (
+
+                        buyee_waf_listing_ids
+
+                        and arguments.skip_buyee_detail
+
+                    ):
 
                         logger.warning(
-                            partial_message
+
+                            "Skipping Buyee WAF browser detail fallback for "
+
+                            "%d listing(s) (--skip-buyee-detail).",
+
+                            len(
+
+                                buyee_waf_listing_ids
+
+                            ),
+
                         )
-                    else:
-                        status[
-                            "buyee_runtime_semantics"
-                        ] = BUYEE_SOURCE_AVAILABLE
 
-                    status[
-                        "buyee_browser_fallback_count"
-                    ] = len(
+                    if (
+
                         buyee_waf_listing_ids
+
+                        and not arguments.skip_buyee_detail
+
+                    ):
+
+                        logger.warning(
+
+                            "Buyee HTTPS detail WAF fallback: "
+
+                            "%d listing(s) require the authenticated "
+
+                            "persistent browser owner.",
+
+                            len(
+
+                                buyee_waf_listing_ids
+
+                            ),
+
+                        )
+
+
+
+                        buyee_browser_fallback_command = [
+
+                            sys.executable,
+
+                            "scripts/run_buyee_owner_job.py",
+
+                            "crawl_live_details",
+
+                            "--socket-path",
+
+                            str(
+
+                                buyee_owner_socket
+
+                            ),
+
+                            "--timeout-seconds",
+
+                            "600",
+
+                            "--",
+
+                            "--apply",
+
+                            "--refresh",
+
+                            "--headed",
+
+                            "--authentication-timeout-minutes",
+
+                            "8",
+
+                            "--profile-dir",
+
+                            str(
+
+                                buyee_profile_dir
+
+                            ),
+
+                            "--delay",
+
+                            "1",
+
+                            "--timeout",
+
+                            "45",
+
+                            "--log-dir",
+
+                            str(
+
+                                run_dir
+
+                                / "buyee-details-browser-fallback"
+
+                            ),
+
+                        ]
+
+
+
+                        for listing_id in (
+
+                            buyee_waf_listing_ids
+
+                        ):
+
+                            buyee_browser_fallback_command.extend(
+
+                                [
+
+                                    "--listing-id",
+
+                                    listing_id,
+
+                                ]
+
+                            )
+
+
+
+                        (
+
+                            buyee_browser_fallback_status,
+
+                            buyee_browser_fallback_output,
+
+                        ) = run_command(
+
+                            buyee_browser_fallback_command,
+
+                            root=root,
+
+                            environment=environment,
+
+                            logger=logger,
+
+                            phase=(
+
+                                "Apply WAF-only Buyee browser "
+
+                                "detail fallback"
+
+                            ),
+
+                            status_file=status_file,
+
+                            status=status,
+
+                            allow_failure=True,
+
+                        )
+
+
+
+                        if (
+
+                            buyee_browser_fallback_status
+
+                            != 0
+
+                        ):
+
+                            partial_message = (
+
+                                "Buyee sales were added successfully, "
+
+                                "but some protected listing details "
+
+                                "could not be enriched. "
+
+                                "Continuing eBay and Gripsweat."
+
+                            )
+
+
+
+                            status[
+
+                                "buyee_runtime_semantics"
+
+                            ] = (
+
+                                "BUYEE_DETAIL_ENRICHMENT_PARTIAL"
+
+                            )
+
+
+
+                            status[
+
+                                "buyee_detail_incomplete"
+
+                            ] = len(
+
+                                buyee_waf_listing_ids
+
+                            )
+
+
+
+                            status["degraded"] = True
+
+
+
+                            set_marketplace_diagnostic(
+
+                                status,
+
+                                "buyee",
+
+                                message=partial_message,
+
+                                return_code=(
+
+                                    buyee_browser_fallback_status
+
+                                ),
+
+                                incomplete_details=len(
+
+                                    buyee_waf_listing_ids
+
+                                ),
+
+                                command_output_tail=(
+
+                                    bounded_command_output(
+
+                                        buyee_browser_fallback_output
+
+                                    )
+
+                                ),
+
+                            )
+
+
+
+                            logger.warning(
+
+                                partial_message
+
+                            )
+
+                        else:
+
+                            status[
+
+                                "buyee_runtime_semantics"
+
+                            ] = BUYEE_SOURCE_AVAILABLE
+
+
+
+                        status[
+
+                            "buyee_browser_fallback_count"
+
+                        ] = len(
+
+                            buyee_waf_listing_ids
+
+                        )
+
+
+
+                        write_json_atomic(
+
+                            status_file,
+
+                            status,
+
+                        )
+
+
+
+                    elif buyee_detail_status != 0:
+
+                        raise RuntimeError(
+
+                            "Buyee HTTPS detail crawler failed "
+
+                            "without a classified WAF fallback candidate."
+
+                        )
+
+                else:
+
+                    logger.info(
+
+                        "No new Buyee listing identities; "
+
+                        "detail-page crawl skipped."
+
                     )
 
-                    write_json_atomic(
-                        status_file,
-                        status,
-                    )
 
-                elif buyee_detail_status != 0:
-                    raise RuntimeError(
-                        "Buyee HTTPS detail crawler failed "
-                        "without a classified WAF fallback candidate."
-                    )
-            else:
-                logger.info(
-                    "No new Buyee listing identities; "
-                    "detail-page crawl skipped."
+
+            if buyee_available:
+
+                publish_source_visibility(
+
+                    database_url=psql_url,
+
+                    logger=logger,
+
+                    source="Buyee",
+
                 )
 
-        if buyee_available:
-            publish_source_visibility(
-                database_url=psql_url,
-                logger=logger,
-                source="Buyee",
-            )
-            emit_source_state(
-                logger,
-                "Buyee",
-                "done",
-                status_file=status_file,
-                status=status,
-            )
+                emit_source_state(
+
+                    logger,
+
+                    "Buyee",
+
+                    "done",
+
+                    status_file=status_file,
+
+                    status=status,
+
+                )
+
 
         emit_source_state(
             logger,
@@ -4844,6 +6124,144 @@ def main() -> int:
             status_file=status_file,
             status=status,
         )
+
+        from sqlalchemy import create_engine
+        from auction_etl.services.yahoo_jp_ingest import (
+            refresh_yahoo_marketplace_for_account,
+        )
+
+        yahoo_engine = create_engine(
+            sqlalchemy_database_url
+        )
+        yahoo_pages = max(
+            1,
+            int(
+                getattr(
+                    arguments,
+                    "yahoo_pages",
+                    2,
+                )
+            ),
+        )
+
+        for yahoo_label, yahoo_key in (
+            ("Yahoo Auctions", "yahoo_auction"),
+            ("Yahoo フリマ", "yahoo_fleamarket"),
+        ):
+            emit_source_state(
+                logger,
+                yahoo_label,
+                "running",
+                status_file=status_file,
+                status=status,
+            )
+            yahoo_result = refresh_yahoo_marketplace_for_account(
+                yahoo_engine,
+                marketplace=yahoo_key,
+                pages=yahoo_pages,
+                stop_on_novelty=True,
+            )
+            yahoo_state = str(
+                yahoo_result.get(
+                    "state",
+                    "done",
+                )
+            )
+            if yahoo_state not in {
+                "done",
+                "skipped",
+                "rate_limited",
+            }:
+                yahoo_state = "done"
+            _set_incremental_progress(
+                status,
+                status_file,
+                yahoo_key,
+                {
+                    "discovered": int(
+                        yahoo_result.get(
+                            "upserted",
+                            0,
+                        )
+                    ),
+                    "already_known": int(
+                        yahoo_result.get(
+                            "already_known",
+                            0,
+                        )
+                    ),
+                    "new": int(
+                        yahoo_result.get(
+                            "new_count",
+                            0,
+                        )
+                    ),
+                    "detail_scraped": 0,
+                    "detail_skipped": 0,
+                    "discovery_pages": int(
+                        yahoo_result.get(
+                            "discovery_pages",
+                            0,
+                        )
+                    ),
+                    "consecutive_known_at_stop": 0,
+                },
+            )
+            summary = status.setdefault(
+                "summary",
+                {},
+            )
+            marketplaces = summary.setdefault(
+                "marketplaces",
+                {},
+            )
+            marketplaces[yahoo_key] = {
+                "newly_ingested": int(
+                    yahoo_result.get(
+                        "new_count",
+                        0,
+                    )
+                ),
+                "upserted": int(
+                    yahoo_result.get(
+                        "upserted",
+                        0,
+                    )
+                ),
+                "stopped_reason": yahoo_result.get(
+                    "stopped_reason"
+                ),
+                "rate_limited": bool(
+                    yahoo_result.get(
+                        "rate_limited"
+                    )
+                ),
+            }
+            if yahoo_state in {
+                "done",
+                "skipped",
+            }:
+                publish_source_visibility(
+                    database_url=psql_url,
+                    logger=logger,
+                    source=yahoo_label,
+                )
+            emit_source_state(
+                logger,
+                yahoo_label,
+                yahoo_state,
+                status_file=status_file,
+                status=status,
+            )
+            logger.info(
+                "Yahoo JP %s state=%s new=%s pages=%s reason=%s",
+                yahoo_key,
+                yahoo_state,
+                yahoo_result.get("new_count"),
+                yahoo_result.get("discovery_pages"),
+                yahoo_result.get("stopped_reason"),
+            )
+
         run_discogs_identity_pass(
             logger=logger,
             status_file=status_file,

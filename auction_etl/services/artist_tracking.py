@@ -11,6 +11,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
+from urllib.parse import quote
 from urllib.parse import quote_plus
 from urllib.parse import unquote_plus
 from urllib.parse import urlencode
@@ -34,11 +35,15 @@ GRIPSWEAT_CONFIG_ENV = "AUCTION_GRIPSWEAT_SOURCES_CONFIG"
 SUPPORTED_MARKETPLACES = (
     "ebay",
     "gripsweat",
+    "yahoo_auction",
+    "yahoo_fleamarket",
 )
 
 MARKETPLACE_LABELS = {
     "ebay": "eBay",
     "gripsweat": "Gripsweat",
+    "yahoo_auction": "Yahoo Auctions",
+    "yahoo_fleamarket": "Yahoo フリマ",
 }
 
 REPOSITORY_ROOT = (
@@ -275,6 +280,75 @@ def build_gripsweat_search_url(
         f"&sort_by={encoded_sort}"
     )
 
+
+def build_yahoo_auction_search_url(
+    query: str,
+    *,
+    start: int = 1,
+    page_size: int = 100,
+) -> str:
+    """Generate a Yahoo Auctions closedsearch (落札相場) URL.
+
+    Uses the advanced closedsearch form (``va=``) that matches the
+    operator-facing 落札相場 search. Pagination uses ``b`` as a 1-based
+    start index — page 2 with ``page_size=100`` is ``b=101``.
+    """
+
+    normalized = normalize_query(query)
+    if start < 1:
+        raise ValueError("start must be >= 1")
+    if page_size < 1:
+        raise ValueError("page_size must be >= 1")
+
+    parameters = {
+        "va": normalized,
+        "vo": "",
+        "ve": "",
+        "auccat": "0",
+        "aucminprice": "",
+        "aucmaxprice": "",
+        "slider": "0",
+        "ei": "UTF-8",
+        "f_adv": "1",
+        "fr": "auc_adv",
+        "b": str(int(start)),
+        "n": str(int(page_size)),
+    }
+
+    return (
+        "https://auctions.yahoo.co.jp/closedsearch/closedsearch?"
+        + urlencode(parameters, quote_via=quote_plus)
+    )
+
+
+def build_yahoo_fleamarket_search_url(
+    query: str,
+    *,
+    page: int = 1,
+) -> str:
+    """Generate a Yahoo フリマ sold-search URL.
+
+    Query lives in the path (spaces as ``%20``). ``sold=1`` and
+    ``sort=endTime&order=DESC`` are required for stable past-sale paging.
+    """
+
+    normalized = normalize_query(query)
+    if page < 1:
+        raise ValueError("page must be >= 1")
+
+    path_query = quote(normalized, safe="")
+    parameters = {
+        "page": str(int(page)),
+        "sold": "1",
+        "sort": "endTime",
+        "order": "DESC",
+    }
+
+    return (
+        "https://paypayfleamarket.yahoo.co.jp/search/"
+        f"{path_query}?"
+        + urlencode(parameters)
+    )
 
 def _load_json(
     path: Path,
@@ -1149,11 +1223,16 @@ def upsert_account_artist(
 
         for marketplace in SUPPORTED_MARKETPLACES:
             enabled = marketplace in selected
-            search_url = (
-                build_ebay_search_url(artist_name)
-                if marketplace == "ebay"
-                else build_gripsweat_search_url(artist_name)
-            )
+            if marketplace == "ebay":
+                search_url = build_ebay_search_url(artist_name)
+            elif marketplace == "gripsweat":
+                search_url = build_gripsweat_search_url(artist_name)
+            elif marketplace == "yahoo_auction":
+                search_url = build_yahoo_auction_search_url(artist_name)
+            elif marketplace == "yahoo_fleamarket":
+                search_url = build_yahoo_fleamarket_search_url(artist_name)
+            else:
+                raise ValueError(f"Unsupported marketplace: {marketplace}")
 
             connection.execute(
                 text(

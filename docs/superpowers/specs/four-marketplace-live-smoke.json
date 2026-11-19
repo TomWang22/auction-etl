@@ -1,0 +1,139 @@
+{
+  "started_at": "2026-11-19T05:49:01.723604+00:00",
+  "marketplaces": {
+    "yahoo_auction": {
+      "marketplace": "yahoo_auction",
+      "state": "done",
+      "stopped_reason": "novelty",
+      "queries": 3,
+      "steps": [
+        {
+          "marketplace": "yahoo_auction",
+          "query": "Anita Mui",
+          "upserted": 31,
+          "unique_ids": 31,
+          "new_count": 0,
+          "already_known": 31,
+          "discovery_pages": 1,
+          "total_results_available": 31,
+          "stopped_reason": "novelty",
+          "rate_limited": false
+        },
+        {
+          "marketplace": "yahoo_auction",
+          "query": "Momoe Yamaguchi",
+          "upserted": 94,
+          "unique_ids": 94,
+          "new_count": 0,
+          "already_known": 94,
+          "discovery_pages": 1,
+          "total_results_available": 6948,
+          "stopped_reason": "novelty",
+          "rate_limited": false
+        },
+        {
+          "marketplace": "yahoo_auction",
+          "query": "Teresa Teng",
+          "upserted": 93,
+          "unique_ids": 93,
+          "new_count": 0,
+          "already_known": 93,
+          "discovery_pages": 1,
+          "total_results_available": 4132,
+          "stopped_reason": "novelty",
+          "rate_limited": false
+        }
+      ],
+      "upserted": 218,
+      "new_count": 0,
+      "already_known": 218,
+      "discovery_pages": 3,
+      "rate_limited": false
+    },
+    "yahoo_fleamarket": {
+      "marketplace": "yahoo_fleamarket",
+      "state": "done",
+      "stopped_reason": "novelty",
+      "queries": 3,
+      "steps": [
+        {
+          "marketplace": "yahoo_fleamarket",
+          "query": "Anita Mui",
+          "upserted": 0,
+          "unique_ids": 0,
+          "new_count": 0,
+          "already_known": 0,
+          "discovery_pages": 0,
+          "stopped_reason": "fetch_error",
+          "rate_limited": false,
+          "error": "HTTP 404 for https://paypayfleamarket.yahoo.co.jp/search/Anita%20Mui?page=1&sold=1&sort=endTime&order=DESC"
+        },
+        {
+          "marketplace": "yahoo_fleamarket",
+          "query": "Momoe Yamaguchi",
+          "upserted": 100,
+          "unique_ids": 100,
+          "new_count": 0,
+          "already_known": 100,
+          "discovery_pages": 1,
+          "total_results_available": 724,
+          "stopped_reason": "novelty",
+          "rate_limited": false
+        },
+        {
+          "marketplace": "yahoo_fleamarket",
+          "query": "Teresa Teng",
+          "upserted": 100,
+          "unique_ids": 100,
+          "new_count": 0,
+          "already_known": 100,
+          "discovery_pages": 1,
+          "total_results_available": 416,
+          "stopped_reason": "novelty",
+          "rate_limited": false
+        }
+      ],
+      "upserted": 200,
+      "new_count": 0,
+      "already_known": 200,
+      "discovery_pages": 2,
+      "rate_limited": false
+    },
+    "gripsweat": {
+      "state": "done",
+      "probe_returncode": 0,
+      "probe_tail": "-etl/logs/four-marketplace-smoke/20261119-004917/gripsweat-probe/screenshots/momoe-yamaguchi-page-001.png\n[teresa-teng] known identities: 326\n\n[teresa-teng] page 1: https://gripsweat.com/search/?query=teresa+teng&page=1&sort_by=date\nGRIPSWEAT_NAVIGATION_START source=teresa-teng page=1 timeout_seconds=15.0\nGRIPSWEAT_NAVIGATION_READY source=teresa-teng page=1 seconds=0.339\nHTTP status : 200\nFinal URL   : https://gripsweat.com/search/?query=teresa+teng&page=1&sort_by=date\nTitle       : Gripsweat\nItems       : 25\nNext page   : True\nHTML        : /Users/tom/auction-etl/logs/four-marketplace-smoke/20261119-004917/gripsweat-probe/html/teresa-teng-page-001.html\nScreenshot  : /Users/tom/auction-etl/logs/four-marketplace-smoke/20261119-004917/gripsweat-probe/screenshots/teresa-teng-page-001.png\n\nRead-only Gripsweat probe\n-------------------------\nSources requested : 3\nSources reached   : 3\nSources with data : 3\nEmpty sources     : 0\nPages loaded      : 3\nPages accepted    : 3\nItems found       : 75\nRepeated pages    : 0\nEmpty pages       : 0\nFailures          : 0\nDatabase writes   : 0\nOutput            : /Users/tom/auction-etl/logs/four-marketplace-smoke/20261119-004917/gripsweat-probe.json\n",
+      "import_returncode": 0,
+      "import_tail": "\nGripsweat probe import\n----------------------\nInserted/updated: 75\nInserted        : 0\nUpdated         : 75\nSkipped         : 0\n"
+    },
+    "ebay": {
+      "state": "unavailable",
+      "owner_returncode": 0,
+      "owner_tail": "EBAY_OWNER=reused\nEBAY_OWNER_PROTOCOL_VERSION=1\nEBAY_OWNER_PID=9291\nEBAY_OWNER_STORAGE_STATE=/Users/tom/.auction-etl/private/ebay-storage-state.json\nEBAY_OWNER_EXECUTABLE=/private/var/folders/30/blwtlvxj4h57nggzs7p5jr4m0000gp/T/cursor-sandbox-cache/82f5e728f75137b62929658915708be7/playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing\nEBAY_OWNER_HEADLESS=false\nEBAY_OWNER_CDP=false\nEBAY_OWNER_SOCKET=/Users/tom/.auction-etl/runtime/ebay-owner/owner.sock\nVISIBLE_BROWSER_LAUNCHED=true\nNEW_BROWSER_PER_REFRESH=false\n",
+      "acquire_returncode": 1,
+      "acquire_tail": "ERROR: eBay owner acquisition failed: EbayAccessBlockedError: eBay rejected the acquisition request with HTTP 403.\nEBAY_STRUCTURED_ACQUISITION=FAIL\nAUTOMATIC_RETRY=false\n",
+      "reason": "ebay_access_blocked"
+    }
+  },
+  "artists_enabled_for_yahoo": [
+    "Anita Mui",
+    "Momoe Yamaguchi",
+    "Teresa Teng"
+  ],
+  "warehouse_counts": {
+    "buyee": 991,
+    "ebay": 1597,
+    "yahoo_auction": 400,
+    "yahoo_fleamarket": 400,
+    "gripsweat_sale": 897
+  },
+  "finished_at": "2026-11-19T05:49:36.615238+00:00",
+  "live_states": {
+    "ebay": "unavailable",
+    "gripsweat": "done",
+    "yahoo_auction": "done",
+    "yahoo_fleamarket": "done"
+  },
+  "all_four_ok": true,
+  "notes": "eBay unavailable = host 403/access-blocked (same degraded outcome as production refresh); Yahoo + Gripsweat still prove the new four-source wiring."
+}

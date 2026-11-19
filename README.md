@@ -4,17 +4,20 @@
 >
 > **Current runtime authority:** local PostgreSQL at 127.0.0.1:5544/auction_warehouse. Vercel and Railway are non-data cloud shells and must not be pointed at the local database. Neon is retained only until a separate deletion gate. See [docs/LOCAL_AUTHORITY_CUTOVER.md](docs/LOCAL_AUTHORITY_CUTOVER.md).
 
-Auction ETL is the local workspace for **one collector** reviewing completed sales of records, CDs, cassettes, and paper. The sales come from three places:
+Auction ETL is the local workspace for **one collector** reviewing completed sales of records, CDs, cassettes, and paper. The live comps come from four places:
 
 | Source | What it is for this collector |
 | --- | --- |
-| Buyee | Closed watchlist. Prices are JPY. |
+| Yahoo Auctions | Public closed Japan auctions (`marketplace=yahoo_auction`). Prices are JPY. |
+| Yahoo フリマ | Public closed Japan flea sales (`marketplace=yahoo_fleamarket`). Prices are JPY. Search-only ingest (detail pages 429 under burst). |
 | eBay | Completed and sold listings for the artists being tracked. The card shows that listing's own currency. |
 | Gripsweat | An archive of the same kind of sale. When it is the same eBay item, its USD amount is the official sold price. |
 
+**Buyee** remains a legacy Japan path (closed watchlist / bills). Japan comps for Review now prefer Yahoo Auctions + フリマ (Approach A). Same Yahoo listing id on both Yahoo surfaces collapses to **auction wins**.
+
 There is no outside client list. Sign-in only identifies the collector. The warehouse stays on this machine.
 
-The local loop is that one collector's **Buyee, eBay, and Gripsweat** sales in PostgreSQL at `127.0.0.1:5544/auction_warehouse`, with Collector Review on HTTPS `localhost:8501`. eBay is acquired from a persistent browser profile, Buyee from the headed owner, and Gripsweat from probe/import. GitHub is the source boundary. Vercel and Railway must not point at the local database.
+The local loop is that one collector's **Yahoo Auctions, Yahoo フリマ, eBay, and Gripsweat** sales in PostgreSQL at `127.0.0.1:5544/auction_warehouse`, with Collector Review on HTTPS `localhost:8501`. eBay is acquired from a persistent browser profile; Yahoo JP from public HTTPS + `__NEXT_DATA__` novelty ingest; Gripsweat from probe/import; Buyee from the headed owner when explicitly enabled. GitHub is the source boundary. Vercel and Railway must not point at the local database.
 
 ## Requirements
 
@@ -27,15 +30,19 @@ The local loop is that one collector's **Buyee, eBay, and Gripsweat** sales in P
 
 ## How it is designed
 
-One warehouse, three ingest paths, one review UI:
+One warehouse, four live ingest paths (+ optional Buyee), one review UI:
 
 | Source | How it is acquired | Local money | Warehouse table |
 | --- | --- | --- | --- |
-| Buyee | Headed owner + closed watchlist | **JPY** | `warehouse.auction` `marketplace=buyee` |
+| Yahoo Auctions | Public HTTPS closed search + item detail (`__NEXT_DATA__`), novelty stop | **JPY** | `warehouse.auction` `marketplace=yahoo_auction` |
+| Yahoo フリマ | Public HTTPS closed search only (detail 429 under load), novelty stop; skips ids already on auction | **JPY** | `warehouse.auction` `marketplace=yahoo_fleamarket` |
 | eBay | Headed completed/sold search from `profiles/facerecords`, exact raw-page import | **Listing display currency** (not automatically USD) | `warehouse.auction` `marketplace=ebay` |
 | Gripsweat | Artist probe/import | **Official USD** on eBay duplicates (`sold_at`) | `warehouse.gripsweat_sale` |
+| Buyee (optional / legacy) | Headed owner + closed watchlist; UI multisource defaults `--skip-buyee-detail` | **JPY** | `warehouse.auction` `marketplace=buyee` |
 
-Identity is `(marketplace, listing_id)`. eBay sold URLs are `https://www.ebay.com/itm/{id}`. Gripsweat archives the same sale as `https://gripsweat.com/item/{id}/...`.
+Identity is `(marketplace, listing_id)`. Yahoo Auctions / フリマ share numeric ids when the same lot appears on both; Review and ingest keep **auction**. eBay sold URLs are `https://www.ebay.com/itm/{id}`. Gripsweat archives the same sale as `https://gripsweat.com/item/{id}/...`.
+
+Measured latency and warehouse counts: [docs/superpowers/specs/2026-11-19-performance-percentiles.md](docs/superpowers/specs/2026-11-19-performance-percentiles.md). Design/ADR: [docs/ADR-2026-11-19-yahoo-jp-replace-buyee-comps.md](docs/ADR-2026-11-19-yahoo-jp-replace-buyee-comps.md).
 
 **Currency:** eBay completed/sold cards can be `US $`, `GBP`/`£`, `EUR`/`€`, `AU $`, `C $`, or a bare `$`. Bare `$` is a display amount on ebay.com, **not** official USD.
 
@@ -76,14 +83,17 @@ flowchart TB
     subgraph Execution["Local execution"]
         Refresh["scripts/run_latest_auction_refresh.py"]
         EbayOp["Headed eBay sold crawl"]
-        BuyeeOwner["Headed Buyee owner"]
+        YahooJP["Yahoo JP HTTPS novelty ingest"]
+        BuyeeOwner["Headed Buyee owner (optional)"]
         Gripsweat["Gripsweat probe / import"]
     end
 
     subgraph Sources["Marketplace sources"]
-        Buyee["Buyee closed watchlist"]
+        YahooA["Yahoo Auctions closed"]
+        YahooF["Yahoo フリマ closed"]
         Ebay["eBay completed/sold"]
         Grip["Gripsweat"]
+        Buyee["Buyee watchlist (legacy)"]
         Discogs["Discogs API"]
     end
 
@@ -102,12 +112,15 @@ flowchart TB
     Identity --> Discogs
     Identity --> DB
     Scope --> DB
-    Refresh --> BuyeeOwner
     Refresh --> EbayOp
+    Refresh --> YahooJP
     Refresh --> Gripsweat
-    BuyeeOwner --> Buyee
+    Refresh --> BuyeeOwner
+    YahooJP --> YahooA
+    YahooJP --> YahooF
     EbayOp --> Ebay
     Gripsweat --> Grip
+    BuyeeOwner --> Buyee
     Refresh --> DB
 ```
 
@@ -119,7 +132,7 @@ flowchart TB
 | **collection_*** | My collection: intake bills, shelf writes, acquisition charts, anatomy gaps. |
 | **discogs_*** | Catalog search, release fetch, pressing upsert, same-catalog sibling fill (no HTTP when a pressing is already known). |
 | **warehouse / parse / fx** | Canonical `(marketplace, listing_id)` sales, money, FX. |
-| **scripts/run_latest_auction_refresh.py** | Buyee + eBay + Gripsweat ingest outside the UI process. |
+| **scripts/run_latest_auction_refresh.py** | eBay + Gripsweat + Yahoo Auctions + Yahoo フリマ (+ optional Buyee) outside the UI process. |
 
 Warehouse identity stays `(marketplace, listing_id)`. My collection overlays `warehouse.auction_collector` / `owned_copy` / `collection_bill*` for paid copies. Discogs pressings live in `pressing_identity` + `release_family`.
 
@@ -148,7 +161,7 @@ See [`docs/ENGINEERING.md`](docs/ENGINEERING.md) for stack, scrape, same-listing
 ## Goals
 
 - Preserve marketplace source provenance and deterministic auction identity.
-- Incrementally ingest Buyee, eBay, and Gripsweat auction data.
+- Incrementally ingest Yahoo Auctions, Yahoo フリマ, eBay, and Gripsweat auction data (Buyee optional).
 - Maintain a canonical PostgreSQL warehouse.
 - Normalize media, pressing, completeness, condition, price, and collector metadata.
 - Support collector review, evidence intake, curation, analytics, and reporting.
@@ -162,8 +175,8 @@ See [`docs/ENGINEERING.md`](docs/ENGINEERING.md) for stack, scrape, same-listing
 2. Open Collector Review at `https://localhost:8501` with `AUCTION_ENV=development` and local TLS certs.
 3. Ingest **eBay** through the local hidden-Chrome sold/completed crawl driven
    by tracked artists (`LH_Sold=1`, `LH_Complete=1`, `_sop=13`).
-4. Ingest **Buyee** through the headed owner (closed watchlist) and **Gripsweat** through probe/import via `scripts/run_latest_auction_refresh.py`.
-5. Review and export from the warehouse. eBay+Gripsweat duplicates keep the eBay row and use the Gripsweat sold amount as the official transaction-day USD.
+4. Ingest **Yahoo Auctions** + **Yahoo フリマ** (public HTTPS, novelty stop) and **Gripsweat** through probe/import via `scripts/run_latest_auction_refresh.py`. Buyee watchlist remains optional (`--skip-buyee` / `--skip-buyee-detail`).
+5. Review and export from the warehouse. eBay+Gripsweat duplicates keep the eBay row and use the Gripsweat sold amount as the official transaction-day USD. Yahoo auction∩fleamarket same ids keep auction.
 
 Commands are in **Start the application** and **Local marketplace ingest** below.
 
@@ -177,11 +190,12 @@ collector metadata.
 
 The main result set combines:
 
-- native Buyee warehouse auctions (JPY);
+- native Yahoo Auctions and Yahoo フリマ warehouse auctions (JPY; same-id twins keep auction);
 - native eBay warehouse auctions (local sold-card currency, with
-  Gripsweat USD stamped on duplicates); and
+  Gripsweat USD stamped on duplicates);
 - Gripsweat-only sales after exact native-eBay listing-ID
-  deduplication.
+  deduplication; and
+- legacy Buyee watchlist rows when still present.
 
 Result counts are calculated from the current database and are not
 hard-coded in the application.
@@ -238,21 +252,24 @@ localhost. Keep the Yahoo Developer redirect URI as
 `https://localhost:8501/oauth2callback`. Collector Review serves that callback
 with a local mkcert TLS certificate. HTTP 8501 cannot complete Yahoo login.
 
-Yahoo login only identifies the operator. It does not import Yahoo Mail or
-Yahoo Auctions inventory. Local Buyee, eBay, and Gripsweat rows live in
-PostgreSQL and stay invisible until they are attached to that personal
-account. In development, Collector Review attaches the local warehouse to the
-signed-in Yahoo account after login so Review is not an empty first-run
-workspace.
+Yahoo OIDC login only identifies the operator. It does not import Yahoo Mail.
+Japan auction inventory is ingested separately via public Yahoo Auctions /
+フリマ HTTPS (not the OIDC session). Local Yahoo JP, eBay, Gripsweat, and
+legacy Buyee rows live in PostgreSQL and stay invisible until they are
+attached to that personal account. In development, Collector Review attaches
+the local warehouse to the signed-in Yahoo account after login so Review is
+not an empty first-run workspace.
 
 Always use the project virtual environment. A system Python installation
 may not include Streamlit or the repository dependencies.
 
 ### Local marketplace ingest
 
-eBay, Buyee, and Gripsweat all write to the same warehouse. eBay is a
-generalized local sold/completed crawl from tracked artists, using hidden
-headed Google Chrome. It is not a FaceRecords seller handoff.
+Yahoo Auctions, Yahoo フリマ, eBay, and Gripsweat all write to the same
+warehouse (Buyee optional). eBay is a generalized local sold/completed crawl
+from tracked artists, using hidden headed Google Chrome. Yahoo JP uses public
+HTTPS + novelty stop (`auction_etl/services/yahoo_jp_ingest.py`). It is not a
+FaceRecords seller handoff.
 
 ```bash
 cd ~/auction-etl
@@ -266,8 +283,14 @@ unset RAILWAY_ENVIRONMENT RAILWAY_ENVIRONMENT_ID RAILWAY_PROJECT_ID RAILWAY_SERV
 .venv/bin/python scripts/run_latest_auction_refresh.py \
   --database-url "${DATABASE_URL}" \
   --expected-database-name auction_warehouse \
-  --expected-database-user auction
+  --expected-database-user auction \
+  --skip-buyee-detail
 ```
+
+UI multisource refresh defaults `--skip-buyee-detail` so Buyee WAF headed
+detail does not dominate wall clock (~6.5 min in the measured full run).
+Use `--skip-buyee` to omit Buyee entirely. Measured percentiles:
+[docs/superpowers/specs/2026-11-19-performance-percentiles.md](docs/superpowers/specs/2026-11-19-performance-percentiles.md).
 
 Teresa Teng eBay completed/sold item URLs (`itm/{id}`) are the sale
 identity. Gripsweat often archives the same sale as `/item/{id}/`.
@@ -492,7 +515,7 @@ modifies warehouse records.
 
 The authoritative architecture is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-The accepted runtime is local: Collector Review on HTTPS `localhost:8501`, PostgreSQL at `127.0.0.1:5544/auction_warehouse`, and three marketplace ingest paths that all write that warehouse. Vercel, Railway, and Neon are deferred shells, not the data plane.
+The accepted runtime is local: Collector Review on HTTPS `localhost:8501`, PostgreSQL at `127.0.0.1:5544/auction_warehouse`, and four live marketplace ingest paths (Yahoo Auctions, Yahoo フリマ, eBay, Gripsweat; Buyee optional) that all write that warehouse. Vercel, Railway, and Neon are deferred shells, not the data plane.
 
 ```mermaid
 flowchart LR
@@ -503,8 +526,9 @@ flowchart LR
     Backup["./scripts/backup-auction-warehouse.sh"]
     Out["output/backups. Gitignored"]
     EbayOp["Headed eBay operator"]
-    Buyee["Headed Buyee owner"]
+    YahooJP["Yahoo JP HTTPS novelty"]
     Grip["Gripsweat probe / import"]
+    Buyee["Headed Buyee owner optional"]
     Sources["Completed/sold marketplaces"]
 
     Start --> Watch
@@ -514,18 +538,21 @@ flowchart LR
     DB --> Backup
     Backup --> Out
     EbayOp --> Sources
-    Buyee --> Sources
+    YahooJP --> Sources
     Grip --> Sources
+    Buyee --> Sources
     EbayOp --> DB
-    Buyee --> DB
+    YahooJP --> DB
     Grip --> DB
+    Buyee --> DB
 ```
 
 Current architecture status:
-  * Local warehouse counts after the 2026-09-19 loop: Buyee 411, eBay 899, Gripsweat 827.
+  * Local warehouse counts (2026-11-19 measured): Yahoo Auctions 401, Yahoo フリマ 391, eBay 1,601, Buyee 1,014, Gripsweat sale 897.
   * eBay ingest is a generalized local sold/completed crawl from tracked
     artists (`LH_Sold=1`, `LH_Complete=1`, `_sop=13`) using hidden Chrome.
-  * Buyee uses the headed owner; Gripsweat uses configured artist probe/import.
+  * Yahoo JP uses public HTTPS + novelty (`yahoo_jp_ingest`); flea is search-only.
+  * Buyee remains optional/legacy; Gripsweat uses configured artist probe/import.
   * Phase-D account tenancy remains in the product, with Collector Review login on HTTPS localhost:8501.
   * Vercel/Railway/Neon must not be pointed at this loopback database.
 

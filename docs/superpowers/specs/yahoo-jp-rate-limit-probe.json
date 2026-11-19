@@ -1,0 +1,487 @@
+[
+  {
+    "label": "auction_search",
+    "status": 200,
+    "ms": 1236,
+    "retry_after": null,
+    "interesting_headers": {
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "SAMEORIGIN",
+      "X-XSS-Protection": "1; mode=block"
+    },
+    "bytes_snip": 500
+  },
+  {
+    "label": "auction_item",
+    "status": 404,
+    "ms": 779,
+    "retry_after": null,
+    "interesting_headers": {
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "SAMEORIGIN",
+      "X-XSS-Protection": "1; mode=block"
+    },
+    "body_snip": "<!DOCTYPE html><html lang=\"ja\"><head><meta charSet=\"utf-8\" data-next-head=\"\"/><link rel=\"preload\" href=\"https://s.yimg.jp/images/templa/mhd/v3/css/mhd-v3-patch-pc.css\" as=\"style\"/><link rel=\"preload\" as=\"image\" href=\"htt"
+  },
+  {
+    "label": "flea_search",
+    "status": 200,
+    "ms": 1496,
+    "retry_after": null,
+    "interesting_headers": {
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "SAMEORIGIN",
+      "X-XSS-Protection": "1; mode=block"
+    },
+    "bytes_snip": 500
+  },
+  {
+    "label": "auction_paced",
+    "statuses": [
+      200,
+      200,
+      200,
+      200,
+      200
+    ],
+    "details": [
+      {
+        "label": "auction_paced_1",
+        "status": 200,
+        "ms": 1181,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_paced_2",
+        "status": 200,
+        "ms": 1008,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_paced_3",
+        "status": 200,
+        "ms": 1201,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_paced_4",
+        "status": 200,
+        "ms": 1418,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_paced_5",
+        "status": 200,
+        "ms": 1323,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      }
+    ]
+  },
+  {
+    "label": "auction_burst",
+    "statuses": [
+      200,
+      404,
+      200,
+      404,
+      200,
+      404,
+      200,
+      404,
+      200,
+      404
+    ],
+    "details": [
+      {
+        "label": "auction_burst_1",
+        "status": 200,
+        "ms": 1292,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_burst_2",
+        "status": 404,
+        "ms": 1024,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "body_snip": "<!DOCTYPE html><html lang=\"ja\"><head><meta charSet=\"utf-8\" data-next-head=\"\"/><link rel=\"preload\" href=\"https://s.yimg.jp/images/templa/mhd/v3/css/mhd-v3-patch-pc.css\" as=\"style\"/><link rel=\"preload\" as=\"image\" href=\"htt"
+      },
+      {
+        "label": "auction_burst_3",
+        "status": 200,
+        "ms": 1219,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_burst_4",
+        "status": 404,
+        "ms": 762,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "body_snip": "<!DOCTYPE html><html lang=\"ja\"><head><meta charSet=\"utf-8\" data-next-head=\"\"/><link rel=\"preload\" href=\"https://s.yimg.jp/images/templa/mhd/v3/css/mhd-v3-patch-pc.css\" as=\"style\"/><link rel=\"preload\" as=\"image\" href=\"htt"
+      },
+      {
+        "label": "auction_burst_5",
+        "status": 200,
+        "ms": 1173,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_burst_6",
+        "status": 404,
+        "ms": 761,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "body_snip": "<!DOCTYPE html><html lang=\"ja\"><head><meta charSet=\"utf-8\" data-next-head=\"\"/><link rel=\"preload\" href=\"https://s.yimg.jp/images/templa/mhd/v3/css/mhd-v3-patch-pc.css\" as=\"style\"/><link rel=\"preload\" as=\"image\" href=\"htt"
+      },
+      {
+        "label": "auction_burst_7",
+        "status": 200,
+        "ms": 1223,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_burst_8",
+        "status": 404,
+        "ms": 780,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "body_snip": "<!DOCTYPE html><html lang=\"ja\"><head><meta charSet=\"utf-8\" data-next-head=\"\"/><link rel=\"preload\" href=\"https://s.yimg.jp/images/templa/mhd/v3/css/mhd-v3-patch-pc.css\" as=\"style\"/><link rel=\"preload\" as=\"image\" href=\"htt"
+      },
+      {
+        "label": "auction_burst_9",
+        "status": 200,
+        "ms": 1007,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "auction_burst_10",
+        "status": 404,
+        "ms": 907,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "body_snip": "<!DOCTYPE html><html lang=\"ja\"><head><meta charSet=\"utf-8\" data-next-head=\"\"/><link rel=\"preload\" href=\"https://s.yimg.jp/images/templa/mhd/v3/css/mhd-v3-patch-pc.css\" as=\"style\"/><link rel=\"preload\" as=\"image\" href=\"htt"
+      }
+    ]
+  },
+  {
+    "label": "flea_paced",
+    "statuses": [
+      200,
+      200,
+      200,
+      200,
+      200
+    ],
+    "details": [
+      {
+        "label": "flea_paced_1",
+        "status": 200,
+        "ms": 1767,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_paced_2",
+        "status": 200,
+        "ms": 1812,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_paced_3",
+        "status": 200,
+        "ms": 1575,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_paced_4",
+        "status": 200,
+        "ms": 1260,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_paced_5",
+        "status": 200,
+        "ms": 1760,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      }
+    ]
+  },
+  {
+    "label": "flea_burst",
+    "statuses": [
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200,
+      200
+    ],
+    "details": [
+      {
+        "label": "flea_burst_1",
+        "status": 200,
+        "ms": 1375,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_burst_2",
+        "status": 200,
+        "ms": 1318,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_burst_3",
+        "status": 200,
+        "ms": 1391,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_burst_4",
+        "status": 200,
+        "ms": 1881,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_burst_5",
+        "status": 200,
+        "ms": 1749,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_burst_6",
+        "status": 200,
+        "ms": 1701,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_burst_7",
+        "status": 200,
+        "ms": 1539,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      },
+      {
+        "label": "flea_burst_8",
+        "status": 200,
+        "ms": 1231,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500
+      }
+    ]
+  },
+  {
+    "label": "flea_cooldown_ladder",
+    "ladder": [
+      {
+        "label": "flea_after_5s",
+        "status": 200,
+        "ms": 1328,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500,
+        "waited_s": 5
+      },
+      {
+        "label": "flea_after_15s",
+        "status": 200,
+        "ms": 1648,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500,
+        "waited_s": 15
+      },
+      {
+        "label": "flea_after_35s",
+        "status": 200,
+        "ms": 1739,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500,
+        "waited_s": 35
+      },
+      {
+        "label": "flea_after_65s",
+        "status": 200,
+        "ms": 1724,
+        "retry_after": null,
+        "interesting_headers": {
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-XSS-Protection": "1; mode=block"
+        },
+        "bytes_snip": 500,
+        "waited_s": 65
+      }
+    ]
+  }
+]

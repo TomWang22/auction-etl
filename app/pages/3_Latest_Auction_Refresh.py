@@ -272,9 +272,11 @@ def enqueue_refresh_job(
 
 
 MARKETPLACE_PROGRESS = (
-    ("buyee", "Buyee"),
     ("ebay", "eBay"),
     ("gripsweat", "Gripsweat"),
+    ("yahoo_auction", "Yahoo Auctions"),
+    ("yahoo_fleamarket", "Yahoo フリマ"),
+    ("buyee", "Buyee"),
 )
 
 
@@ -310,6 +312,8 @@ def marketplace_progress_states(
                 "running",
                 "done",
                 "failed",
+                "skipped",
+                "rate_limited",
                 "unavailable",
                 "awaiting_handoff",
                 "authentication_required",
@@ -362,6 +366,14 @@ def render_marketplace_progress(
         "failed": (
             "❌",
             "Failed",
+        ),
+        "skipped": (
+            "⏭️",
+            "Skipped",
+        ),
+        "rate_limited": (
+            "🟠",
+            "Rate limited",
         ),
         "unavailable": (
             "⚠️",
@@ -454,28 +466,28 @@ if isinstance(summary, dict):
         "marketplaces",
         {},
     )
-    buyee = marketplaces.get(
-        "buyee",
+    yahoo_auction = marketplaces.get(
+        "yahoo_auction",
         {},
     )
-    ebay = marketplaces.get(
-        "ebay",
+    yahoo_fleamarket = marketplaces.get(
+        "yahoo_fleamarket",
         {},
     )
 
     status_columns[2].metric(
-        "Latest new Buyee",
+        "Latest new Yahoo Auctions",
         int(
-            buyee.get(
+            yahoo_auction.get(
                 "newly_ingested",
                 0,
             )
         ),
     )
     status_columns[3].metric(
-        "Latest new eBay",
+        "Latest new Yahoo フリマ",
         int(
-            ebay.get(
+            yahoo_fleamarket.get(
                 "newly_ingested",
                 0,
             )
@@ -483,11 +495,11 @@ if isinstance(summary, dict):
     )
 else:
     status_columns[2].metric(
-        "Latest new Buyee",
+        "Latest new Yahoo Auctions",
         "—",
     )
     status_columns[3].metric(
-        "Latest new eBay",
+        "Latest new Yahoo フリマ",
         "—",
     )
 
@@ -525,10 +537,9 @@ with refresh_tab:
     st.subheader("Safe refresh controls")
 
     st.write(
-        "Inspection is read-only. Buyee, eBay, and Gripsweat are "
-        "refreshed by the local persistent worker as a visible Google "
-        "Chrome local crawl. Tracked artists drive the eBay and Gripsweat "
-        "searches. eBay is not a FaceRecords handoff."
+        "Inspection is read-only. eBay, Gripsweat, Yahoo Auctions, and "
+        "Yahoo フリマ are refreshed by the local worker. Buyee watchlist "
+        "is optional/legacy. Tracked artists drive marketplace searches."
     )
 
     job_running = (
@@ -572,7 +583,7 @@ with refresh_tab:
     )
 
     if control_columns[1].button(
-        "Run Buyee, eBay, and Gripsweat",
+        "Run eBay, Gripsweat, Yahoo Auctions, and Yahoo フリマ",
         type="primary",
         disabled=not refresh_enabled,
         width="stretch",

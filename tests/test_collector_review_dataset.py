@@ -14,6 +14,9 @@ from app.collector_review_support import (
     MEDIA_GROUP_LP,
     MEDIA_GROUP_MAGAZINES,
     MEDIA_GROUP_OPTIONS,
+    SOURCE_ORDER,
+    drop_overlapping_buyee_for_yahoo_rows,
+    drop_overlapping_yahoo_fleamarket_for_auction_rows,
     drop_overlapping_gripsweat_rows,
     marketplace_source_label,
     media_matches_group,
@@ -87,6 +90,68 @@ def test_source_labels_are_stable() -> None:
     assert marketplace_source_label("ebay") == "eBay"
     assert marketplace_source_label("BUYEE") == "Buyee"
     assert marketplace_source_label("gripsweat") == "Gripsweat"
+    assert marketplace_source_label("yahoo_auction") == "Yahoo Auctions"
+    assert marketplace_source_label("yahoo_fleamarket") == "Yahoo フリマ"
+    assert SOURCE_ORDER[0] == "Yahoo Auctions"
+    assert "Buyee" in SOURCE_ORDER
+
+
+def test_buyee_yahoo_auction_overlap_keeps_yahoo() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "marketplace": "yahoo_auction",
+                "listing_id": "p1252469501",
+                "title": "Yahoo row",
+            },
+            {
+                "marketplace": "buyee",
+                "listing_id": "p1252469501",
+                "title": "Buyee twin",
+            },
+            {
+                "marketplace": "buyee",
+                "listing_id": "h1243668787",
+                "title": "Buyee only",
+            },
+        ]
+    )
+    result = drop_overlapping_buyee_for_yahoo_rows(frame)
+    identities = set(
+        zip(result["marketplace"], result["listing_id"], strict=True)
+    )
+    assert ("yahoo_auction", "p1252469501") in identities
+    assert ("buyee", "p1252469501") not in identities
+    assert ("buyee", "h1243668787") in identities
+
+
+def test_yahoo_fleamarket_auction_overlap_keeps_auction() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "marketplace": "yahoo_auction",
+                "listing_id": "g1124584301",
+                "title": "Auction row",
+            },
+            {
+                "marketplace": "yahoo_fleamarket",
+                "listing_id": "g1124584301",
+                "title": "Flea twin",
+            },
+            {
+                "marketplace": "yahoo_fleamarket",
+                "listing_id": "z9999999999",
+                "title": "Flea only",
+            },
+        ]
+    )
+    result = drop_overlapping_yahoo_fleamarket_for_auction_rows(frame)
+    identities = set(
+        zip(result["marketplace"], result["listing_id"], strict=True)
+    )
+    assert ("yahoo_auction", "g1124584301") in identities
+    assert ("yahoo_fleamarket", "g1124584301") not in identities
+    assert ("yahoo_fleamarket", "z9999999999") in identities
 
 
 def test_media_group_keeps_lots_off_lp_and_all_music() -> None:
@@ -251,6 +316,21 @@ def test_identity_queue_selects_work_piles() -> None:
     assert identity_matches_queue("Lot", "Lot", job_lot=True)
 
 
+def test_discogs_format_maps_onto_review_media_type() -> None:
+    from app.collector_review_support import review_media_from_discogs
+
+    assert review_media_from_discogs(["CD", "Album", "Compilation"]) == "CD"
+    assert review_media_from_discogs(["SACD", "Album"]) == "CD"
+    assert review_media_from_discogs(["Vinyl", "LP", "Album"]) == "LP"
+    assert review_media_from_discogs(['Vinyl', '7"', "Single"]) == "EP_7_INCH"
+    assert review_media_from_discogs(["Cassette", "Album"]) == "CASSETTE"
+    assert review_media_from_discogs(media_type="CD") == "CD"
+    assert review_media_from_discogs(media_type="SACD") == "CD"
+    source = REVIEW.read_text(encoding="utf-8")
+    assert "review_media_from_discogs" in source
+    assert 'effective_media_type=media' in source or "effective_media_type=media," in source
+
+
 def test_matched_form_shows_cd_seven_inch_and_lp_facts() -> None:
     from app.collector_review_support import (
         automatic_catalog,
@@ -268,7 +348,13 @@ def test_matched_form_shows_cd_seven_inch_and_lp_facts() -> None:
 
     media = ("Automatic / unset", "LP", "EP_7_INCH", "CD")
     regions = ("Automatic / unset", "Japan", "Hong Kong")
-    pressing_types = ("Automatic / unset", "STANDARD", "PROMO_SAMPLE", "REISSUE")
+    pressing_types = (
+        "Automatic / unset",
+        "STANDARD",
+        "FIRST_PRESSING",
+        "PROMO_SAMPLE",
+        "REISSUE",
+    )
     sales = ("Automatic / unset", "AUCTION", "FIXED_PRICE", "UNKNOWN")
     seven = {
         "title": "TERESA TENG TOKINO NAGARENI MIWO MAKASE TAURUS 07TR1115 1x7",
@@ -278,6 +364,7 @@ def test_matched_form_shows_cd_seven_inch_and_lp_facts() -> None:
         "effective_region": "Japan",
         "effective_disc_count": 1,
         "effective_pressing_type": "STANDARD",
+        "effective_release_year": 1986,
         "identity_status": "filled_auto",
         "pressing_id": 199,
         "auction_format": "AUCTION",
@@ -287,7 +374,8 @@ def test_matched_form_shows_cd_seven_inch_and_lp_facts() -> None:
     assert automatic_catalog(seven) == "07TR-1115"
     assert automatic_region(seven, regions) == "Japan"
     assert automatic_disc_count(seven) == 1
-    assert automatic_pressing_type(seven, pressing_types) == "STANDARD"
+    # Matched + year + no earlier master year => first pressing, not STANDARD.
+    assert automatic_pressing_type(seven, pressing_types) == "FIRST_PRESSING"
     assert automatic_sale_type(seven, sales) == "AUCTION"
     assert automatic_pressing_group(seven) == "07TR1115"
     assert form_choice("CD", "EP_7_INCH", media) == "CD"
@@ -1544,12 +1632,57 @@ def test_a_finished_pile_row_opens_the_listing_below() -> None:
     assert "invalidate_review_records()" not in commit
     assert 'st.rerun(scope="app")' in commit
     assert "merge_discogs_fill_into_row" in source
+    assert "coerce_review_patch_value" in source
+    assert "patch_release_year" in source
+    # Editor is one fragment for typing; intentional writes app-rerun for Status.
+    editor = source.split(
+        "def _render_listing_editor_body",
+        1,
+    )[1].split("\ndef render_auction_history", 1)[0]
+    assert "@st.fragment" in source.split(
+        "def _render_listing_editor_body",
+        1,
+    )[0][-80:]
+    assert "selected = merge_discogs_fill_into_row" in editor
+    assert 'st.rerun(scope="app")' in editor
+    assert "_collector_editor_fragment" not in source
     assert "_discogs_fill:" in source
     assert "_advance_to_neighbor(identity)" in source.split(
         "changed_rows = save_collector_record",
         1,
     )[1]
     assert "Opened the listing below." in source
+
+
+def test_review_save_patches_accept_string_years() -> None:
+    from app.collector_review_support import (
+        coerce_review_patch_value,
+        patch_release_year,
+    )
+
+    assert patch_release_year("1980") == 1980
+    assert patch_release_year(1980) == 1980
+    assert patch_release_year("") is None
+    years = pd.Series([1979.0, None], dtype="float64")
+    assert coerce_review_patch_value(years, "1980") == 1980.0
+    frame = pd.DataFrame(
+        {
+            "marketplace": ["buyee"],
+            "listing_id": ["h1"],
+            "effective_release_year": pd.Series([None], dtype="float64"),
+            "recent_change_display": [""],
+        }
+    )
+    frame.at[0, "effective_release_year"] = coerce_review_patch_value(
+        frame["effective_release_year"],
+        "1980",
+    )
+    frame.at[0, "recent_change_display"] = coerce_review_patch_value(
+        frame["recent_change_display"],
+        "✓",
+    )
+    assert frame.loc[0, "effective_release_year"] == 1980.0
+    assert frame.loc[0, "recent_change_display"] == "✓"
 
 
 def test_use_this_keeps_the_editor_open_for_condition() -> None:

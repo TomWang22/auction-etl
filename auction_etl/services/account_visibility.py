@@ -9,7 +9,15 @@ import psycopg
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-MARKETPLACES = frozenset({"buyee", "ebay", "gripsweat"})
+MARKETPLACES = frozenset(
+    {
+        "buyee",
+        "ebay",
+        "gripsweat",
+        "yahoo_auction",
+        "yahoo_fleamarket",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -55,8 +55,8 @@ NAVIGATION_SECTIONS = (
                 path="collector_review.py",
                 icon="🔎",
                 help_text=(
-                    "Search eBay, Buyee, and Gripsweat sales and inspect "
-                    "listing and pressing details."
+                    "Search Yahoo Auctions, Yahoo フリマ, eBay, and Gripsweat "
+                    "sales and inspect listing and pressing details."
                 ),
             ),
             NavigationItem(
@@ -295,7 +295,7 @@ def render_navigation(
             }
             </style>
             <div class="etl-brand-name">Auction ETL</div>
-            <div class="etl-brand-note">Buyee, eBay, and Gripsweat sales, in one place.</div>
+            <div class="etl-brand-note">Yahoo Auctions, Yahoo フリマ, eBay, and Gripsweat sales, in one place.</div>
             """,
             unsafe_allow_html=True,
         )

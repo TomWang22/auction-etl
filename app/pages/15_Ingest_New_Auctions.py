@@ -32,6 +32,7 @@ import pandas as pd  # noqa: E402
 from auction_etl.auth.context import AccountContext  # noqa: E402
 from auction_etl.reporting.ingestion_activity import (  # noqa: E402
     LOCAL_ZONE,
+    MARKETPLACES,
     WINDOW_THIS_RUN,
     WINDOWS,
     filter_catalog_additions,
@@ -66,9 +67,11 @@ DATABASE_URL = os.environ.get(
     ),
 )
 PLANNED_SOURCES = (
-    "buyee",
     "ebay",
     "gripsweat",
+    "yahoo_auction",
+    "yahoo_fleamarket",
+    "buyee",
 )
 from app.navigation import render_navigation
 
@@ -86,10 +89,20 @@ SOURCE_ICONS = {
     "awaiting_handoff": "📦",
     "authentication_required": "🔐",
     "done": "✅",
+    "skipped": "⏭️",
+    "rate_limited": "🟠",
     "failed": "❌",
     "not_run": "⚪",
     "interrupted": "⏹️",
     "unknown": "❔",
+}
+
+SOURCE_LABELS = {
+    "ebay": "eBay",
+    "gripsweat": "Gripsweat",
+    "yahoo_auction": "Yahoo Auctions",
+    "yahoo_fleamarket": "Yahoo フリマ",
+    "buyee": "Buyee",
 }
 
 
@@ -260,6 +273,8 @@ def durable_source_states(
         "awaiting_handoff",
         "authentication_required",
         "done",
+        "skipped",
+        "rate_limited",
         "failed",
         "not_run",
         "interrupted",
@@ -673,7 +688,13 @@ def render_source_progress(
 
         with column:
             st.markdown(
-                f"### {icon} {source}"
+                "### "
+                + icon
+                + " "
+                + SOURCE_LABELS.get(
+                    source,
+                    source,
+                )
             )
 
             st.markdown(
@@ -1614,10 +1635,21 @@ def render_ingestion_history(
     week_columns[0].metric("This week", f"{this_week:,}")
     week_columns[1].metric("Previous week", f"{previous_week:,}")
     st.caption("Rows added to the catalog, by day.")
+    chart_columns = [
+        label
+        for label in MARKETPLACES
+        if label in chart.columns
+    ]
+    if not chart_columns:
+        chart_columns = [
+            column
+            for column in chart.columns
+            if column != "Day"
+        ]
     st.bar_chart(
         chart,
         x="Day",
-        y=["Buyee", "eBay", "Gripsweat"],
+        y=chart_columns,
         height=220,
     )
 
@@ -1680,8 +1712,9 @@ st.page_link(
 )
 
 st.caption(
-    "Bring in the latest available sales from eBay, Buyee, "
-    "and Gripsweat. The refresh continues in the background."
+    "Bring in the latest available sales from Yahoo Auctions, "
+    "Yahoo フリマ, eBay, and Gripsweat (Buyee is legacy). "
+    "The refresh continues in the background."
 )
 
 try:

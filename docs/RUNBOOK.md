@@ -26,6 +26,31 @@ See also [`ENGINEERING.md`](ENGINEERING.md).
 - **Symptom:** HTTPS detail crawl fails every listing; refresh continues with browser fallback.
 - **Cause:** Buyee returned JavaScript verification HTML instead of the item.
 - **Fix:** Expected path — headed Buyee owner (`run_buyee_owner_job.py crawl_live_details`). Do not enable headless. If owner auth is stale, re-verify storage state.
+- **Latency:** Measured headed fallback ~16s p50 / ~27s p100 inter-arrival per listing; ~6.5 min for 23 listings. Prefer `--skip-buyee-detail` on routine multisource refresh.
+
+### Yahoo フリマ detail HTTP 429 / sticky rate limit
+
+- **Symptom:** Flea item pages return 429 after a short burst; search pages still 200.
+- **Cause:** Host rate limit on `paypayfleamarket.yahoo.co.jp` item URLs under parallel/paced detail.
+- **Fix:** Production ingest is **search-only** for フリマ. Do not re-enable flea detail crawl. Soft-fail as `rate_limited`; keep novelty watermark. Auction detail HTTPS remains OK (~1.5s p50).
+
+### Yahoo auction∩fleamarket duplicate listing ids
+
+- **Symptom:** Same numeric id appears twice in Review (auction + fleamarket).
+- **Cause:** Both Yahoo surfaces can share an id for the same lot.
+- **Fix:** Ingest skips flea ids already on auction; Review `drop_overlapping_yahoo_jp_rows` keeps auction. One-shot cleanup: delete fleamarket warehouse rows whose `listing_id` exists on `yahoo_auction`.
+
+### Refresh UI shows “3 of 3” / missing Yahoo progress
+
+- **Symptom:** Latest Auction Refresh chart or progress omits Yahoo Auctions / フリマ even though the job ran them.
+- **Cause:** UI planned sources lagged behind runner sources.
+- **Fix:** Planned sources must include `yahoo_auction` and `yahoo_fleamarket`; chart series are built dynamically from present marketplace columns.
+
+### Full refresh ~23 minutes / Yahoo not the culprit
+
+- **Symptom:** Four-marketplace refresh wall clock ~20–25 minutes.
+- **Cause:** Buyee WAF headed detail + post-pass features/reclassify/FX/doctor dominate; Yahoo novelty is seconds.
+- **Fix:** Default `--skip-buyee-detail` from UI multisource; see [`superpowers/specs/2026-11-19-performance-percentiles.md`](superpowers/specs/2026-11-19-performance-percentiles.md) and [`superpowers/specs/2026-11-19-refresh-latency-investigation.md`](superpowers/specs/2026-11-19-refresh-latency-investigation.md).
 
 ### eBay later pages HTTP 403 / Akamai
 

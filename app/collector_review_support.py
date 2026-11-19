@@ -116,7 +116,13 @@ CD_MEDIA = frozenset(
 CASSETTE_MEDIA = frozenset({"CASSETTE", "CASSETTE_BOX_SET"})
 SEVEN_INCH_MEDIA = frozenset({"EP_7_INCH"})
 TWELVE_INCH_MEDIA = frozenset({"SINGLE_12_INCH", "12_INCH_SINGLE"})
-SOURCE_ORDER = ("Buyee", "eBay", "Gripsweat")
+SOURCE_ORDER = (
+    "Yahoo Auctions",
+    "Yahoo フリマ",
+    "eBay",
+    "Gripsweat",
+    "Buyee",
+)
 IDENTITY_ORDER = ("Filled", "Needs review", "Unmatched", "Lot")
 MUSIC_IDENTITY_ORDER = ("Filled", "Needs review", "Unmatched")
 IDENTITY_QUEUE_ALL = "All identities"
@@ -1021,6 +1027,27 @@ def marketplace_source_label(marketplace: Any) -> str:
     return clean_text(marketplace) or "Other"
 
 
+def _latin_letter_share(text: str) -> float:
+    letters = [character for character in text if character.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for character in letters if ord(character) < 128) / len(letters)
+
+
+def prefer_review_title(*candidates: Any) -> str:
+    """Prefer the most Latin-script title (Discogs English when present)."""
+    texts = [clean_text(item) for item in candidates if clean_text(item)]
+    if not texts:
+        return ""
+    return max(texts, key=_latin_letter_share)
+
+
+def _short_review_title(text: str, *, limit: int = 48) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)]}…"
+
+
 def collector_save_subject(
     *,
     marketplace: Any,
@@ -1030,13 +1057,14 @@ def collector_save_subject(
     catalog: Any = None,
     matrix: Any = None,
     title: Any = None,
+    album_title: Any = None,
     listing_id: Any = None,
     job_lot: bool = False,
 ) -> str:
-    """Human label for save toasts: platform + catalog/matrix or lot size.
+    """Human label for save toasts: platform + album + catalog/matrix or lot.
 
     Listing ids confuse operators. Prefer ``Buyee, 17 cassette lot`` or
-    ``eBay, SOLL-114`` / matrix / short title.
+    ``eBay, Teresa Teng - 女記者, 27AH 1112`` (album + matrix/catalog).
     """
     source = marketplace_source_label(marketplace)
     media = clean_text(media_type)
@@ -1091,15 +1119,17 @@ def collector_save_subject(
             return f"{source}, {count} {unit} lot"
         return f"{source}, {unit} lot"
     matrix_text = clean_text(matrix)
-    if matrix_text:
-        return f"{source}, {matrix_text}"
     catalog_text = clean_text(catalog)
-    if catalog_text:
-        return f"{source}, {catalog_text}"
-    title_text = clean_text(title)
-    if title_text:
-        short = title_text if len(title_text) <= 64 else f"{title_text[:61]}…"
-        return f"{source}, {short}"
+    identity = matrix_text or catalog_text
+    # Pressing/Discogs title wins. Never prefer the raw marketplace listing title
+    # when a matched album name is available (listing text is often Latin-heavy).
+    album = clean_text(album_title) or clean_text(title)
+    if identity and album:
+        return f"{source} ({_short_review_title(album)}), {identity}"
+    if identity:
+        return f"{source}, {identity}"
+    if album:
+        return f"{source} ({_short_review_title(album, limit=64)})"
     listing = clean_text(listing_id)
     if listing:
         return f"{source}, {listing}"
@@ -1122,6 +1152,50 @@ def drop_overlapping_gripsweat_rows(
     listing_id = frame["listing_id"].map(clean_text)
     ebay_ids = set(listing_id[marketplace == "ebay"])
     overlap = (marketplace == "gripsweat") & listing_id.isin(ebay_ids)
+    return frame.loc[~overlap].copy()
+
+
+def drop_overlapping_buyee_for_yahoo_rows(
+    dataframe: pd.DataFrame,
+) -> pd.DataFrame:
+    """Keep Yahoo Auctions when Buyee proxied the same Yahoo auction id."""
+    if dataframe.empty:
+        return dataframe.copy()
+
+    frame = dataframe.copy()
+    marketplace = (
+        frame["marketplace"]
+        .map(clean_text)
+        .str.casefold()
+    )
+    listing_id = frame["listing_id"].map(clean_text)
+    yahoo_ids = set(listing_id[marketplace == "yahoo_auction"])
+    overlap = (marketplace == "buyee") & listing_id.isin(yahoo_ids)
+    return frame.loc[~overlap].copy()
+
+
+def drop_overlapping_yahoo_fleamarket_for_auction_rows(
+    dataframe: pd.DataFrame,
+) -> pd.DataFrame:
+    """Keep Yahoo Auctions when フリマ repeats the same listing id.
+
+    PayPay sold search can resurface Yahoo Auction ids with the same
+    title/price/close time. Count that hammer once (auction wins).
+    """
+    if dataframe.empty:
+        return dataframe.copy()
+
+    frame = dataframe.copy()
+    marketplace = (
+        frame["marketplace"]
+        .map(clean_text)
+        .str.casefold()
+    )
+    listing_id = frame["listing_id"].map(clean_text)
+    auction_ids = set(listing_id[marketplace == "yahoo_auction"])
+    overlap = (
+        marketplace == "yahoo_fleamarket"
+    ) & listing_id.isin(auction_ids)
     return frame.loc[~overlap].copy()
 
 
@@ -1215,6 +1289,46 @@ def safe_int(value: Any) -> int | None:
         return None
 
     return int(number)
+
+
+def patch_release_year(value: Any) -> int | None:
+    """Discogs cards often send year as '1980'; warehouse year is numeric."""
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def coerce_review_patch_value(column: pd.Series, value: Any) -> Any:
+    """Match a session patch to the frame column dtype so .at cannot crash."""
+    if value is None:
+        return pd.NA
+    dtype = column.dtype
+    if pd.api.types.is_bool_dtype(dtype):
+        if isinstance(value, str) and clean_text(value).casefold() in {
+            "",
+            "nan",
+            "none",
+            "null",
+        }:
+            return pd.NA
+        return bool(as_boolean(value))
+    if pd.api.types.is_integer_dtype(dtype):
+        number = safe_int(value)
+        return pd.NA if number is None else int(number)
+    if pd.api.types.is_float_dtype(dtype):
+        if value in ("",):
+            return pd.NA
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return pd.NA
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        stamp = pd.to_datetime(value, utc=True, errors="coerce")
+        return stamp if not pd.isna(stamp) else pd.NaT
+    return value
 
 
 _MEDIA_FORM_ALIASES = {
@@ -1473,10 +1587,42 @@ PINUP_INSERT_NOTE = "Pin-up is the insert."
 INSERT_ONLY_NOTE = "Insert only."
 FACTORY_NO_INSERT_NOTE = "Factory no insert."
 MISSING_INSERT = "Missing the insert"
+FACTORY_NO_OBI = "Factory no obi"
+MISSING_OBI = "Missing the obi"
+FACTORY_NO_POSTER = "Factory no poster"
+MISSING_POSTER = "Missing the poster"
 _INSERT_FACT_NOTES = (
     PINUP_INSERT_NOTE,
     INSERT_ONLY_NOTE,
     FACTORY_NO_INSERT_NOTE,
+)
+_OBI_FACT_NOTES = (
+    "Factory no obi.",
+    "Missing the obi.",
+)
+_POSTER_FACT_NOTES = (
+    "Factory no poster.",
+    "Missing the poster.",
+)
+LP_INSERT_OPTIONS = (
+    "Automatic / unset",
+    "Yes",
+    MISSING_INSERT,
+    "Insert only",
+    "Pin-up is the insert",
+    "Factory no insert",
+)
+LP_OBI_OPTIONS = (
+    "Automatic / unset",
+    "Yes",
+    MISSING_OBI,
+    FACTORY_NO_OBI,
+)
+LP_POSTER_OPTIONS = (
+    "Automatic / unset",
+    "Yes",
+    MISSING_POSTER,
+    FACTORY_NO_POSTER,
 )
 
 
@@ -1542,7 +1688,7 @@ def edition_values_from_form(
         poster_present: bool | None = False
     elif poster in {"Yes", "Pin-up is the poster"}:
         poster_present = True
-    elif poster == "No":
+    elif poster in {"No", MISSING_POSTER, FACTORY_NO_POSTER}:
         poster_present = False
     else:
         poster_present = None
@@ -1588,9 +1734,9 @@ def factory_pack_sentence(obi: str, insert: str, poster: str) -> str:
     copy does not have it.
     """
     obi_yes = obi == "Yes"
-    obi_no = obi == "No"
+    obi_no = obi in {"No", MISSING_OBI, FACTORY_NO_OBI}
     poster_yes = poster in {"Yes", "Pin-up is the poster"}
-    poster_no = poster == "No"
+    poster_no = poster in {"No", MISSING_POSTER, FACTORY_NO_POSTER}
     poster_name = "the poster" if poster == "Yes" else "the pin-up"
     with_copy = "with the sleeve and the record"
 
@@ -1729,6 +1875,76 @@ def factory_pack_sentence(obi: str, insert: str, poster: str) -> str:
         "It can be factory no insert. "
         "Missing the insert means the pressing included one and this copy does not have it."
     )
+
+
+def review_media_from_discogs(
+    formats: Any = None,
+    *,
+    media_type: Any = None,
+) -> str | None:
+    """Map Discogs format / pressing media onto Review media codes (CD, LP, …).
+
+    Matching is format-aware, not catalog-only — Use this must paint this into
+    the top Media type control.
+    """
+    stored = clean_text(media_type).upper().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "SHM_CD": "CD",
+        "SACD": "CD",
+        "BLU_SPEC_CD": "CD",
+        "VINYL": "LP",
+        "7_INCH": "EP_7_INCH",
+        "EP": "EP_7_INCH",
+        "12_INCH": "SINGLE_12_INCH",
+        "12_INCH_SINGLE": "SINGLE_12_INCH",
+        "LASERDISC": "DVD",
+        "LP_BOX_SET": "LP",
+        "CASSETTE_BOX_SET": "CASSETTE",
+    }
+    if stored in aliases:
+        return aliases[stored]
+    if stored in {
+        "LP",
+        "EP_7_INCH",
+        "SINGLE_12_INCH",
+        "CD",
+        "CD_BOX_SET",
+        "CASSETTE",
+        "DVD",
+        "VHS",
+        "MAGAZINE",
+        "PHOTO",
+        "PHOTOBOOK",
+        "OTHER",
+    }:
+        return stored
+    if isinstance(formats, str):
+        formats = [formats]
+    items = [str(item).strip() for item in (formats or []) if str(item).strip()]
+    if not items:
+        return None
+    blob = " ".join(items)
+    folded = blob.casefold()
+    module = _identity_module()
+    family = module.media_family(blob)
+    shape = module.vinyl_shape(blob)
+    if re.search(r"\bsacd\b|super\s+audio", folded):
+        return "CD"
+    if family == "cd":
+        if re.search(r"box\s*set|boxset", folded):
+            return "CD_BOX_SET"
+        return "CD"
+    if family == "cassette":
+        return "CASSETTE"
+    if family == "dvd" or family == "laserdisc":
+        return "DVD"
+    if shape == "seven":
+        return "EP_7_INCH"
+    if shape == "twelve":
+        return "SINGLE_12_INCH"
+    if shape == "lp" or family == "vinyl":
+        return "LP"
+    return None
 
 
 def automatic_media_type(row: Any, options: tuple[str, ...]) -> str | None:
@@ -2345,6 +2561,24 @@ def obi_label_for_region(label: str, region: Any) -> str:
     if label == "Yes":
         return "No"
     return label
+
+
+def obi_choice_value(selected: str) -> bool | None:
+    """Map the Japan obi menu onto a nullable bool for save."""
+    if selected == "Yes":
+        return True
+    if selected in {"No", MISSING_OBI, FACTORY_NO_OBI}:
+        return False
+    return None
+
+
+def poster_choice_value(selected: str) -> bool | None:
+    """Map the poster menu onto a nullable bool for save."""
+    if selected in {"Yes", "Pin-up is the poster"}:
+        return True
+    if selected in {"No", MISSING_POSTER, FACTORY_NO_POSTER}:
+        return False
+    return None
 
 
 def obi_value_for_region(value: bool | None, region: Any) -> bool | None:
@@ -3194,13 +3428,33 @@ def apply_pressing_copy_facts(
 
 
 def automatic_pressing_type(row: Any, options: tuple[str, ...]) -> str | None:
-    """STANDARD is the view default; show it only once a pressing is matched."""
+    """Matched pressings follow Discogs years: oldest year is first pressing.
+
+    STANDARD / UNKNOWN is not a real default — only promo, later press, or
+    first pressing from the release-year range.
+    """
     status = clean_text(_row_value(row, "identity_status")).lower()
     if status not in {"filled_auto", "filled_manual"} and is_missing(
         _row_value(row, "pressing_id")
     ):
         return None
-    return _option_choice(_row_value(row, "effective_pressing_type"), options)
+    current = _option_choice(_row_value(row, "effective_pressing_type"), options)
+    copy_year = safe_int(_row_value(row, "effective_release_year"))
+    earliest = safe_int(_row_value(row, "original_release_year"))
+    if earliest is None:
+        earliest = copy_year
+    decided = date_pressing_type(
+        generation=_row_value(row, "generation") or current,
+        format_detail=_row_value(row, "format_detail"),
+        release_year=copy_year,
+        earliest_year=earliest,
+        title=_row_value(row, "title"),
+    )
+    if decided and (not current or current == "STANDARD"):
+        return decided if decided in options else _option_choice(decided, options)
+    if current and current != "STANDARD":
+        return current
+    return decided if decided in options else _option_choice(decided, options)
 
 
 def automatic_sale_type(row: Any, options: tuple[str, ...]) -> str | None:

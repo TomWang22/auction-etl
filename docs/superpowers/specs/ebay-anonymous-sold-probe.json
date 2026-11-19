@@ -1,0 +1,38 @@
+[
+  {
+    "label": "minimal",
+    "status": 403,
+    "ms": 214,
+    "retry_after": null,
+    "looks_challenge": false,
+    "body_snip": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Error Page | eBay</title><style>body{mar",
+    "interesting": {
+      "Server": "AkamaiGHost",
+      "x-CDN": "Akamai"
+    }
+  },
+  {
+    "label": "browser_ua",
+    "status": 403,
+    "ms": 127,
+    "retry_after": null,
+    "looks_challenge": false,
+    "body_snip": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Error Page | eBay</title><style>body{mar",
+    "interesting": {
+      "Server": "AkamaiGHost",
+      "x-CDN": "Akamai"
+    }
+  },
+  {
+    "label": "browser_full",
+    "status": 403,
+    "ms": 137,
+    "retry_after": null,
+    "looks_challenge": false,
+    "body_snip": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Error Page | eBay</title><style>body{mar",
+    "interesting": {
+      "Server": "AkamaiGHost",
+      "x-CDN": "Akamai"
+    }
+  }
+]

@@ -1,0 +1,79 @@
+[
+  {
+    "t0_checks": [
+      {
+        "t": 0,
+        "label": "flea_item",
+        "status": 429,
+        "ms": 1007,
+        "retry_after": null
+      },
+      {
+        "t": 0,
+        "label": "flea_search",
+        "status": 429,
+        "ms": 701,
+        "retry_after": null
+      },
+      {
+        "t": 0,
+        "label": "auction_search",
+        "status": 200,
+        "ms": 1244,
+        "retry_after": null
+      }
+    ]
+  },
+  {
+    "elapsed_s": 60,
+    "flea_item": {
+      "status": 429,
+      "ms": 723,
+      "retry_after": null
+    },
+    "flea_search": {
+      "status": 429,
+      "ms": 609,
+      "retry_after": null
+    }
+  },
+  {
+    "elapsed_s": 120,
+    "flea_item": {
+      "status": 429,
+      "ms": 692,
+      "retry_after": null
+    },
+    "flea_search": {
+      "status": 429,
+      "ms": 720,
+      "retry_after": null
+    }
+  },
+  {
+    "elapsed_s": 240,
+    "flea_item": {
+      "status": 429,
+      "ms": 1001,
+      "retry_after": null
+    },
+    "flea_search": {
+      "status": 429,
+      "ms": 708,
+      "retry_after": null
+    }
+  },
+  {
+    "elapsed_s": 420,
+    "flea_item": {
+      "status": 429,
+      "ms": 1098,
+      "retry_after": null
+    },
+    "flea_search": {
+      "status": 429,
+      "ms": 894,
+      "retry_after": null
+    }
+  }
+]

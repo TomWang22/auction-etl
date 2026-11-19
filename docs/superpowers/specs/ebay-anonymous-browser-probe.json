@@ -1,0 +1,33 @@
+{
+  "url": "https://www.ebay.com/sch/i.html?_nkw=Teresa+Teng&LH_Complete=1&LH_Sold=1&_sop=13",
+  "runs": [
+    {
+      "mode": "headless_system_chrome",
+      "status": 403,
+      "final_url": "https://www.ebay.com/sch/i.html?_nkw=Teresa+Teng&LH_Complete=1&LH_Sold=1&_sop=13",
+      "ms": 188,
+      "title": "Error Page | eBay",
+      "is_signin": false,
+      "looks_challenge": false,
+      "item_link_count": 0,
+      "has_sold_ui": false,
+      "item_wait": "TimeoutError: Locator.wait_for: Timeout 20000ms exceeded.\nCall log:\n  - waiting for locator(\"li.s-item a[href*='/itm/'], .s-item a[href*='/itm/']\").first to be visible\n",
+      "sample_cards": [],
+      "screenshot": "docs/superpowers/specs/ebay-anon-headless_system_chrome.png"
+    },
+    {
+      "mode": "headed_system_chrome",
+      "status": 200,
+      "final_url": "https://www.ebay.com/splashui/captcha?ap=1&appName=orch&ru=https%3A%2F%2Fsignin.ebay.com%2Fws%2FeBayISAPI.dll%3FSignIn%26siteid%3D0%26ru%3Dhttps%253A%252F%252Fwww.ebay.com%252Fsch%252Fi.html%253F_nkw%253DTeresa%252BTeng%2526LH_Complete%253D1%2526LH_Sold%253D1%2526_sop%253D13%26sgfl%3Dsrch&iid=82fd6dba-7fe1-4586-a799-27e9c465c293&iim=JNzYuMTx&iia=klE4LjE4oo&iiz=kxzNi4xNTA*tNL",
+      "ms": 1662,
+      "title": "Security Measure | eBay",
+      "is_signin": true,
+      "looks_challenge": true,
+      "item_link_count": 0,
+      "has_sold_ui": true,
+      "item_wait": "TimeoutError: Locator.wait_for: Timeout 20000ms exceeded.\nCall log:\n  - waiting for locator(\"li.s-item a[href*='/itm/'], .s-item a[href*='/itm/']\").first to be visible\n    - waiting for\" https://signin.ebay.com/ws/eBayISAPI.dll?SignIn&siteid=0&ru=https%3A%2F%2Fwww.ebay.com%2Fsch%2Fi.html%3F_nkw%3DTeresa%2BTeng%26LH_Complete%3D1%26LH_Sold%3D1%26_sop%3D13&sgfl=srch\" navigation to finish...\n    - navigated to \"https://signin.ebay.com/ws/eBayISAPI.dll?SignIn&siteid=0&ru=https%3A%2F%2Fwww.ebay.com%2Fsch%2Fi.html%3F_nkw%3DTeresa%2BTeng%26LH_Complete%3D1%26LH_Sold%3D1%26_sop%3D13&sgfl=srch\"\n",
+      "sample_cards": [],
+      "screenshot": "docs/superpowers/specs/ebay-anon-headed_system_chrome.png"
+    }
+  ]
+}

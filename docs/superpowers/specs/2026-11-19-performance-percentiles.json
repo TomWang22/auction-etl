@@ -1,0 +1,140 @@
+{
+  "generated_at": "2026-11-19T06:47:49.234325+00:00",
+  "source_run": "logs/ingestion-round/multisource-20261119-055810/source-refresh-state/runs/20261119-005813",
+  "job_id": "3aa61319-8f49-4a31-accc-62a2ae49068c",
+  "methodology": {
+    "percentiles": "nearest-rank; p100 = max observed",
+    "buyee_waf_listing": "detail.json mtime - page.html mtime per listing (non-negative)",
+    "buyee_waf_inter_arrival": "positive consecutive detail.json completion gaps",
+    "yahoo_https": "live probe JSON under docs/superpowers/specs/",
+    "phases": "wall-clock from refresh log timeline for job 3aa61319\u2026",
+    "yahoo_date_column": "ended_at"
+  },
+  "warehouse_reality": {
+    "warehouse_auction_counts": {
+      "buyee": 1014,
+      "ebay": 1601,
+      "yahoo_auction": 401,
+      "yahoo_fleamarket": 391,
+      "gripsweat_sale": 897
+    },
+    "account_visible_counts": {
+      "yahoo_fleamarket": 391,
+      "yahoo_auction": 401,
+      "ebay": 1601,
+      "buyee": 1014,
+      "gripsweat": 749
+    },
+    "yahoo_time_span": [
+      {
+        "marketplace": "yahoo_fleamarket",
+        "n": 391,
+        "min": "2026-08-31 03:10:03+00:00",
+        "max": "2026-11-19 02:04:08+00:00"
+      },
+      {
+        "marketplace": "yahoo_auction",
+        "n": 401,
+        "min": "2026-05-31 13:00:00+00:00",
+        "max": "2026-11-19 06:01:48+00:00"
+      }
+    ]
+  },
+  "refresh_phase_seconds": {
+    "buyee_session_verify": 7,
+    "buyee_crawl_plus_https_detail_waf_fail": 193,
+    "buyee_waf_headed_detail_fallback_23_listings": 394,
+    "ebay_refresh_approx": 100,
+    "gripsweat_probe_and_pagination_audit": 161,
+    "yahoo_auction_plus_fleamarket_novelty": 8,
+    "post_features_reclassify_fx_doctor": 389,
+    "full_refresh_wall_clock": 1372
+  },
+  "distributions": [
+    {
+      "name": "buyee_waf_headed_detail_page_to_json",
+      "n": 23,
+      "unit": "seconds",
+      "min": 0.624,
+      "p50": 1.142,
+      "p90": 1.878,
+      "p95": 2.158,
+      "p99": 2.282,
+      "p99_9": 2.282,
+      "p100_max": 2.282,
+      "mean": 1.204
+    },
+    {
+      "name": "buyee_waf_headed_detail_inter_arrival",
+      "n": 22,
+      "unit": "seconds",
+      "min": 9.843,
+      "p50": 15.997,
+      "p90": 24.92,
+      "p95": 25.903,
+      "p99": 27.258,
+      "p99_9": 27.258,
+      "p100_max": 27.258,
+      "mean": 17.823
+    },
+    {
+      "name": "yahoo_https_search_page",
+      "n": 29,
+      "unit": "seconds",
+      "min": 1.007,
+      "p50": 1.328,
+      "p90": 1.76,
+      "p95": 1.812,
+      "p99": 1.881,
+      "p99_9": 1.881,
+      "p100_max": 1.881,
+      "mean": 1.434
+    },
+    {
+      "name": "yahoo_auction_detail_https",
+      "n": 25,
+      "unit": "seconds",
+      "min": 0.943,
+      "p50": 1.496,
+      "p90": 1.707,
+      "p95": 1.766,
+      "p99": 1.779,
+      "p99_9": 1.779,
+      "p100_max": 1.779,
+      "mean": 1.458
+    },
+    {
+      "name": "yahoo_fleamarket_detail_https_all",
+      "n": 40,
+      "unit": "seconds",
+      "min": 0.645,
+      "p50": 0.767,
+      "p90": 2.299,
+      "p95": 2.53,
+      "p99": 2.624,
+      "p99_9": 2.624,
+      "p100_max": 2.624,
+      "mean": 1.195
+    },
+    {
+      "name": "yahoo_fleamarket_detail_https_200_only",
+      "n": 9,
+      "unit": "seconds",
+      "min": 2.106,
+      "p50": 2.266,
+      "p90": 2.545,
+      "p95": 2.624,
+      "p99": 2.624,
+      "p99_9": 2.624,
+      "p100_max": 2.624,
+      "mean": 2.345
+    }
+  ],
+  "interpretation": {
+    "full_refresh_wall_seconds": 1372,
+    "dominant_cost": "Buyee WAF headed detail fallback (~6.5 min / 23 listings)",
+    "yahoo_jp_cost": "Seconds under novelty; not the wall-clock driver",
+    "mitigation_default": "UI multisource refresh defaults --skip-buyee-detail",
+    "flea_detail": "Burst/paced detail hits 429; production uses search-only + novelty"
+  }
+}

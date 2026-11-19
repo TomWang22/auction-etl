@@ -12,7 +12,13 @@ from sqlalchemy.engine import Engine
 
 
 LOCAL_ZONE = ZoneInfo("America/New_York")
-MARKETPLACES = ("Buyee", "eBay", "Gripsweat")
+MARKETPLACES = (
+    "Yahoo Auctions",
+    "Yahoo フリマ",
+    "eBay",
+    "Gripsweat",
+    "Buyee",
+)
 WINDOW_THIS_RUN = "This run"
 WINDOW_TODAY = "Today"
 WINDOW_THIS_WEEK = "This week"
@@ -163,6 +169,10 @@ def week_counts(
 
 def _marketplace_label(value: Any) -> str | None:
     text = str(value or "").casefold()
+    if text == "yahoo_auction":
+        return "Yahoo Auctions"
+    if text in {"yahoo_fleamarket", "yahoo_frima", "paypay_fleamarket"}:
+        return "Yahoo フリマ"
     if text == "buyee":
         return "Buyee"
     if text == "ebay":

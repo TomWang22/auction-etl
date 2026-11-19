@@ -101,7 +101,7 @@ def render_login_screen() -> None:
     st.title("Auction ETL")
     st.write(
         "Private review for one collector. "
-        "Sales come from Buyee, eBay, and Gripsweat."
+        "Sales come from Yahoo Auctions, Yahoo フリマ, eBay, and Gripsweat."
     )
     st.write(
         "Sign in to access your listings, tracked artists, "
