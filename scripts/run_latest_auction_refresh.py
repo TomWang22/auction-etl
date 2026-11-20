@@ -4322,7 +4322,57 @@ def main() -> int:
 
 
 
-                if buyee_new_listing_ids or buyee_retry_detail_ids:
+                if (
+
+                    (
+
+                        buyee_new_listing_ids
+
+                        or buyee_retry_detail_ids
+
+                    )
+
+                    and arguments.skip_buyee_detail
+
+                ):
+
+                    logger.info(
+
+                        "Skipping Buyee HTTPS detail and WAF fallback "
+
+                        "for %d listing(s) (--skip-buyee-detail); "
+
+                        "watchlist identities already upserted.",
+
+                        len(
+
+                            buyee_detail_listing_ids
+
+                        ),
+
+                    )
+
+                    status["degraded"] = True
+
+                    status[
+
+                        "buyee_runtime_semantics"
+
+                    ] = (
+
+                        "BUYEE_DETAIL_SKIPPED"
+
+                    )
+
+                    write_json_atomic(
+
+                        status_file,
+
+                        status,
+
+                    )
+
+                elif buyee_new_listing_ids or buyee_retry_detail_ids:
 
                     buyee_detail_command = [
 
@@ -4622,7 +4672,33 @@ def main() -> int:
 
                         )
 
-                    if (
+                        status["degraded"] = True
+
+                        status[
+
+                            "buyee_runtime_semantics"
+
+                        ] = (
+
+                            "BUYEE_DETAIL_SKIPPED_WAF"
+
+                        )
+
+                        status[
+
+                            "buyee_browser_fallback_count"
+
+                        ] = 0
+
+                        write_json_atomic(
+
+                            status_file,
+
+                            status,
+
+                        )
+
+                    elif (
 
                         buyee_waf_listing_ids
 

@@ -28,6 +28,12 @@ See also [`ENGINEERING.md`](ENGINEERING.md).
 - **Fix:** Expected path — headed Buyee owner (`run_buyee_owner_job.py crawl_live_details`). Do not enable headless. If owner auth is stale, re-verify storage state.
 - **Latency:** Measured headed fallback ~16s p50 / ~27s p100 inter-arrival per listing; ~6.5 min for 23 listings. Prefer `--skip-buyee-detail` on routine multisource refresh.
 
+### Buyee fails whole refresh under `--skip-buyee-detail` (2026-11-20)
+
+- **Symptom:** UI shows Buyee “Marketplace execution failed”, 13 new / 0 processed; eBay/Gripsweat/Yahoo never run. Log: `AWS_WAF_CHALLENGE` × N then `Skipping Buyee WAF browser detail fallback` then `RuntimeError: Buyee HTTPS detail crawler failed without a classified WAF fallback candidate.`
+- **Cause:** Watchlist identities upserted fine; HTTPS detail hit WAF; `--skip-buyee-detail` skipped headed fallback but the runner still treated detail status ≠ 0 as a hard stop.
+- **Fix:** With `--skip-buyee-detail`, skip HTTPS detail + WAF fallback entirely after identity sync (degraded, not failed) so later marketplaces still run. Identities already in `warehouse.auction`; detail remains optional enrichment.
+
 ### Yahoo フリマ detail HTTP 429 / sticky rate limit
 
 - **Symptom:** Flea item pages return 429 after a short burst; search pages still 200.
