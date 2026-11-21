@@ -75,6 +75,16 @@ See also [`ENGINEERING.md`](ENGINEERING.md).
 - **Symptom:** Page 1 sold results OK; pagination dies.
 - **Fix:** Keep page-1 results; load `ebay.com` on the same tab before sold search; headed Chrome + storage state only.
 
+### eBay sold-search HTTP 403 while homepage works (2026-11-20)
+
+- **Symptom:** Refresh marks eBay unavailable / “programmatic access is blocked”. Log: `access_continue/access_stop status=403 listing_count=0` on `/sch/…&LH_Sold=1&LH_Complete=1`. Block screenshot often shows normal ebay.com homepage (“Hi Tom!”), not a CAPTCHA interstitial.
+- **Cause:** Akamai is rejecting the **completed/sold search URL** for the managed `ebay-public` + `~/.auction-etl/private/ebay-storage-state.json` jar. Homepage warmup can still succeed. Not a warehouse bug; Buyee/Gripsweat/Yahoo may continue.
+- **Fix:** Re-export a fresh headed storage state that can open a sold-search page, then retry Refresh:
+  1. Stop the local refresh worker (`logs/runtime/local-refresh-worker.pid`) so it is not fighting Chrome.
+  2. `AUCTION_CHROME_VISIBLE=1 .venv/bin/python scripts/export_ebay_storage_state.py` (or the headed owner/bootstrap path) and confirm a Teresa/Momoe sold-search URL loads with listings before export.
+  3. Restart Streamlit + local refresh worker; run Refresh again.
+  4. Do not “fix” with headless. If sold search still 403 immediately after a good export, wait / use a colder cadence — repeated refreshes burn the jar.
+
 ### eBay / Buyee Chrome steals focus (“orange jacket” tabs)
 
 - **Symptom:** During refresh, Chrome jumps to the front; sold cards / jackets flash; UI feels unusable.
