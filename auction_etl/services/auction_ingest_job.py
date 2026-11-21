@@ -58,8 +58,9 @@ ANSI_ESCAPE_RE: Final[re.Pattern[str]] = re.compile(
 
 SOURCE_STATE_RE: Final[re.Pattern[str]] = re.compile(
     r"^AUCTION_SOURCE_STATE "
-    r"source=(eBay|Buyee|Gripsweat) "
-    r"state=(running|done|unavailable|failed)$"
+    r"source=(eBay|Buyee|Gripsweat|Yahoo Auctions|Yahoo フリマ|"
+    r"yahoo_auction|yahoo_fleamarket) "
+    r"state=(running|done|unavailable|failed|skipped|rate_limited)$"
 )
 
 def utc_now() -> str:

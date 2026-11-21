@@ -34,6 +34,12 @@ See also [`ENGINEERING.md`](ENGINEERING.md).
 - **Cause:** Watchlist identities upserted fine; HTTPS detail hit WAF; `--skip-buyee-detail` skipped headed fallback but the runner still treated detail status ≠ 0 as a hard stop.
 - **Fix:** With `--skip-buyee-detail`, skip HTTPS detail + WAF fallback entirely after identity sync (degraded, not failed) so later marketplaces still run. Identities already in `warehouse.auction`; detail remains optional enrichment.
 
+### Refresh UI shows 3 of 5 / Yahoo grey while warehouse grew (2026-11-20)
+
+- **Symptom:** “Completed with issues”, Marketplaces updated 3 of 5; Yahoo Auctions / フリマ stay waiting with 0 new. Log still has `Yahoo JP yahoo_auction state=done new=…` and warehouse counts rise.
+- **Cause:** (1) `ops.refresh_marketplace_ordinal_check` still required `ordinal BETWEEN 1 AND 3`, so job create never inserted Yahoo rows. (2) Worker `SOURCE_NAMES` / `\S+` source parser did not map `Yahoo Auctions` / `Yahoo フリマ` into durable marketplace updates.
+- **Fix:** Migration `e8f3c1a0b7d2` raises ordinal ceiling to 5 and allows `rate_limited`. Worker maps Yahoo display names and accepts spaced source tokens. Restart Streamlit + local refresh worker after migrate so new jobs insert all five planned sources.
+
 ### Yahoo フリマ detail HTTP 429 / sticky rate limit
 
 - **Symptom:** Flea item pages return 429 after a short burst; search pages still 200.

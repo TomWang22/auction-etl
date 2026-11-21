@@ -53,20 +53,20 @@ CANONICAL_RUNNER = (
 
 SOURCE_STATE_PATTERN = re.compile(
     r"^AUCTION_SOURCE_STATE "
-    r"source=(?P<source>\S+) "
+    r"source=(?P<source>.+?) "
     r"state=(?P<state>\S+)"
 )
 
 SOURCE_VISIBLE_PATTERN = re.compile(
     r"^AUCTION_SOURCE_VISIBLE "
-    r"source=(?P<source>\S+) "
+    r"source=(?P<source>.+?) "
     r"visible_count=(?P<visible_count>\d+) "
     r"visible_added=(?P<visible_added>\d+)$"
 )
 
 SOURCE_DIAGNOSTIC_PATTERN = re.compile(
     r"^AUCTION_SOURCE_DIAGNOSTIC "
-    r"source=(?P<source>\S+) "
+    r"source=(?P<source>.+?) "
     r"payload=(?P<payload>\{.*\})$"
 )
 
@@ -104,6 +104,14 @@ SOURCE_NAMES = {
         "ebay",
     "gripsweat":
         "gripsweat",
+    "yahoo_auction":
+        "yahoo_auction",
+    "yahoo auctions":
+        "yahoo_auction",
+    "yahoo_fleamarket":
+        "yahoo_fleamarket",
+    "yahoo フリマ":
+        "yahoo_fleamarket",
 }
 
 SOURCE_STATE_MAP = {
@@ -119,6 +127,8 @@ SOURCE_STATE_MAP = {
         "skipped",
     "skipped":
         "skipped",
+    "rate_limited":
+        "rate_limited",
     "awaiting_handoff":
         "awaiting_handoff",
     "authentication_required":
